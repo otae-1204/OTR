@@ -75,10 +75,12 @@ interface ModelPieProps {
   summary: RangeSummary | null;
   /** 副标题里展示的范围文字 */
   rangeLabel: string;
+  currency: string;
+  rate: number;
 }
 
 /** 模型占比(环形图 + 图例);点击扇区在该卡片内查看该模型明细(含缓存命中率) */
-export function ModelPie({ summary, rangeLabel }: ModelPieProps) {
+export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps) {
   const [selected, setSelected] = useState<string | null>(null);
 
   const slices = useMemo<Slice[]>(() => {

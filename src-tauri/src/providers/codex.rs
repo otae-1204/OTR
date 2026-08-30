@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -44,13 +44,75 @@ pub fn scan_roots(roots: &[PathBuf], agent: &str, ctx: &mut ScanCtx) -> Result<V
     for root in roots {
         jsonl_util::collect_jsonl(root, 4, &mut files);
     }
+    // codex resume 会在新 rollout 文件里重放整个会话历史,同一 thread 的旧副本
+    // 若一起统计就会双计(CC-Switch 同款处理):按文件名尾部的 thread uuid 分组,
+    // 每组只保留文件名最新(时间戳即字典序最大)的一份。
+    let mut groups: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
+    for f in files {
+        match thread_id_from_filename(&f) {
+            Some(tid) => {
+                let e = groups.entry(tid).or_insert_with(|| f.clone());
+                if f > *e {
+                    *e = f;
+                }
+            }
+            // 文件名不符合 rollout 命名规则的,原样保留单独处理
+            None => {
+                groups.insert(f.to_string_lossy().to_string(), f);
+            }
+        }
+    }
+    let selected: Vec<PathBuf> = groups.into_values().collect();
     let mut records = Vec::new();
-    for file in files {
+    for file in selected {
+        // 子代理/派生会话(session_meta 带 parent_thread_id)的 rollout 会重放
+        // 父线程的全部 token_count 历史,官方 /status 与 CC-Switch 均不计入,跳过
+        if let Some((_, Some(parent))) = session_meta_thread_info(&file) {
+            eprintln!("[{}] 跳过派生会话(父线程 {})", agent, parent);
+            continue;
+        }
         if let Err(e) = scan_file(&file, agent, ctx, &mut records) {
             eprintln!("[{}] {}: {}", agent, file.display(), e);
         }
     }
     Ok(records)
+}
+
+/// 读 session_meta(文件头部),返回 (自身 thread_id, parent_thread_id)
+fn session_meta_thread_info(path: &Path) -> Option<(Option<String>, Option<String>)> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        if !line.contains("\"session_meta\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let payload = v.get("payload").unwrap_or(&Value::Null);
+        let thread_id = payload
+            .get("id")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
+        let parent = payload
+            .get("parent_thread_id")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
+        return Some((thread_id, parent));
+    }
+    None
+}
+
+/// rollout-<时间戳>-<uuid>.jsonl → uuid(末 5 段);与 CC-Switch 的 thread_id 提取一致
+fn thread_id_from_filename(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let stem = stem.strip_prefix("rollout-")?;
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() < 5 {
+        return None;
+    }
+    Some(parts[parts.len() - 5..].join("-"))
 }
 
 /// 逐事件解析:token_count 事件里的 `last_token_usage` 是该次请求的真实用量,

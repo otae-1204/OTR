@@ -148,6 +148,8 @@ pub struct RangeSummary {
     pub from: String,
     pub to: String,
     pub agent: Option<String>,
+    /// 本结果的成本币种(前端按 settings.currency 切换显示)
+    pub currency: String,
     pub totals: Totals,
     pub by_agent: Vec<AgentSlice>,
     pub by_model: Vec<ModelSlice>,

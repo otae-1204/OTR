@@ -36,6 +36,8 @@ export interface RangeSummary {
   from: string;
   to: string;
   agent: string | null;
+  /** 本结果成本的币种(跟随全局设置,当前恒为归一化后的 "CNY") */
+  currency: string;
   totals: Totals;
   byAgent: AgentSlice[];
   byModel: ModelSlice[];
@@ -104,6 +106,8 @@ export interface Settings {
   pricing: Record<string, PriceEntry>;
   /** 美元 → 人民币汇率(估算换算) */
   exchangeRate: number;
+  /** 全局成本显示币种:"CNY" | "USD" */
+  currency: string;
 }
 
 export const AGENT_LABELS: Record<string, string> = {

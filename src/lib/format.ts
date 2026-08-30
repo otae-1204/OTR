@@ -22,9 +22,16 @@ export function fmtTokens(n: number): string {
 }
 
 /** 成本显示:>=0.01 保留 2 位,否则保留 4 位 */
-export function fmtCost(n: number): string {
-  if (!Number.isFinite(n)) return "--";
-  return n >= 0.01 ? `≈¥${n.toFixed(2)}` : `≈¥${n.toFixed(4)}`;
+export function fmtCost(
+  n: number,
+  currency: string = "CNY",
+  rate: number = 7.2,
+): string {
+  if (currency === "USD") {
+    const v = n / rate;
+    return `≈$${v.toFixed(Math.abs(v) >= 0.01 || v === 0 ? 2 : 4)}`;
+  }
+  return `≈¥${n.toFixed(Math.abs(n) >= 0.01 || n === 0 ? 2 : 4)}`;
 }
 
 /** 绝对时间(短):MM-DD HH:mm */

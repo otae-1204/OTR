@@ -24,6 +24,8 @@ interface SessionTableProps {
   to: string | null;
   refreshKey: number;
   rangeLabel: string;
+  currency: string;
+  rate: number;
 }
 
 /** 会话明细,随筛选栏的范围与 Agent 联动 */
@@ -33,6 +35,8 @@ export function SessionTable({
   to,
   refreshKey,
   rangeLabel,
+  currency,
+  rate,
 }: SessionTableProps) {
   const [sessions, setSessions] = useState<SessionUsage[] | null>(null);
 
@@ -138,7 +142,7 @@ export function SessionTable({
                         {fmtTokens(s.totalTokens)}
                       </td>
                       <td className="py-2.5 text-right tabular-nums text-green-500">
-                        {fmtCost(s.cost)}
+                        {fmtCost(s.cost, currency, rate)}
                       </td>
                     </tr>
                   );

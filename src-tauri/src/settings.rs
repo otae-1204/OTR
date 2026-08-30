@@ -54,6 +54,8 @@ pub struct Settings {
     pub pricing: std::collections::HashMap<String, PriceEntry>,
     /// 美元 → 人民币汇率(估算换算用)
     pub exchange_rate: f64,
+    /// 全局成本显示币种:"CNY" | "USD"
+    pub currency: String,
     /// v1 设置没有 opencode 等新内置 Agent;首次加载 v2 时补录一次
     #[serde(default)]
     migrated_v2: bool,
@@ -83,6 +85,7 @@ impl Default for Settings {
             custom_agents: vec![],
             pricing: std::collections::HashMap::new(),
             exchange_rate: 7.2,
+            currency: "CNY".into(),
             migrated_v2: false,
             known_agents: vec![],
         }

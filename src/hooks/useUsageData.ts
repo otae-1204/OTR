@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   api,
   type AgentStatus,
+  type Settings,
   type UsageSummary,
 } from "../api/bindings";
 
@@ -17,6 +18,7 @@ const EVENT_DEBOUNCE_MS = 300;
 export function useUsageData() {
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [agents, setAgents] = useState<AgentStatus[]>([]);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
 
   const mountedRef = useRef(true);
@@ -24,13 +26,15 @@ export function useUsageData() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextSummary, nextAgents] = await Promise.all([
+      const [nextSummary, nextAgents, nextSettings] = await Promise.all([
         api.getSummary(),
         api.listAgents(),
+        api.getSettings(),
       ]);
       if (!mountedRef.current) return;
       setSummary(nextSummary);
       setAgents(nextAgents);
+      setSettings(nextSettings);
     } catch (err) {
       console.error("[useUsageData] 拉取数据失败", err);
     } finally {
@@ -81,5 +85,5 @@ export function useUsageData() {
     };
   }, [refresh, scheduleRefresh]);
 
-  return { summary, agents, loading, refresh };
+  return { summary, agents, settings, loading, refresh };
 }

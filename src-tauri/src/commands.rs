@@ -62,7 +62,7 @@ pub fn get_range_summary(
 ) -> std::result::Result<RangeSummary, String> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().unwrap().clone();
-    state
+    let mut s = state
         .store
         .range_summary(
             agent.as_deref(),
@@ -71,7 +71,9 @@ pub fn get_range_summary(
             &settings.pricing,
             settings.exchange_rate,
         )
-        .map_err(err_str)
+        .map_err(err_str)?;
+    s.currency = settings.currency.clone();
+    Ok(s)
 }
 
 #[tauri::command]
@@ -107,9 +109,16 @@ pub fn get_sessions(
     let state = app.state::<AppState>();
     let from_ms = from.as_deref().and_then(|d| date_boundary_ms(d, false));
     let to_ms = to.as_deref().and_then(|d| date_boundary_ms(d, true));
+    let settings = state.settings.lock().unwrap().clone();
     state
         .store
-        .sessions(agent.as_deref(), from_ms, to_ms, limit.unwrap_or(100) as i64)
+        .sessions(
+            agent.as_deref(),
+            from_ms,
+            to_ms,
+            limit.unwrap_or(100) as i64,
+            settings.exchange_rate,
+        )
         .map_err(err_str)
 }
 

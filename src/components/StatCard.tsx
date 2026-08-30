@@ -59,6 +59,8 @@ interface StatCardProps {
   loading: boolean;
   /** 当前选中 Agent 的全部时间累计 tokens(给"今日为 0"提供参照),null 表示未选 Agent */
   agentAllTimeTokens: number | null;
+  currency: string;
+  rate: number;
 }
 
 /** Hero 统计卡:由筛选栏的 Agent + 日期范围驱动 */
@@ -68,6 +70,8 @@ export function StatCard({
   subtitle,
   loading,
   agentAllTimeTokens,
+  currency,
+  rate,
 }: StatCardProps) {
   const totals: Totals | null = summary?.totals ?? null;
   const hit = totals ? cacheHitRate(totals) : 0;
@@ -185,10 +189,10 @@ export function StatCard({
           icon={<CoinsIcon className="h-3.5 w-3.5" />}
           label="成本"
           accent="text-green-500"
-          value={totals ? fmtCost(totals.cost) : "--"}
+          value={totals ? fmtCost(totals.cost, currency, rate) : "--"}
           title={
             totals
-              ? `≈¥${totals.cost.toFixed(4)}(自带成本优先,其余按设置里的定价估算)`
+              ? `成本 ${totals.cost.toFixed(4)}(填了定价的模型按定价重算,其余用自带成本或 0)`
               : undefined
           }
         />

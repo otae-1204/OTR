@@ -20,6 +20,7 @@ import {
   TrashIcon,
 } from "./icons";
 import { AgentIcon, usesImageIcon } from "./AgentIcon";
+import { fetchLatestVersion, fetchUsdCnyRate } from "../lib/remote";
 
 const KNOWN_AGENTS = [
   "dsh",
@@ -150,9 +151,17 @@ interface SettingsProps {
   agents: AgentStatus[];
   /** 设置变更 / 手动扫描后通知父级刷新数据 */
   onDataChanged: () => void;
+  appVersion: string;
+  /** GitHub 检测到的新版本号,null 表示无更新 */
+  updateLatest: string | null;
 }
 
-export function Settings({ agents, onDataChanged }: SettingsProps) {
+export function Settings({
+  agents,
+  onDataChanged,
+  appVersion,
+  updateLatest,
+}: SettingsProps) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [busyAction, setBusyAction] = useState<"none" | "refresh" | "rescan">(
     "none",
@@ -161,6 +170,12 @@ export function Settings({ agents, onDataChanged }: SettingsProps) {
     document.documentElement.classList.contains("dark") ? "dark" : "light",
   );
   // 自定义 Agent 表单
+  const [updateState, setUpdateState] = useState<
+    "idle" | "checking" | "latest" | "available" | "error"
+  >("idle");
+  const [updateMsg, setUpdateMsg] = useState("");
+  const [fxState, setFxState] = useState<"idle" | "loading" | "ok" | "error">("idle");
+  const [fxMsg, setFxMsg] = useState("");
   const [cName, setCName] = useState("");
   const [cKind, setCKind] = useState<CustomAgentConfig["kind"]>("claude-code");
   const [cDir, setCDir] = useState("");
@@ -217,6 +232,54 @@ export function Settings({ agents, onDataChanged }: SettingsProps) {
       const next = { ...settings, theme: mode };
       setSettings(next);
       void api.saveSettings(next).catch(() => undefined);
+    }
+  };
+
+  const checkUpdate = async () => {
+    setUpdateState("checking");
+    setUpdateMsg("正在从 GitHub Releases 获取最新版本…");
+    try {
+      const latest = await fetchLatestVersion();
+      if (!latest) {
+        setUpdateState("error");
+        setUpdateMsg("获取失败:网络无法访问 GitHub,稍后再试");
+        return;
+      }
+      if (updateLatest && updateLatest !== latest) {
+        onDataChanged(); // 触发 App 头部橙点刷新
+      }
+      const cur = appVersion || "0.0.0";
+      if (latest === cur) {
+        setUpdateState("latest");
+        setUpdateMsg(`已是最新版本 v${cur}`);
+      } else if (latest > cur) {
+        setUpdateState("available");
+        setUpdateMsg(`发现新版本 v${latest}(当前 v${cur}),前往 Releases 页下载`);
+      } else {
+        setUpdateState("latest");
+        setUpdateMsg(`本地 v${cur} 比 Releases 上的 v${latest} 还新(开发版?)`);
+      }
+    } catch (err) {
+      setUpdateState("error");
+      setUpdateMsg("获取失败,请检查网络");
+    }
+  };
+
+  const fetchFxRate = async () => {
+    if (!settings) return;
+    setFxState("loading");
+    setFxMsg("正在获取实时汇率…");
+    try {
+      const res = await fetchUsdCnyRate();
+      if (!res) throw new Error("unavailable");
+      const next = { ...settings, exchangeRate: res.rate };
+      setSettings(next);
+      await api.saveSettings(next);
+      setFxState("ok");
+      setFxMsg(`已更新为 ¥${res.rate.toFixed(4)}/$(来源:${res.source})`);
+    } catch (err) {
+      setFxState("error");
+      setFxMsg("汇率获取失败,请检查网络后手动填写");
     }
   };
 
@@ -327,6 +390,13 @@ export function Settings({ agents, onDataChanged }: SettingsProps) {
     void api.saveSettings(next).catch(() => undefined);
   };
 
+  const updateCurrency = (currency: string) => {
+    if (!settings) return;
+    const next = { ...settings, currency };
+    setSettings(next);
+    void api.saveSettings(next).catch(() => undefined);
+  };
+
   const updateExchangeRate = (raw: string) => {
     if (!settings) return;
     const v = parseFloat(raw);
@@ -346,27 +416,59 @@ export function Settings({ agents, onDataChanged }: SettingsProps) {
       const res = await fetch("https://models.dev/api.json");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const catalog = new Map<string, PriceEntry>();
-      for (const provider of Object.values<any>(data ?? {})) {
-        for (const [id, m] of Object.entries<any>(provider?.models ?? {})) {
-          const c = m?.cost;
-          if (!c || typeof c.input !== "number") continue;
-          catalog.set(id.toLowerCase(), {
-            input: c.input ?? 0,
-            output: c.output ?? 0,
-            cacheRead: c.cache_read ?? 0,
-            cacheWrite: c.cache_write ?? 0,
-          });
+      // 同一个模型 id 会在几十个 provider 下重复出现,价格差异巨大(abacus $6/M vs openai 官方 $1.2/M)。
+      // 按 CC-Switch 的思路优先取"模型家族的官方 provider":gpt→openai、claude→anthropic、deepseek→deepseek…
+      const familyProvider = (model: string): string | null => {
+        const m = model.toLowerCase();
+        if (/^(gpt|o\d|chatgpt)/.test(m)) return "openai";
+        if (/^claude/.test(m)) return "anthropic";
+        if (/^deepseek/.test(m)) return "deepseek";
+        if (/^(gemini|gemma)/.test(m)) return "google";
+        if (/^qwen/.test(m)) return "qwen";
+        if (/^kimi/.test(m)) return "moonshotai";
+        if (/^glm/.test(m)) return "zai";
+        if (/^grok/.test(m)) return "xai";
+        if (/^minimax/.test(m)) return "minimax";
+        return null;
+      };
+      const toEntry = (m: any): PriceEntry | null => {
+        const c = m?.cost;
+        if (!c || typeof c.input !== "number") return null;
+        return {
+          input: c.input ?? 0,
+          output: c.output ?? 0,
+          cacheRead: c.cache_read ?? 0,
+          cacheWrite: c.cache_write ?? 0,
+        };
+      };
+      // id(小写) → [{provider, entry}],同 id 多 provider 时按上面的优先级挑
+      const catalog = new Map<string, { provider: string; entry: PriceEntry }[]>();
+      for (const [pid, prov] of Object.entries<any>(data ?? {})) {
+        for (const [id, m] of Object.entries<any>(prov?.models ?? {})) {
+          const entry = toEntry(m);
+          if (!entry) continue;
+          const key = id.toLowerCase();
+          const list = catalog.get(key) ?? [];
+          list.push({ provider: pid, entry });
+          catalog.set(key, list);
         }
       }
+      const pick = (model: string): PriceEntry | null => {
+        const key = model.toLowerCase();
+        const candidates = [key, model.split("/").pop()?.toLowerCase() ?? ""].filter(Boolean);
+        for (const c of candidates) {
+          const list = catalog.get(c);
+          if (!list || list.length === 0) continue;
+          const fam = familyProvider(c);
+          const chosen = (fam && list.find((x) => x.provider === fam)) || list[0];
+          return chosen.entry;
+        }
+        return null;
+      };
       const next = { ...settings.pricing };
       let matched = 0;
       for (const model of models) {
-        const key = model.toLowerCase();
-        const candidates = [key, model.split("/").pop()?.toLowerCase() ?? ""];
-        const found = candidates
-          .map((c) => catalog.get(c))
-          .find((x) => x != null);
+        const found = pick(model);
         if (found) {
           next[model] = found;
           matched++;
@@ -568,9 +670,48 @@ export function Settings({ agents, onDataChanged }: SettingsProps) {
       </SectionCard>
 
       <SectionCard
+        icon={<RefreshIcon className="h-4 w-4 text-primary" />}
+        title="版本"
+        description="从 GitHub Releases 检测最新版本(需要能访问 GitHub)"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">
+              当前版本 {appVersion || "0.1.0"}
+              {updateLatest ? (
+                <span className="ml-2 rounded-md bg-orange-500/15 px-1.5 py-0.5 text-xs font-medium text-orange-500">
+                  可更新到 v{updateLatest}
+                </span>
+              ) : null}
+            </div>
+            {updateMsg ? (
+              <div
+                className={`mt-1 text-xs ${
+                  updateState === "error" ? "text-destructive" : "text-muted-foreground"
+                }`}
+              >
+                {updateMsg}
+              </div>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            onClick={() => void checkUpdate()}
+            disabled={updateState === "checking"}
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+          >
+            <RefreshIcon
+              className={`h-3.5 w-3.5 ${updateState === "checking" ? "animate-spin" : ""}`}
+            />
+            检测更新
+          </button>
+        </div>
+      </SectionCard>
+
+      <SectionCard
         icon={<CoinsIcon className="h-4 w-4 text-primary" />}
         title="成本定价"
-        description="没有自带成本的数据(Codex / ZCode / OpenCode 等)按此定价估算费用;DSH 等自带成本的以自带为准。单位 $/百万 tokens,按汇率折算为 ¥ 展示"
+        description="填了定价的模型一律按你的价格重算成本(覆盖自带成本);没填的用自带成本或 0。单位 $/百万 tokens,按汇率折算展示"
       >
         <div className="space-y-3 p-4">
           <div className="flex flex-wrap items-center gap-3">
@@ -586,6 +727,17 @@ export function Settings({ agents, onDataChanged }: SettingsProps) {
               从 models.dev 自动获取
             </button>
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              币种
+              <select
+                value={settings?.currency ?? "CNY"}
+                onChange={(e) => updateCurrency(e.target.value)}
+                className="h-7 rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary"
+              >
+                <option value="CNY">¥ 人民币</option>
+                <option value="USD">$ 美元</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
               汇率(¥/$)
               <input
                 type="number"
@@ -597,6 +749,24 @@ export function Settings({ agents, onDataChanged }: SettingsProps) {
                 className="h-7 w-20 rounded-lg border border-border bg-background px-2 text-xs tabular-nums outline-none focus:border-primary"
               />
             </label>
+            <button
+              type="button"
+              onClick={() => void fetchFxRate()}
+              disabled={fxState === "loading" || !settings}
+              title="从 er-api / frankfurter 获取实时 USD→CNY 汇率"
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+            >
+              获取实时汇率
+            </button>
+            {fxMsg ? (
+              <span
+                className={`text-xs ${
+                  fxState === "error" ? "text-destructive" : "text-muted-foreground"
+                }`}
+              >
+                {fxMsg}
+              </span>
+            ) : null}
             {fetchMsg ? (
               <span
                 className={`text-xs ${

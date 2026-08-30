@@ -8,6 +8,8 @@ import {
   type Totals,
 } from "./api/bindings";
 import { useUsageData } from "./hooks/useUsageData";
+import { compareVersions, fetchLatestVersion } from "./lib/remote";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   computeRange,
   PRESET_LABELS,
@@ -49,7 +51,7 @@ export default function App() {
   const [view, setView] = useState<View>("dashboard");
   const [spinning, setSpinning] = useState(false);
   const spinTimerRef = useRef<number | null>(null);
-  const { summary, agents, loading, refresh } = useUsageData();
+  const { summary, agents, settings, loading, refresh } = useUsageData();
 
   // 筛选状态:Agent 维度 + 日期范围
   const [agentId, setAgentId] = useState<string | null>(null);
@@ -191,6 +193,32 @@ export default function App() {
     return { m, all };
   }, [rangeSummary]);
   const rangeLabel = preset === "custom" ? "该范围" : PRESET_LABELS[preset];
+  const currency = settings?.currency ?? "CNY";
+  const exchangeRate = settings?.exchangeRate ?? 7.2;
+
+  // 版本检测:启动时查一次 GitHub Releases(失败静默)
+  const [appVersion, setAppVersion] = useState("");
+  const [updateLatest, setUpdateLatest] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    getVersion()
+      .then((v) => {
+        if (active) setAppVersion(v);
+        return v;
+      })
+      .catch(() => "");
+    fetchLatestVersion().then((latest) => {
+      if (!active || !latest) return;
+      getVersion()
+        .then((cur) => {
+          if (active && compareVersions(latest, cur) > 0) setUpdateLatest(latest);
+        })
+        .catch(() => undefined);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -231,11 +259,17 @@ export default function App() {
               onClick={() =>
                 setView((v) => (v === "settings" ? "dashboard" : "settings"))
               }
-              className={`${TOOLBAR_BTN} ${
+              className={`relative ${TOOLBAR_BTN} ${
                 view === "settings" ? TOOLBAR_BTN_ACTIVE : TOOLBAR_BTN_IDLE
               }`}
             >
               <SettingsIcon className="h-4 w-4" />
+              {updateLatest ? (
+                <span
+                  className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-orange-500 ring-2 ring-background"
+                  title={`发现新版本 v${updateLatest}`}
+                />
+              ) : null}
             </button>
           </div>
         </div>
@@ -345,6 +379,8 @@ export default function App() {
                   title={statTitle}
                   subtitle={rangeSubtitle(preset, range)}
                   loading={rangeLoading}
+                  currency={currency}
+                  rate={exchangeRate}
                   agentAllTimeTokens={
                     agentId
                       ? (agentCards.find((c) => c.status.id === agentId)
@@ -377,6 +413,8 @@ export default function App() {
                   <ModelPie
                     summary={rangeSummary}
                     rangeLabel={rangeTitle(preset, range)}
+                    currency={currency}
+                    rate={exchangeRate}
                   />
                 </div>
 
@@ -386,6 +424,8 @@ export default function App() {
                   to={sessionRange.to}
                   refreshKey={refreshKey}
                   rangeLabel={rangeTitle(preset, range)}
+                  currency={currency}
+                  rate={exchangeRate}
                 />
               </>
             ) : (
@@ -399,7 +439,12 @@ export default function App() {
             key="settings"
             className="mx-auto max-w-3xl animate-fade-in space-y-4 px-6 pb-10 pt-20"
           >
-            <Settings agents={agents} onDataChanged={refresh} />
+            <Settings
+              agents={agents}
+              onDataChanged={refresh}
+              appVersion={appVersion}
+              updateLatest={updateLatest}
+            />
           </div>
         )}
       </main>

@@ -324,7 +324,9 @@ impl Store {
         })
     }
 
-    /// 任意日期范围(可按 Agent 过滤)的统计;pricing 用于给无自带成本的模型估算费用
+    /// 任意日期范围(可按 Agent 过滤)的统计。
+    /// 成本规则:模型在 pricing 里有定价 → 按 tokens×定价×汇率 重算(**覆盖自带成本**);
+    /// 没有定价 → 用自带成本,并按来源币种归一化(DSH 为 ¥,其余为 $×汇率)。输出统一为 ¥。
     pub fn range_summary(
         &self,
         agent: Option<&str>,
@@ -334,65 +336,99 @@ impl Store {
         exchange_rate: f64,
     ) -> Result<RangeSummary> {
         let conn = self.conn.lock().unwrap();
-        let cond = "WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)";
-        let mut totals = Self::totals_query(&conn, cond, params![from, to, agent])?;
+        let base_sql = "SELECT COALESCE(NULLIF(model,''),'(未知模型)'), agent,
+                        SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
+                        SUM(cache_write_tokens), SUM(calls), SUM(cost)
+                 FROM usage_daily WHERE date >= ?1 AND date <= ?2 {agent_cond}
+                 GROUP BY model, agent";
 
+        fn merge(dst: &mut Totals, src: &Totals) {
+            dst.input_tokens += src.input_tokens;
+            dst.output_tokens += src.output_tokens;
+            dst.cache_read_tokens += src.cache_read_tokens;
+            dst.cache_write_tokens += src.cache_write_tokens;
+            dst.calls += src.calls;
+            dst.total_tokens += src.total_tokens;
+            dst.cost += src.cost;
+        }
+
+        // 折叠 (model, agent) 行:tokens 合计 + 成本(定价覆盖 / 币种归一化)
+        fn fold_rows(
+            stmt: &mut rusqlite::Statement,
+            params: &[&dyn rusqlite::ToSql],
+            p: &std::collections::HashMap<String, PriceEntry>,
+            rate: f64,
+            mut sink: impl FnMut(&str, &str, Totals),
+        ) -> Result<()> {
+            let rows = stmt.query_map(params, |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    totals_from_row(row, 2),
+                ))
+            })?;
+            for r in rows {
+                let (model, agent, mut t) = r?;
+                let raw_cost = t.cost;
+                if let Some(pe) = p.get(&model) {
+                    t.cost = estimate_cost(&t, pe, rate);
+                } else if raw_cost.abs() > f64::EPSILON && agent != "dsh" {
+                    t.cost = raw_cost * rate;
+                }
+                sink(&model, &agent, t);
+            }
+            Ok(())
+        }
+
+        // Q1:按 Agent 过滤 → totals + by_model
+        let mut totals = Totals::default();
+        let mut by_model = Vec::new();
+        {
+            let sql = base_sql.replace("{agent_cond}", "AND (?3 IS NULL OR agent = ?3)");
+            let mut stmt = conn.prepare(&sql)?;
+            let mut model_map: std::collections::HashMap<String, Totals> =
+                std::collections::HashMap::new();
+            fold_rows(
+                &mut stmt,
+                &[&from, &to, &agent],
+                pricing,
+                exchange_rate,
+                |model, _agent, t| {
+                    merge(&mut totals, &t);
+                    merge(model_map.entry(model.to_string()).or_default(), &t);
+                },
+            )?;
+            by_model = model_map
+                .into_iter()
+                .map(|(model, totals)| ModelSlice { model, totals })
+                .collect();
+            by_model.sort_by(|a, b| b.totals.total_tokens.cmp(&a.totals.total_tokens));
+            by_model.truncate(12);
+        }
+
+        // Q2:不按 Agent 过滤 → by_agent(Agent 卡片需要全部 Agent 的范围数据)
         let mut by_agent = Vec::new();
         {
-            // 注意:by_agent 故意不做 agent 过滤——仪表盘的 Agent 卡片需要"所选范围内
-            // 全部 Agent"的数据;agent 筛选只作用于 totals 与 by_model
-            let mut stmt = conn.prepare(
-                "SELECT agent, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
-                        SUM(cache_write_tokens), SUM(calls), SUM(cost)
-                 FROM usage_daily WHERE date >= ?1 AND date <= ?2
-                 GROUP BY agent
-                 ORDER BY SUM(input_tokens+output_tokens+cache_read_tokens+cache_write_tokens) DESC",
-            )?;
-            let rows = stmt.query_map(params![from, to], |row| {
-                Ok((row.get::<_, String>(0)?, totals_from_row(row, 1)))
+            let sql = base_sql.replace("{agent_cond}", "");
+            let mut stmt = conn.prepare(&sql)?;
+            let mut agent_map: std::collections::HashMap<String, Totals> =
+                std::collections::HashMap::new();
+            fold_rows(&mut stmt, &[&from, &to], pricing, exchange_rate, |_model, agent, t| {
+                merge(agent_map.entry(agent.to_string()).or_default(), &t);
             })?;
-            for r in rows {
-                let (agent, t) = r?;
-                by_agent.push(AgentSlice { agent, totals: t });
-            }
+            by_agent = agent_map
+                .into_iter()
+                .map(|(agent, totals)| AgentSlice { agent, totals })
+                .collect();
+            by_agent.sort_by(|a, b| b.totals.total_tokens.cmp(&a.totals.total_tokens));
         }
-
-        let mut by_model = Vec::new();
-        let mut estimated = 0.0f64;
-        {
-            let mut stmt = conn.prepare(
-                "SELECT COALESCE(NULLIF(model,''),'(未知模型)'), SUM(input_tokens), SUM(output_tokens),
-                        SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(calls), SUM(cost)
-                 FROM usage_daily WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)
-                 GROUP BY model
-                 ORDER BY SUM(input_tokens+output_tokens+cache_read_tokens+cache_write_tokens) DESC
-                 LIMIT 12",
-            )?;
-            let rows = stmt.query_map(params![from, to, agent], |row| {
-                Ok((row.get::<_, String>(0)?, totals_from_row(row, 1)))
-            })?;
-            for r in rows {
-                let (model, mut t) = r?;
-                // 没有自带成本且配置了价格的模型,按定价估算(美元/百万 tokens × 汇率)
-                if t.cost.abs() < f64::EPSILON {
-                    if let Some(p) = pricing.get(&model) {
-                        let est = estimate_cost(&t, p, exchange_rate);
-                        if est > 0.0 {
-                            t.cost = est;
-                            estimated += est;
-                        }
-                    }
-                }
-                by_model.push(ModelSlice { model, totals: t });
-            }
-        }
-        totals.cost += estimated;
 
         Ok(RangeSummary {
             generated_at: now_ms(),
             from: from.into(),
             to: to.into(),
             agent: agent.map(Into::into),
+            currency: "CNY".into(),
             totals,
             by_agent,
             by_model,
@@ -464,6 +500,7 @@ impl Store {
         from_ms: Option<i64>,
         to_ms: Option<i64>,
         limit: i64,
+        exchange_rate: f64,
     ) -> Result<Vec<SessionUsage>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -471,16 +508,17 @@ impl Store {
                     GROUP_CONCAT(DISTINCT NULLIF(m.model,'')),
                     MIN(meta.started_at), MAX(m.last_ts),
                     SUM(m.input_tokens), SUM(m.output_tokens), SUM(m.cache_read_tokens),
-                    SUM(m.cache_write_tokens), SUM(m.calls), SUM(m.cost)
+                    SUM(m.cache_write_tokens), SUM(m.calls),
+                    SUM(CASE WHEN m.agent = 'dsh' THEN m.cost ELSE m.cost * ?4 END)
              FROM usage_session_models m
              LEFT JOIN session_meta meta ON meta.agent = m.agent AND meta.session_id = m.session_id
              WHERE (?1 IS NULL OR m.agent = ?1)
                AND (?2 IS NULL OR m.last_ts >= ?2)
                AND (?3 IS NULL OR m.last_ts < ?3)
              GROUP BY m.agent, m.session_id
-             ORDER BY MAX(m.last_ts) DESC LIMIT ?4",
+             ORDER BY MAX(m.last_ts) DESC LIMIT ?5",
         )?;
-        let rows = stmt.query_map(params![agent, from_ms, to_ms, limit], |row| {
+        let rows = stmt.query_map(params![agent, from_ms, to_ms, exchange_rate, limit], |row| {
             let input: i64 = row.get(7)?;
             let output: i64 = row.get(8)?;
             let cr: i64 = row.get(9)?;
