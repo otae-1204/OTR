@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 240 6% 10%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 6% 10%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 6% 10%;
+  --primary: 210 100% 56%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 240 5% 96%;
+  --secondary-foreground: 240 6% 10%;
+  --muted: 240 5% 96%;
+  --muted-foreground: 240 4% 46%;
+  --accent: 240 5% 96%;
+  --accent-foreground: 240 6% 10%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 240 5.9% 90%;
+  --input: 240 5.9% 90%;
+  --ring: 210 100% 56%;
+  --radius: 0.5rem;
+  color-scheme: light;
+}
+
+.dark {
+  --background: 240 5% 12%;
+  --foreground: 0 0% 93%;
+  --card: 240 5% 16%;
+  --card-foreground: 0 0% 93%;
+  --popover: 240 5% 14%;
+  --popover-foreground: 0 0% 93%;
+  --primary: 210 100% 56%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 240 5% 20%;
+  --secondary-foreground: 0 0% 93%;
+  --muted: 240 5% 20%;
+  --muted-foreground: 240 5% 65%;
+  --accent: 240 5% 20%;
+  --accent-foreground: 0 0% 93%;
+  --destructive: 0 62% 45%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 240 5% 24%;
+  --input: 240 5% 24%;
+  --ring: 210 100% 56%;
+  color-scheme: dark;
+}
+
+* {
+  scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+*:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+/* 图表扇区被点击后浏览器会画一个焦点框(白色方块),贴着圆环很难看,去掉 */
+.pie-card svg:focus,
+.pie-card svg path:focus,
+.pie-card .recharts-surface:focus {
+  outline: none;
+}
+
