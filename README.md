@@ -5,7 +5,7 @@
 
   <h1>
     Otae's<br>
-    <em>Token &amp; Agent Radar</em>
+    <em>Token Radar</em>
   </h1>
 
   <p>
