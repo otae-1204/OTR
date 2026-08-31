@@ -1,11 +1,13 @@
 {
   "name": "otr",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
+    "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1",
+    "build:release": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1 -SkipBuild",
     "dev:renderer": "vite",
     "build:renderer": "vite build",
     "typecheck": "tsc --noEmit",

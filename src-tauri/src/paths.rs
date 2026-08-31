@@ -30,7 +30,15 @@ pub fn pi_sessions() -> PathBuf {
 }
 
 pub fn dsh_storages() -> PathBuf {
-    home().join(".dsh").join("storages")
+    dsh_home().join("storages")
+}
+
+/// DSH 与宿主一致的单根目录:优先使用 DSH_HOME,否则回退到 ~/.dsh。
+pub fn dsh_home() -> PathBuf {
+    std::env::var_os("DSH_HOME")
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".dsh"))
 }
 
 pub fn opencode_db() -> PathBuf {

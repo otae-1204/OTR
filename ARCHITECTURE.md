@@ -103,12 +103,12 @@ pub struct UsageRecord {
 ### 5.1 DSH —— 优先级最高,数据质量最好
 | 项 | 内容 |
 |---|---|
-| 数据源 | `~/.dsh/storages/cost-meter/ledger.json`(按天台账)、`~/.dsh/storages/session_projcache.json`(按会话) |
+| 数据源 | `$DSH_HOME/storages/cost-meter/ledger.json`(按天台账)、`$DSH_HOME/storages/session_projcache.json`(按会话)、`$DSH_HOME/sessions/**/session.jsonl[.zstd]`(按小时) |
 | 格式 | 整文件 JSON,自描述 `version` 字段 |
 | 台账结构 | `days["2026-08-29"] = { date, input, output, cacheRead, cacheWrite, reasoning, calls, cost, byProviderModel: { "<provider:model>": {...} } }` |
 | 会话结构 | `tables.sessions[id].rows.costUsage = { provider, model, totals: {input, output, cacheRead, cacheWrite, reasoning, cost}, byModel: {...} }`,`identity.cwd` 可反解项目路径 |
-| 解析要点 | 两个文件都小(MB 级),直接整读重算,无需游标;台账自带 `cost` 与按峰值/平原的价格表(`config.prices`),成本展示可直接复用其口径 |
-| 会话原始流 | `~/.dsh/sessions/<编码cwd>/<uuid>/session.jsonl.zstd` 是 zstd 压缩,不必碰——台账+projcache 已覆盖需求 |
+| 解析要点 | 台账与投影文件直接整读并做快照增量;按小时从会话日志的 `assistant/message` / `assistant/chunk` usage 事件时间分桶,支持 zstd 多 frame;`DSH_HOME` 与宿主保持一致,未找到日志时降级使用会话创建时间 |
+| 会话原始流 | `$DSH_HOME/sessions/<编码cwd>/<uuid>/session.jsonl.zstd` 是 zstd 多 frame;按小时趋势读取 usage 事件,只读不修改 |
 
 ### 5.2 Claude Code
 | 项 | 内容 |

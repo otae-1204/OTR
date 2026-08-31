@@ -6,8 +6,8 @@ use rusqlite::{params, Connection};
 
 use crate::error::Result;
 use crate::model::{
-    date_str, local_date, local_hour, now_ms, today_str, DailyUsage, RangeSummary, SessionUsage,
-    Totals, UsageSummary, AgentSlice, ModelSlice,
+    date_str, local_date, local_hour, now_ms, today_str, AgentSlice, DailyUsage, ModelSlice,
+    RangeSummary, SessionUsage, Totals, UsageSummary,
 };
 use crate::providers::FileCursor;
 use crate::settings::PriceEntry;
@@ -123,6 +123,7 @@ impl Store {
     pub fn wipe_agent(&self, agent: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM usage_daily WHERE agent=?1", params![agent])?;
+        conn.execute("DELETE FROM usage_hourly WHERE agent=?1", params![agent])?;
         conn.execute(
             "DELETE FROM usage_session_models WHERE agent=?1",
             params![agent],
@@ -136,50 +137,56 @@ impl Store {
         Ok(())
     }
 
-    /// 记录均为增量语义,直接累加进两张表;整体包在一个事务里(逐条自动提交太慢)
+    /// 记录均为增量语义,分别累加进按天/按小时/会话表;整体包在一个事务里。
     pub fn apply_records(&self, records: &[crate::model::UsageRecord]) -> Result<usize> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let mut n = 0usize;
         for r in records {
-            if !r.skip_daily
-                && (r.total_tokens() > 0 || r.calls > 0 || r.cost.abs() > f64::EPSILON)
-            {
-                let date = local_date(r.ts);
-                let hour = local_hour(r.ts);
-                tx.execute(
-                    SQL_DAILY_UPSERT,
-                    params![
-                        r.agent,
-                        date,
-                        r.model.clone().unwrap_or_default(),
-                        r.provider.clone().unwrap_or_default(),
-                        r.input_tokens as i64,
-                        r.output_tokens as i64,
-                        r.cache_read_tokens as i64,
-                        r.cache_write_tokens as i64,
-                        r.reasoning_tokens as i64,
-                        r.calls as i64,
-                        r.cost,
-                    ],
-                )?;
-                tx.execute(
-                    SQL_HOURLY_UPSERT,
-                    params![
-                        r.agent,
-                        date,
-                        hour,
-                        r.model.clone().unwrap_or_default(),
-                        r.provider.clone().unwrap_or_default(),
-                        r.input_tokens as i64,
-                        r.output_tokens as i64,
-                        r.cache_read_tokens as i64,
-                        r.cache_write_tokens as i64,
-                        r.reasoning_tokens as i64,
-                        r.calls as i64,
-                        r.cost,
-                    ],
-                )?;
+            let has_usage = r.total_tokens() > 0 || r.calls > 0 || r.cost.abs() > f64::EPSILON;
+            if has_usage {
+                let date = r.bucket_date.clone().unwrap_or_else(|| local_date(r.ts));
+                let hour = r
+                    .bucket_hour
+                    .filter(|hour| (0..24).contains(hour))
+                    .unwrap_or_else(|| local_hour(r.ts));
+                if !r.skip_daily {
+                    tx.execute(
+                        SQL_DAILY_UPSERT,
+                        params![
+                            r.agent,
+                            date,
+                            r.model.clone().unwrap_or_default(),
+                            r.provider.clone().unwrap_or_default(),
+                            r.input_tokens as i64,
+                            r.output_tokens as i64,
+                            r.cache_read_tokens as i64,
+                            r.cache_write_tokens as i64,
+                            r.reasoning_tokens as i64,
+                            r.calls as i64,
+                            r.cost,
+                        ],
+                    )?;
+                }
+                if !r.skip_hourly {
+                    tx.execute(
+                        SQL_HOURLY_UPSERT,
+                        params![
+                            r.agent,
+                            date,
+                            hour,
+                            r.model.clone().unwrap_or_default(),
+                            r.provider.clone().unwrap_or_default(),
+                            r.input_tokens as i64,
+                            r.output_tokens as i64,
+                            r.cache_read_tokens as i64,
+                            r.cache_write_tokens as i64,
+                            r.reasoning_tokens as i64,
+                            r.calls as i64,
+                            r.cost,
+                        ],
+                    )?;
+                }
                 n += 1;
             }
             if let Some(sid) = &r.session_id {
@@ -222,11 +229,7 @@ impl Store {
     // ---------- 查询 ----------
 
     fn totals_eq(conn: &Connection, date: &str) -> Result<Totals> {
-        Self::totals_query(
-            conn,
-            "WHERE date = ?1",
-            rusqlite::params![date],
-        )
+        Self::totals_query(conn, "WHERE date = ?1", rusqlite::params![date])
     }
 
     fn totals_ge(conn: &Connection, from: &str) -> Result<Totals> {
@@ -237,11 +240,7 @@ impl Store {
         Self::totals_query(conn, "", rusqlite::params![])
     }
 
-    fn totals_query(
-        conn: &Connection,
-        cond: &str,
-        p: impl rusqlite::Params,
-    ) -> Result<Totals> {
+    fn totals_query(conn: &Connection, cond: &str, p: impl rusqlite::Params) -> Result<Totals> {
         let sql = format!(
             "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
                     COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0),
@@ -260,7 +259,10 @@ impl Store {
             })
         })?;
         let total = t.input_tokens + t.output_tokens + t.cache_read_tokens + t.cache_write_tokens;
-        Ok(Totals { total_tokens: total, ..t })
+        Ok(Totals {
+            total_tokens: total,
+            ..t
+        })
     }
 
     pub fn totals_for_date(&self, date: &str) -> Result<Totals> {
@@ -413,9 +415,15 @@ impl Store {
             let mut stmt = conn.prepare(&sql)?;
             let mut agent_map: std::collections::HashMap<String, Totals> =
                 std::collections::HashMap::new();
-            fold_rows(&mut stmt, &[&from, &to], pricing, exchange_rate, |_model, agent, t| {
-                merge(agent_map.entry(agent.to_string()).or_default(), &t);
-            })?;
+            fold_rows(
+                &mut stmt,
+                &[&from, &to],
+                pricing,
+                exchange_rate,
+                |_model, agent, t| {
+                    merge(agent_map.entry(agent.to_string()).or_default(), &t);
+                },
+            )?;
             by_agent = agent_map
                 .into_iter()
                 .map(|(agent, totals)| AgentSlice { agent, totals })
@@ -438,8 +446,8 @@ impl Store {
     /// 出现过的全部模型名(设置页定价表用)
     pub fn list_models(&self) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT DISTINCT model FROM usage_daily WHERE model != '' ORDER BY model")?;
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT model FROM usage_daily WHERE model != '' ORDER BY model")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         Ok(rows.flatten().collect())
     }
@@ -455,23 +463,26 @@ impl Store {
     ) -> Result<Vec<DailyUsage>> {
         let conn = self.conn.lock().unwrap();
         let sql = match granularity {
-            "hour" =>
+            "hour" => {
                 "SELECT date || ' ' || printf('%02d:00', hour) AS bucket, agent,
                         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                         SUM(cache_write_tokens), SUM(calls), SUM(cost)
                  FROM usage_hourly WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)
-                 GROUP BY bucket, agent ORDER BY bucket, agent",
-            "month" =>
+                 GROUP BY bucket, agent ORDER BY bucket, agent"
+            }
+            "month" => {
                 "SELECT substr(date,1,7) AS bucket, agent,
                         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                         SUM(cache_write_tokens), SUM(calls), SUM(cost)
                  FROM usage_daily WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)
-                 GROUP BY bucket, agent ORDER BY bucket, agent",
-            _ =>
+                 GROUP BY bucket, agent ORDER BY bucket, agent"
+            }
+            _ => {
                 "SELECT date, agent, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                         SUM(cache_write_tokens), SUM(calls), SUM(cost)
                  FROM usage_daily WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)
-                 GROUP BY date, agent ORDER BY date, agent",
+                 GROUP BY date, agent ORDER BY date, agent"
+            }
         };
         let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map(params![from, to, agent], |row| {
@@ -518,28 +529,31 @@ impl Store {
              GROUP BY m.agent, m.session_id
              ORDER BY MAX(m.last_ts) DESC LIMIT ?5",
         )?;
-        let rows = stmt.query_map(params![agent, from_ms, to_ms, exchange_rate, limit], |row| {
-            let input: i64 = row.get(7)?;
-            let output: i64 = row.get(8)?;
-            let cr: i64 = row.get(9)?;
-            let cw: i64 = row.get(10)?;
-            Ok(SessionUsage {
-                agent: row.get(0)?,
-                session_id: row.get(1)?,
-                project: row.get(2)?,
-                title: row.get(3)?,
-                models: row.get(4)?,
-                started_at: row.get(5)?,
-                last_active: row.get(6)?,
-                input_tokens: input as u64,
-                output_tokens: output as u64,
-                cache_read_tokens: cr as u64,
-                cache_write_tokens: cw as u64,
-                calls: row.get::<_, i64>(11)? as u64,
-                cost: row.get(12)?,
-                total_tokens: (input + output + cr + cw) as u64,
-            })
-        })?;
+        let rows = stmt.query_map(
+            params![agent, from_ms, to_ms, exchange_rate, limit],
+            |row| {
+                let input: i64 = row.get(7)?;
+                let output: i64 = row.get(8)?;
+                let cr: i64 = row.get(9)?;
+                let cw: i64 = row.get(10)?;
+                Ok(SessionUsage {
+                    agent: row.get(0)?,
+                    session_id: row.get(1)?,
+                    project: row.get(2)?,
+                    title: row.get(3)?,
+                    models: row.get(4)?,
+                    started_at: row.get(5)?,
+                    last_active: row.get(6)?,
+                    input_tokens: input as u64,
+                    output_tokens: output as u64,
+                    cache_read_tokens: cr as u64,
+                    cache_write_tokens: cw as u64,
+                    calls: row.get::<_, i64>(11)? as u64,
+                    cost: row.get(12)?,
+                    total_tokens: (input + output + cr + cw) as u64,
+                })
+            },
+        )?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
@@ -594,7 +608,8 @@ impl Store {
     pub fn load_cursors(&self, agent: &str) -> HashMap<String, FileCursor> {
         let conn = self.conn.lock().unwrap();
         let mut map = HashMap::new();
-        let Ok(mut stmt) = conn.prepare("SELECT path, data FROM file_cursors WHERE agent=?1") else {
+        let Ok(mut stmt) = conn.prepare("SELECT path, data FROM file_cursors WHERE agent=?1")
+        else {
             return map;
         };
         if let Ok(rows) = stmt.query_map(params![agent], |row| {
@@ -653,4 +668,63 @@ fn estimate_cost(t: &Totals, p: &PriceEntry, rate: f64) -> f64 {
         + t.cache_write_tokens as f64 * p.cache_write)
         / 1e6
         * rate
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Store;
+    use crate::model::UsageRecord;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db() -> std::path::PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("otr-store-{suffix}.db"))
+    }
+
+    fn record() -> UsageRecord {
+        UsageRecord {
+            agent: "dsh".into(),
+            model: Some("m".into()),
+            provider: Some("p".into()),
+            ts: 1_780_000_000_000,
+            input_tokens: 10,
+            calls: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn apply_records_can_split_daily_and_hourly_writes() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let mut daily = record();
+        daily.skip_hourly = true;
+        let mut hourly = record();
+        hourly.skip_daily = true;
+        hourly.bucket_date = Some("2026-08-31".into());
+        hourly.bucket_hour = Some(9);
+        store.apply_records(&[daily, hourly]).unwrap();
+        assert_eq!(
+            store
+                .totals_for_date(&crate::model::local_date(1_780_000_000_000))
+                .unwrap()
+                .input_tokens,
+            10
+        );
+        let rows = store
+            .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour")
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].date, "2026-08-31 09:00");
+        assert_eq!(rows[0].input_tokens, 10);
+        store.wipe_agent("dsh").unwrap();
+        assert!(store
+            .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour")
+            .unwrap()
+            .is_empty());
+        let _ = std::fs::remove_file(path);
+    }
 }

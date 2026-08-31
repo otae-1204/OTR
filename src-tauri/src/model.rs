@@ -36,6 +36,15 @@ pub struct UsageRecord {
     /// 只写会话表、不写按天表(如 DSH projcache,按天数据另由 ledger 提供,避免双计)
     #[serde(default)]
     pub skip_daily: bool,
+    /// 不写按小时表(按天快照没有可靠的小时信息时使用)
+    #[serde(default)]
+    pub skip_hourly: bool,
+    /// 覆盖按天/小时桶日期(例如 DSH 会话快照的日期)
+    #[serde(default)]
+    pub bucket_date: Option<String>,
+    /// 覆盖小时桶(0-23);缺省从 ts 的本地时间计算
+    #[serde(default)]
+    pub bucket_hour: Option<i64>,
     /// 会话"最后活跃"时间;缺省用 ts
     #[serde(default)]
     pub touch_ts: Option<i64>,

@@ -48,7 +48,9 @@ Custom agents are supported: point any of the three built-in parsers (Claude Cod
 ```bash
 npm install
 npm run tauri dev
-npm run tauri build
+npm run tauri build    # NSIS installer
+npm run build:portable # Portable ZIP
+npm run build:release  # Both NSIS and portable packages
 ```
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design doc.

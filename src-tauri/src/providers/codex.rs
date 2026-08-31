@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -6,11 +8,12 @@ use crate::error::Result;
 use crate::model::{iso_to_ms, now_ms, UsageRecord};
 use crate::paths;
 use crate::providers::jsonl_util::{self, u64f};
-use crate::providers::{ScanCtx, AgentProvider};
+use crate::providers::{AgentProvider, ScanCtx};
 
 pub struct CodexProvider;
 
 const AGENT: &str = "codex";
+pub const PARSER_VERSION: u64 = 1;
 
 impl AgentProvider for CodexProvider {
     fn id(&self) -> &str {
@@ -89,7 +92,9 @@ fn session_meta_thread_info(path: &Path) -> Option<(Option<String>, Option<Strin
         if !line.contains("\"session_meta\"") {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         let payload = v.get("payload").unwrap_or(&Value::Null);
         let thread_id = payload
             .get("id")
@@ -127,24 +132,35 @@ fn scan_file(
 ) -> Result<()> {
     let key = path.to_string_lossy().to_string();
     let mut cursor = ctx.cursors.get(&key).cloned().unwrap_or_default();
+    let previous_offset = cursor.offset;
     let Some(update) = jsonl_util::read_appended(path, cursor.offset)? else {
         return Ok(());
     };
 
-    let mut session_id: Option<String> = None;
-    let mut project: Option<String> = None;
-    let mut model: Option<String> = None;
+    if update.new_offset < previous_offset {
+        cursor.extra = serde_json::Value::Null;
+    }
+
+    let mut session_id = cursor_string(&cursor, "session_id");
+    let mut project = cursor_string(&cursor, "project");
+    let mut model = cursor_string(&cursor, "model");
     let calls_prev = cursor
         .extra
         .get("calls")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     let mut new_calls = 0u64;
-    let mut last_ts: i64 = cursor
-        .extra
-        .get("ts")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let mut last_ts: i64 = cursor.extra.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    if cursor.offset > 0 && (session_id.is_none() || project.is_none() || model.is_none()) {
+        recover_context(
+            path,
+            cursor.offset,
+            &mut session_id,
+            &mut project,
+            &mut model,
+        );
+    }
 
     for line in &update.lines {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
@@ -156,12 +172,14 @@ fn scan_file(
             .get("type")
             .and_then(|t| t.as_str())
             .unwrap_or(top_type);
+        update_model(&payload, &mut model);
 
         match ptype {
             "session_meta" => {
                 if session_id.is_none() {
                     session_id = payload
                         .get("session_id")
+                        .or_else(|| payload.get("id"))
                         .and_then(|x| x.as_str())
                         .map(|s| s.to_string());
                 }
@@ -177,9 +195,6 @@ fn scan_file(
                             last_ts = ms;
                         }
                     }
-                }
-                if let Some(m) = payload.get("model").and_then(|x| x.as_str()) {
-                    model = Some(m.to_string());
                 }
             }
             "token_count" => {
@@ -216,23 +231,259 @@ fn scan_file(
                     new_calls += 1;
                 }
             }
-            _ => {
-                // turn_context 等事件里可能带模型名,尽力抓取
-                if model.is_none() {
-                    if let Some(m) = payload.get("model").and_then(|x| x.as_str()) {
-                        if !m.is_empty() {
-                            model = Some(m.to_string());
-                        }
-                    }
-                }
-            }
+            _ => {}
         }
     }
 
     cursor.offset = update.new_offset;
     cursor.size = update.size;
     cursor.mtime_ms = jsonl_util::file_mtime_ms(path);
-    cursor.extra = serde_json::json!({ "calls": calls_prev + new_calls, "ts": last_ts });
+    cursor.extra = serde_json::json!({
+        "version": PARSER_VERSION,
+        "calls": calls_prev + new_calls,
+        "ts": last_ts,
+        "session_id": session_id,
+        "project": project,
+        "model": model,
+    });
     ctx.cursors.insert(key, cursor);
     Ok(())
+}
+
+fn cursor_string(cursor: &crate::providers::FileCursor, key: &str) -> Option<String> {
+    cursor
+        .extra
+        .get(key)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn update_model(payload: &Value, model: &mut Option<String>) {
+    if let Some(value) = payload.get("model").and_then(|value| value.as_str()) {
+        if !value.is_empty() {
+            *model = Some(value.to_owned());
+        }
+    }
+}
+
+fn recover_context(
+    path: &Path,
+    offset: u64,
+    session_id: &mut Option<String>,
+    project: &mut Option<String>,
+    model: &mut Option<String>,
+) {
+    let Ok(file) = File::open(path) else {
+        return;
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut read = 0u64;
+    while reader
+        .read_until(b'\n', &mut line)
+        .ok()
+        .filter(|size| *size > 0)
+        .is_some()
+    {
+        let line_size = line.len() as u64;
+        if read.saturating_add(line_size) > offset {
+            break;
+        }
+        read = read.saturating_add(line_size);
+        let text = String::from_utf8_lossy(&line);
+        let Ok(value) = serde_json::from_str::<Value>(text.trim()) else {
+            line.clear();
+            continue;
+        };
+        let top_type = value
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+        let payload_type = payload
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or(top_type);
+        if payload_type == "session_meta" {
+            if session_id.is_none() {
+                *session_id = payload
+                    .get("session_id")
+                    .or_else(|| payload.get("id"))
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned);
+            }
+            if project.is_none() {
+                *project = payload
+                    .get("cwd")
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned);
+            }
+        }
+        update_model(&payload, model);
+        line.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scan_roots;
+    use crate::providers::{FileCursor, ScanCtx};
+    use std::collections::HashMap;
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn fixture_root() -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("otr-codex-{suffix}"));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn write_fixture(file: &mut std::fs::File, model: &str, input: u64) {
+        write_event(
+            file,
+            serde_json::json!({
+                "timestamp": "2026-08-31T07:53:18.000Z",
+                "type": "session_meta",
+                "payload": {
+                    "type": "session_meta",
+                    "id": "session-1",
+                    "cwd": r"C:\Code\Token-Show"
+                }
+            }),
+        );
+        write_event(
+            file,
+            serde_json::json!({
+                "timestamp": "2026-08-31T07:53:19.000Z",
+                "type": "response_item",
+                "payload": {"type": "turn_context", "model": model}
+            }),
+        );
+        write_token_count(file, "2026-08-31T07:53:20.000Z", input, 1);
+    }
+
+    fn write_event(file: &mut std::fs::File, value: serde_json::Value) {
+        writeln!(file, "{value}").unwrap();
+    }
+
+    fn write_token_count(file: &mut std::fs::File, timestamp: &str, input: u64, output: u64) {
+        write_event(
+            file,
+            serde_json::json!({
+                "timestamp": timestamp,
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": input,
+                            "cached_input_tokens": 0,
+                            "output_tokens": output
+                        }
+                    }
+                }
+            }),
+        );
+    }
+
+    fn scan(
+        root: &PathBuf,
+        cursors: &mut HashMap<String, FileCursor>,
+        full: bool,
+    ) -> Vec<crate::model::UsageRecord> {
+        let mut state = serde_json::Value::Null;
+        let mut ctx = ScanCtx {
+            full,
+            cursors,
+            state: &mut state,
+        };
+        scan_roots(std::slice::from_ref(root), "codex", &mut ctx).unwrap()
+    }
+
+    #[test]
+    fn incremental_scan_restores_model_from_cursor() {
+        let root = fixture_root();
+        let path =
+            root.join("rollout-2026-08-31T07-53-17-11111111-2222-3333-4444-555555555555.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        write_fixture(&mut file, "gpt-5.6-sol", 10);
+        let mut cursors = HashMap::new();
+        let first = scan(&root, &mut cursors, true);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(first[0].session_id.as_deref(), Some("session-1"));
+        assert_eq!(first[0].project.as_deref(), Some(r"C:\Code\Token-Show"));
+
+        write_token_count(&mut file, "2026-08-31T07:53:21.000Z", 20, 2);
+        file.flush().unwrap();
+        let second = scan(&root, &mut cursors, false);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(second[0].session_id.as_deref(), Some("session-1"));
+        assert_eq!(second[0].project.as_deref(), Some(r"C:\Code\Token-Show"));
+        assert_eq!(
+            cursors.values().next().unwrap().extra["model"],
+            "gpt-5.6-sol"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_cursor_recovers_context_from_file_prefix() {
+        let root = fixture_root();
+        let path =
+            root.join("rollout-2026-08-31T07-53-17-11111111-2222-3333-4444-555555555555.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        write_fixture(&mut file, "gpt-5.6-sol", 10);
+        let offset = file.metadata().unwrap().len();
+        write_token_count(&mut file, "2026-08-31T07:53:21.000Z", 20, 2);
+        file.flush().unwrap();
+        let mut cursors = HashMap::from([(
+            path.to_string_lossy().to_string(),
+            FileCursor {
+                offset,
+                size: offset,
+                ..Default::default()
+            },
+        )]);
+        let records = scan(&root, &mut cursors, false);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(records[0].session_id.as_deref(), Some("session-1"));
+        assert_eq!(records[0].project.as_deref(), Some(r"C:\Code\Token-Show"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incremental_scan_tracks_model_switches() {
+        let root = fixture_root();
+        let path =
+            root.join("rollout-2026-08-31T07-53-17-11111111-2222-3333-4444-555555555555.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        write_fixture(&mut file, "gpt-5.6-sol", 10);
+        let mut cursors = HashMap::new();
+        let first = scan(&root, &mut cursors, true);
+        assert_eq!(first[0].model.as_deref(), Some("gpt-5.6-sol"));
+        write_event(
+            &mut file,
+            serde_json::json!({
+                "timestamp": "2026-08-31T07:53:21.000Z",
+                "type": "response_item",
+                "payload": {"type": "turn_context", "model": "gpt-5.6-terra"}
+            }),
+        );
+        write_token_count(&mut file, "2026-08-31T07:53:22.000Z", 30, 3);
+        file.flush().unwrap();
+        let second = scan(&root, &mut cursors, false);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].model.as_deref(), Some("gpt-5.6-terra"));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

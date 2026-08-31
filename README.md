@@ -57,6 +57,8 @@ OTR(**O**tae's **T**oken **R**adar)是你电脑上所有 AI Coding Agent 的 Tok
 npm install
 npm run tauri dev     # 开发(端口 5174)
 npm run tauri build   # 打包 NSIS 安装包
+npm run build:portable # 打包便携版 ZIP
+npm run build:release  # 同时生成 NSIS 安装版和便携版
 ```
 
 要求:Node 18+、Rust 1.77+、Windows(WebView2)。

@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use providers::{FileCursor, ScanCtx, AgentProvider};
+use providers::{AgentProvider, FileCursor, ScanCtx};
 use settings::Settings;
 use store::Store;
 
@@ -57,11 +57,14 @@ pub fn run() {
                             for ext in ["", "-wal", "-shm"] {
                                 let from = legacy.join(format!("{db_name}{ext}"));
                                 if from.exists() {
-                                    let _ = std::fs::copy(&from, dir.join(format!("radar.db{ext}")));
+                                    let _ =
+                                        std::fs::copy(&from, dir.join(format!("radar.db{ext}")));
                                 }
                             }
-                            let _ =
-                                std::fs::copy(legacy.join("settings.json"), dir.join("settings.json"));
+                            let _ = std::fs::copy(
+                                legacy.join("settings.json"),
+                                dir.join("settings.json"),
+                            );
                             break 'migration;
                         }
                     }
@@ -121,7 +124,10 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
         .map(|b| b.as_ref())
         .chain(customs.iter().map(|b| b.as_ref()))
         .collect();
+    let codex_parser_version = providers::codex::PARSER_VERSION.to_string();
+    let dsh_parser_version = providers::dsh::PARSER_VERSION.to_string();
     let mut changed = false;
+    let mut did_full_scan = false;
 
     for p in all {
         if let Some(want) = only {
@@ -135,9 +141,29 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
         if !p.detect() {
             continue;
         }
+        let provider_full = full
+            || (p.id() == "codex"
+                && state.store.get_kv("parser_version:codex").as_deref()
+                    != Some(codex_parser_version.as_str()))
+            || (p.id() == "dsh"
+                && state.store.get_kv("parser_version:dsh").as_deref()
+                    != Some(dsh_parser_version.as_str()));
+        did_full_scan |= provider_full;
         let result = {
             let mut meta = state.scan_meta.lock().unwrap();
-            if full {
+            if !meta.cursors.contains_key(p.id()) {
+                meta.cursors
+                    .insert(p.id().to_string(), state.store.load_cursors(p.id()));
+            }
+            if !meta.states.contains_key(p.id()) {
+                let restored = state
+                    .store
+                    .get_kv(&format!("state:{}", p.id()))
+                    .and_then(|value| serde_json::from_str(&value).ok())
+                    .unwrap_or(serde_json::Value::Null);
+                meta.states.insert(p.id().to_string(), restored);
+            }
+            if provider_full {
                 let _ = state.store.wipe_agent(p.id());
                 meta.cursors.remove(p.id());
                 meta.states.remove(p.id());
@@ -145,12 +171,9 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
             // 通过 &mut 引用做字段级拆分借用(直接在 MutexGuard 上连续借用两个字段会 E0499)
             let m: &mut ScanMeta = &mut meta;
             let cursors = m.cursors.entry(p.id().to_string()).or_default();
-            let mut st = m
-                .states
-                .remove(p.id())
-                .unwrap_or(serde_json::Value::Null);
+            let mut st = m.states.remove(p.id()).unwrap_or(serde_json::Value::Null);
             let mut ctx = ScanCtx {
-                full,
+                full: provider_full,
                 cursors,
                 state: &mut st,
             };
@@ -174,17 +197,27 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
                 }
                 if let Some(st) = meta.states.get(p.id()) {
                     if let Ok(s) = serde_json::to_string(st) {
-                        let _ = state
-                            .store
-                            .set_kv(&format!("state:{}", p.id()), &s);
+                        let _ = state.store.set_kv(&format!("state:{}", p.id()), &s);
                     }
+                }
+                if p.id() == "codex" {
+                    let _ = state.store.set_kv(
+                        "parser_version:codex",
+                        &providers::codex::PARSER_VERSION.to_string(),
+                    );
+                }
+                if p.id() == "dsh" {
+                    let _ = state.store.set_kv(
+                        "parser_version:dsh",
+                        &providers::dsh::PARSER_VERSION.to_string(),
+                    );
                 }
             }
             Err(e) => eprintln!("[{}] scan: {}", p.id(), e),
         }
     }
 
-    if changed || full {
+    if changed || full || did_full_scan {
         tray::update_today_tooltip(app);
         let _ = app.emit("usage://updated", ());
     }
