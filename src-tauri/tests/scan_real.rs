@@ -23,7 +23,7 @@ fn scan_real_data_smoke() {
             state: &mut state,
         };
         let recs = p.scan(&mut ctx).expect("scan should not fail");
-        // 台账口径(进入按天表的数据);DSH 的会话流记录 skip_daily=true,与台账天然重复
+        // 实际进入按天表的数据;DSH 有台账时取台账,无台账时由会话日志回退。
         let daily: u64 = recs
             .iter()
             .filter(|r| !r.skip_daily)

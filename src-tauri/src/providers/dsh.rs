@@ -13,7 +13,14 @@ use crate::providers::{AgentProvider, ScanCtx};
 pub struct DshProvider;
 
 const AGENT: &str = "dsh";
-pub const PARSER_VERSION: u64 = 2;
+pub const PARSER_VERSION: u64 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum DshDailySource {
+    Ledger,
+    SessionLogs,
+}
 
 impl AgentProvider for DshProvider {
     fn id(&self) -> &'static str {
@@ -37,12 +44,38 @@ impl AgentProvider for DshProvider {
             serde_json::from_value(std::mem::take(ctx.state)).unwrap_or_default();
         let mut records = Vec::new();
 
-        // 按天表数据源:cost-meter/ledger.json(自带按天×按模型聚合与成本)
-        if let Err(e) = scan_ledger(&mut st, &mut records) {
-            eprintln!("[dsh] ledger: {}", e);
+        let ledger = match load_ledger() {
+            Ok(value) => value,
+            Err(e) => {
+                eprintln!("[dsh] ledger: {}", e);
+                None
+            }
+        };
+        let mut session_paths = Vec::new();
+        if let Err(e) =
+            collect_session_logs(&paths::dsh_home().join("sessions"), &mut session_paths)
+        {
+            eprintln!("[dsh] session discovery: {}", e);
         }
-        // 按小时表数据源:会话日志中的 usage 事件(按真实事件时间分桶)
-        let logs_available = match scan_session_logs(&mut st, &mut records) {
+        let daily_source = select_daily_source(
+            &mut st,
+            ledger.as_ref().is_some_and(ledger_has_daily_data),
+            !session_paths.is_empty(),
+        );
+
+        // 有 cost-meter 台账时继续以其作为按天权威数据;无台账设备则由原始日志回退。
+        if daily_source == Some(DshDailySource::Ledger) {
+            if let Some(value) = ledger.as_ref() {
+                scan_ledger(&mut st, &mut records, value);
+            }
+        }
+        // 按小时表始终使用会话日志的真实事件时间;回退模式下同一增量也写入按天表。
+        let logs_available = match scan_session_logs(
+            &mut st,
+            &mut records,
+            &session_paths,
+            daily_source == Some(DshDailySource::SessionLogs),
+        ) {
             Ok(available) => available,
             Err(e) => {
                 eprintln!("[dsh] session logs: {}", e);
@@ -51,11 +84,11 @@ impl AgentProvider for DshProvider {
         };
         // 某些旧设备只有台账没有会话日志,至少保留会话 at 的降级数据。
         if !logs_available {
-            if let Err(e) = scan_ledger_sessions(&mut st, &mut records) {
-                eprintln!("[dsh] ledger sessions: {}", e);
+            if let Some(value) = ledger.as_ref() {
+                scan_ledger_sessions(&mut st, &mut records, value);
             }
         }
-        // 会话表数据源:session_projcache.json(按会话×模型;skip_daily 避免与 ledger 双计)
+        // 会话表数据源:session_projcache.json(按会话×模型;不再写日/小时,避免与选定数据源双计)
         if let Err(e) = scan_projcache(&mut st, &mut records) {
             eprintln!("[dsh] projcache: {}", e);
         }
@@ -114,11 +147,24 @@ impl DshEntry {
             && self.calls == 0
             && self.cost.abs() < f64::EPSILON
     }
+
+    fn floor_at(&mut self, previous: &DshEntry) {
+        self.input = self.input.max(previous.input);
+        self.output = self.output.max(previous.output);
+        self.cache_read = self.cache_read.max(previous.cache_read);
+        self.cache_write = self.cache_write.max(previous.cache_write);
+        self.reasoning = self.reasoning.max(previous.reasoning);
+        self.calls = self.calls.max(previous.calls);
+        self.cost = self.cost.max(previous.cost);
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct DshState {
+    /// 首次发现的可用按天数据源;运行中不自动切换,避免 ledger 出现/消失时重复累计。
+    #[serde(default)]
+    daily_source: Option<DshDailySource>,
     /// key: "日期|provider:model"
     #[serde(default)]
     ledger: HashMap<String, DshEntry>,
@@ -155,6 +201,44 @@ fn read_json_file(path: &Path) -> Result<Value> {
     Err(last_error
         .expect("JSON parse must fail before retry exhaustion")
         .into())
+}
+
+fn load_ledger() -> Result<Option<Value>> {
+    let path = paths::dsh_storages().join("cost-meter").join("ledger.json");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    read_json_file(&path).map(Some)
+}
+
+fn ledger_has_daily_data(value: &Value) -> bool {
+    value
+        .get("days")
+        .and_then(|days| days.as_object())
+        .is_some_and(|days| {
+            days.values().any(|day| {
+                day.get("byProviderModel")
+                    .and_then(|models| models.as_object())
+                    .is_some_and(|models| !models.is_empty())
+            })
+        })
+}
+
+fn select_daily_source(
+    state: &mut DshState,
+    ledger_available: bool,
+    logs_available: bool,
+) -> Option<DshDailySource> {
+    if state.daily_source.is_none() {
+        state.daily_source = if ledger_available {
+            Some(DshDailySource::Ledger)
+        } else if logs_available {
+            Some(DshDailySource::SessionLogs)
+        } else {
+            None
+        };
+    }
+    state.daily_source
 }
 
 fn date_start_ms(date: &str) -> i64 {
@@ -199,14 +283,9 @@ fn record_from_entry(
     }
 }
 
-fn scan_ledger(st: &mut DshState, out: &mut Vec<UsageRecord>) -> Result<()> {
-    let path = paths::dsh_storages().join("cost-meter").join("ledger.json");
-    if !path.is_file() {
-        return Ok(());
-    }
-    let v = read_json_file(&path)?;
-    let Some(days) = v.get("days").and_then(|d| d.as_object()) else {
-        return Ok(());
+fn scan_ledger(st: &mut DshState, out: &mut Vec<UsageRecord>, ledger: &Value) {
+    let Some(days) = ledger.get("days").and_then(|d| d.as_object()) else {
+        return;
     };
     let mut alive: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (date, day) in days {
@@ -229,17 +308,11 @@ fn scan_ledger(st: &mut DshState, out: &mut Vec<UsageRecord>) -> Result<()> {
     }
     // 台账里消失的日期不再保留基准(避免状态无限膨胀)
     st.ledger.retain(|k, _| alive.contains(k));
-    Ok(())
 }
 
-fn scan_ledger_sessions(st: &mut DshState, out: &mut Vec<UsageRecord>) -> Result<()> {
-    let path = paths::dsh_storages().join("cost-meter").join("ledger.json");
-    if !path.is_file() {
-        return Ok(());
-    }
-    let v = read_json_file(&path)?;
-    let Some(days) = v.get("days").and_then(|d| d.as_object()) else {
-        return Ok(());
+fn scan_ledger_sessions(st: &mut DshState, out: &mut Vec<UsageRecord>, ledger: &Value) {
+    let Some(days) = ledger.get("days").and_then(|d| d.as_object()) else {
+        return;
     };
     let mut alive = std::collections::HashSet::new();
     for (date, day) in days {
@@ -278,7 +351,6 @@ fn scan_ledger_sessions(st: &mut DshState, out: &mut Vec<UsageRecord>) -> Result
         }
     }
     st.ledger_sessions.retain(|key, _| alive.contains(key));
-    Ok(())
 }
 
 fn collect_session_logs(root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
@@ -413,10 +485,12 @@ fn scan_session_file(path: &Path, aggregate: &mut HashMap<String, DshEntry>) -> 
     true
 }
 
-fn scan_session_logs(st: &mut DshState, out: &mut Vec<UsageRecord>) -> Result<bool> {
-    let root = paths::dsh_home().join("sessions");
-    let mut paths = Vec::new();
-    collect_session_logs(&root, &mut paths)?;
+fn scan_session_logs(
+    st: &mut DshState,
+    out: &mut Vec<UsageRecord>,
+    paths: &[PathBuf],
+    include_daily: bool,
+) -> Result<bool> {
     if paths.is_empty() {
         return Ok(false);
     }
@@ -431,18 +505,21 @@ fn scan_session_logs(st: &mut DshState, out: &mut Vec<UsageRecord>) -> Result<bo
         }
     }
     if failed {
-        // 任一日志仍在写入或损坏时保留旧快照,避免下一次恢复时整份日志
-        // 被当成新增长量再次写入小时表。
-        return Ok(true);
+        // 个别日志仍在写入或损坏时不让绝对快照倒退;其余可读日志的新小时桶
+        // 仍可继续入库,损坏日志恢复后只补超过旧快照的增量。
+        for (key, previous) in &st.hourly {
+            current
+                .entry(key.clone())
+                .and_modify(|entry| entry.floor_at(previous))
+                .or_insert_with(|| previous.clone());
+        }
     }
     if !usable {
         // 日志文件存在但当前仍在写入/损坏时,不要切换到台账降级路径,
         // 否则日志恢复后同一增量可能被重复记入小时表。
         return Ok(true);
     }
-    let mut alive = std::collections::HashSet::new();
     for (key, cur) in &current {
-        alive.insert(key.clone());
         let prev = st.hourly.get(key).cloned().unwrap_or_default();
         let delta = cur.delta_from(&prev);
         if delta.is_zero() {
@@ -462,17 +539,19 @@ fn scan_session_logs(st: &mut DshState, out: &mut Vec<UsageRecord>) -> Result<bo
             Some(date),
             Some(hour),
         );
-        record.skip_daily = true;
+        record.skip_daily = !include_daily;
         out.push(record);
     }
     st.hourly = current;
-    st.hourly.retain(|key, _| alive.contains(key));
     Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{local_date, local_hour, scan_session_file, DshEntry};
+    use super::{
+        local_date, local_hour, scan_session_file, scan_session_logs, select_daily_source,
+        DshDailySource, DshEntry, DshState,
+    };
     use std::collections::HashMap;
     use std::fs;
     use std::io::Write;
@@ -535,6 +614,97 @@ mod tests {
             ..Default::default()
         };
         assert!(current.delta_from(&current).is_zero());
+    }
+
+    #[test]
+    fn raw_session_logs_feed_daily_when_ledger_is_unavailable() {
+        let path = temp_path("jsonl");
+        let ts = 1_780_000_000_000i64;
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n{}\n",
+                serde_json::json!({"type":"session","createdAt":ts - 1}),
+                serde_json::json!({
+                    "type":"request/header","time":ts,
+                    "data":{"header":{"config":{"provider":"p","model":"m"}}}
+                }),
+                serde_json::json!({
+                    "type":"assistant/message","time":ts,
+                    "data":{"turn":1,"step":1,"usage":{"inputTokens":12,"outputTokens":3}}
+                })
+            ),
+        )
+        .unwrap();
+        let mut state = DshState::default();
+        let mut records = Vec::new();
+        assert!(scan_session_logs(&mut state, &mut records, &[path.clone()], true).unwrap());
+        assert_eq!(records.len(), 1);
+        assert!(!records[0].skip_daily);
+        assert!(!records[0].skip_hourly);
+        assert_eq!(records[0].input_tokens, 12);
+
+        let mut second = Vec::new();
+        assert!(scan_session_logs(&mut state, &mut second, &[path.clone()], true).unwrap());
+        assert!(second.is_empty());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn daily_source_does_not_switch_after_fallback_has_started() {
+        let mut state = DshState::default();
+        assert_eq!(
+            select_daily_source(&mut state, false, true),
+            Some(DshDailySource::SessionLogs)
+        );
+        assert_eq!(
+            select_daily_source(&mut state, true, true),
+            Some(DshDailySource::SessionLogs)
+        );
+
+        let mut ledger_state = DshState::default();
+        assert_eq!(
+            select_daily_source(&mut ledger_state, true, true),
+            Some(DshDailySource::Ledger)
+        );
+    }
+
+    #[test]
+    fn initial_scan_keeps_usable_logs_when_another_log_is_broken() {
+        let valid = temp_path("jsonl");
+        let broken = temp_path("zstd");
+        let ts = 1_780_000_000_000i64;
+        fs::write(
+            &valid,
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({
+                    "type":"request/header","time":ts,
+                    "data":{"header":{"config":{"provider":"p","model":"m"}}}
+                }),
+                serde_json::json!({
+                    "type":"assistant/message","time":ts,
+                    "data":{"turn":1,"step":1,"usage":{"inputTokens":5,"outputTokens":1}}
+                })
+            ),
+        )
+        .unwrap();
+        fs::write(&broken, b"not a zstd stream").unwrap();
+
+        let mut state = DshState::default();
+        let mut records = Vec::new();
+        assert!(scan_session_logs(
+            &mut state,
+            &mut records,
+            &[valid.clone(), broken.clone()],
+            true
+        )
+        .unwrap());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].input_tokens, 5);
+
+        fs::remove_file(valid).unwrap();
+        fs::remove_file(broken).unwrap();
     }
 }
 

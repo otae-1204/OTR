@@ -103,11 +103,11 @@ pub struct UsageRecord {
 ### 5.1 DSH —— 优先级最高,数据质量最好
 | 项 | 内容 |
 |---|---|
-| 数据源 | `$DSH_HOME/storages/cost-meter/ledger.json`(按天台账)、`$DSH_HOME/storages/session_projcache.json`(按会话)、`$DSH_HOME/sessions/**/session.jsonl[.zstd]`(按小时) |
+| 数据源 | `$DSH_HOME/storages/cost-meter/ledger.json`(可选按天台账)、`$DSH_HOME/storages/session_projcache.json`(按会话)、`$DSH_HOME/sessions/**/session.jsonl[.zstd]`(按小时及无台账时的按天回退) |
 | 格式 | 整文件 JSON,自描述 `version` 字段 |
 | 台账结构 | `days["2026-08-29"] = { date, input, output, cacheRead, cacheWrite, reasoning, calls, cost, byProviderModel: { "<provider:model>": {...} } }` |
 | 会话结构 | `tables.sessions[id].rows.costUsage = { provider, model, totals: {input, output, cacheRead, cacheWrite, reasoning, cost}, byModel: {...} }`,`identity.cwd` 可反解项目路径 |
-| 解析要点 | 台账与投影文件直接整读并做快照增量;按小时从会话日志的 `assistant/message` / `assistant/chunk` usage 事件时间分桶,支持 zstd 多 frame;`DSH_HOME` 与宿主保持一致,未找到日志时降级使用会话创建时间 |
+| 解析要点 | 台账存在时作为按天权威数据并复用成本;未安装 cost-meter、没有台账时,会话日志的同一增量同时写入按天与按小时表;按天数据源首次选定后保持不变,避免运行中台账出现/消失导致双计;日志支持 zstd 多 frame,`DSH_HOME` 与宿主保持一致,未找到日志时降级使用台账会话时间 |
 | 会话原始流 | `$DSH_HOME/sessions/<编码cwd>/<uuid>/session.jsonl.zstd` 是 zstd 多 frame;按小时趋势读取 usage 事件,只读不修改 |
 
 ### 5.2 Claude Code
