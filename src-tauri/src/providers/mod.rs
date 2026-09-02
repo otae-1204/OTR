@@ -9,6 +9,7 @@ use crate::settings::Settings;
 
 pub mod claude_code;
 pub mod codex;
+pub mod cursor;
 pub mod custom;
 pub mod dsh;
 pub mod jsonl_util;
@@ -55,6 +56,7 @@ pub fn all_providers() -> Vec<Box<dyn AgentProvider>> {
         Box::new(zcode::ZcodeProvider),
         Box::new(opencode::OpencodeProvider),
         Box::new(pi::PiProvider),
+        Box::new(cursor::CursorProvider),
     ]
 }
 

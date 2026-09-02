@@ -48,3 +48,34 @@ pub fn opencode_db() -> PathBuf {
         .join("opencode")
         .join("opencode.db")
 }
+
+/// Cursor IDE 用户目录:Windows %APPDATA%\Cursor,macOS Application Support,Linux ~/.config/Cursor
+pub fn cursor_user_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        return dirs::data_dir()
+            .unwrap_or_else(|| home().join("AppData").join("Roaming"))
+            .join("Cursor");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return home()
+            .join("Library")
+            .join("Application Support")
+            .join("Cursor");
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".config"))
+            .join("Cursor")
+    }
+}
+
+pub fn cursor_state_db() -> PathBuf {
+    cursor_user_dir()
+        .join("User")
+        .join("globalStorage")
+        .join("state.vscdb")
+}

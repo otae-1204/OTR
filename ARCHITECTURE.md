@@ -41,7 +41,7 @@
 │  aggregator(内存聚合)  store(SQLite快照+游标)  pricing   │
 ├─────────────────────────────────────────────────────────┤
 │  Provider 层(AgentProvider trait,每个 Agent 一个适配器)  │
-│  claude_code │ codex │ zcode │ dsh │ opencode │ ...      │
+│  claude_code │ codex │ zcode │ dsh │ opencode │ pi │ cursor │
 ├─────────────────────────────────────────────────────────┤
 │  基础设施   watcher(notify 监听+防抖)  paths(路径探测)    │
 └─────────────────────────────────────────────────────────┘
@@ -138,8 +138,22 @@ pub struct UsageRecord {
 | 解析要点 | **WAL 模式**:直接打开可能读到中间态。策略:以 `SQLITE_OPEN_READONLY | immutable` 打开快照视图,或把 `-wal` 一起考虑;检测版本,旧版走 JSON storage 解析 |
 | 优先级 | P2(表结构未逐一验证,实现时先探表) |
 
-### 5.6 候选扩展(本机已检测到,放路线图)
-`.codebuddy` / `.codebuddycn`(CodeBuddy)、`.kimi-code`(Kimi CLI)、`.copilot`(Copilot CLI)、`.qoder-cli`(Qoder)、`.pi`。
+### 5.6 Pi
+| 项 | 内容 |
+|---|---|
+| 数据源 | `~/.pi/agent/sessions/` |
+| 格式 | JSONL,自带美元成本 |
+
+### 5.7 Cursor
+| 项 | 内容 |
+|---|---|
+| 数据源 | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` 只读取出 `cursorAuth/accessToken`,再请求 `POST https://cursor.com/api/dashboard/get-filtered-usage-events` |
+| 为何走网络 | Cursor 3.x 起 `cursorDiskKV` 里 `tokenCount` 恒为 `{0,0}`,agent-transcripts / ai-code-tracking 也没有 token;官方口径在用量 Dashboard |
+| 解析要点 | Cookie `WorkosCursorSessionToken=<sub>%3A%3A<jwt>`;按事件增量(时间戳水位 + 指纹去重);成本用 `tokenUsage.totalCents/100` 美元;失败时保留已有快照,不阻断其他 Agent |
+| 监听 | `state.vscdb` 与 `-wal`,防抖后再拉接口,Provider 内 60s 节流 |
+
+### 5.8 候选扩展(本机已检测到,放路线图)
+`.codebuddy` / `.codebuddycn`(CodeBuddy)、`.kimi-code`(Kimi CLI)、`.copilot`(Copilot CLI)、`.qoder-cli`(Qoder)。
 实现顺序建议:每次只加一个,先 `detect()` 再摸数据格式。Gemini CLI / Qwen Code 本机未装,不排期。
 
 ## 6. 后端模块划分(src-tauri/src/)
@@ -161,7 +175,9 @@ src-tauri/
     │   ├── claude_code.rs     # projects/**/*.jsonl
     │   ├── codex.rs           # sessions/YYYY/MM/DD/rollout-*.jsonl
     │   ├── zcode.rs           # cli/rollout/model-io-sess_*.jsonl
-    │   └── opencode.rs        # opencode.db (SQLite)
+    │   ├── opencode.rs        # opencode.db (SQLite)
+    │   ├── pi.rs              # sessions JSONL
+    │   └── cursor.rs          # 本机 JWT + dashboard usage events
     ├── watcher.rs             # notify + debounce → 分发给对应 provider
     ├── aggregator.rs          # 内存聚合:今日/近7天/近30天/全部 × agent/model
     ├── store.rs               # SQLite:快照写入、游标表、历史查询

@@ -71,6 +71,7 @@ pub const BUILTIN_AGENTS: &[&str] = &[
     "zcode",
     "opencode",
     "pi",
+    "cursor",
 ];
 
 impl Default for Settings {

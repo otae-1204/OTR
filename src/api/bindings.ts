@@ -117,6 +117,7 @@ export const AGENT_LABELS: Record<string, string> = {
   zcode: "ZCode",
   opencode: "OpenCode",
   pi: "Pi",
+  cursor: "Cursor",
 };
 
 export const AGENT_COLORS: Record<string, string> = {
@@ -126,6 +127,7 @@ export const AGENT_COLORS: Record<string, string> = {
   zcode: "#10b981",
   opencode: "#06b6d4",
   pi: "#ec4899",
+  cursor: "#A3A3A3",
 };
 
 const FALLBACK_PALETTE = [

@@ -1,6 +1,6 @@
 [package]
 name = "otr"
-version = "0.1.3"
+version = "0.1.4"
 description = "Otae's Token Radar"
 edition = "2021"
 
@@ -22,6 +22,8 @@ chrono = "0.4"
 zstd = "0.13"
 dirs = "6"
 thiserror = "2"
+ureq = { version = "2.12", features = ["json"] }
+base64 = "0.22"
 
 [profile.release]
 strip = true

@@ -2,6 +2,7 @@ import dshPng from "../assets/agents/dsh.png";
 import zcodePng from "../assets/agents/zcode.png";
 import {
   ClaudeMarkIcon,
+  CursorMarkIcon,
   OpenAIMarkIcon,
   OpenCodeMarkIcon,
   PiMarkIcon,
@@ -45,6 +46,8 @@ export function AgentIcon({ id, color, className }: AgentIconProps) {
       return <OpenAIMarkIcon className={cls} style={{ color }} />;
     case "opencode":
       return <OpenCodeMarkIcon className={cls} style={{ color }} />;
+    case "cursor":
+      return <CursorMarkIcon className={cls} style={{ color }} />;
     case "pi":
       return (
         <PiMarkIcon

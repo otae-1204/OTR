@@ -32,6 +32,7 @@ OTR (**O**tae's **T**oken **R**adar) is the radar for the token consumption of e
 | **ZCode** | `~/.zcode/cli/` (model-io + transcript, dedup by requestId) |
 | **OpenCode** | `~/.local/share/opencode/opencode.db` (SQLite read-only) |
 | **Pi** | `~/.pi/agent/sessions/` (built-in USD cost) |
+| **Cursor** | Local Cursor login + dashboard usage API (local `tokenCount` is always 0 on Cursor 3.x) |
 
 Custom agents are supported: point any of the three built-in parsers (Claude Code / Codex / ZCode layout) at an arbitrary data directory from the settings page.
 

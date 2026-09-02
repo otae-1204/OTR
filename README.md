@@ -33,6 +33,7 @@ OTR(**O**tae's **T**oken **R**adar)是你电脑上所有 AI Coding Agent 的 Tok
 | **ZCode** | `~/.zcode/cli/` | model-io + transcript 双源,按 requestId 去重 |
 | **OpenCode** | `~/.local/share/opencode/opencode.db` | SQLite 只读 |
 | **Pi** | `~/.pi/agent/sessions/` | 自带美元成本 |
+| **Cursor** | 本机登录态 + dashboard API | Cursor 3.x 本地 tokenCount 恒为 0,改走用量接口 |
 
 更多 Agent 可在设置页**自定义**(内置 Claude Code / Codex / ZCode 三种布局解析器,指向任意数据目录即可)。
 
@@ -75,7 +76,7 @@ npm run build:release  # 同时生成 NSIS 安装版和便携版
 
 - [CC-Switch](https://github.com/farion1231/cc-switch) — 前端风格与 Pi 图标的参考来源
 - [models.dev](https://models.dev) — 模型定价数据
-- [simple-icons](https://simpleicons.org) — Claude / OpenAI / OpenCode 品牌 path
+- [simple-icons](https://simpleicons.org) — Claude / OpenAI / OpenCode / Cursor 品牌 path
 
 ## License
 

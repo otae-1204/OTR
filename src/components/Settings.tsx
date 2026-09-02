@@ -29,6 +29,7 @@ const KNOWN_AGENTS = [
   "zcode",
   "opencode",
   "pi",
+  "cursor",
 ];
 const THEME_KEY = "token-show-theme";
 

@@ -126,6 +126,7 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
         .collect();
     let codex_parser_version = providers::codex::PARSER_VERSION.to_string();
     let dsh_parser_version = providers::dsh::PARSER_VERSION.to_string();
+    let cursor_parser_version = providers::cursor::PARSER_VERSION.to_string();
     let mut changed = false;
     let mut did_full_scan = false;
 
@@ -147,7 +148,10 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
                     != Some(codex_parser_version.as_str()))
             || (p.id() == "dsh"
                 && state.store.get_kv("parser_version:dsh").as_deref()
-                    != Some(dsh_parser_version.as_str()));
+                    != Some(dsh_parser_version.as_str()))
+            || (p.id() == "cursor"
+                && state.store.get_kv("parser_version:cursor").as_deref()
+                    != Some(cursor_parser_version.as_str()));
         did_full_scan |= provider_full;
         let result = {
             let mut meta = state.scan_meta.lock().unwrap();
@@ -210,6 +214,12 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
                     let _ = state.store.set_kv(
                         "parser_version:dsh",
                         &providers::dsh::PARSER_VERSION.to_string(),
+                    );
+                }
+                if p.id() == "cursor" {
+                    let _ = state.store.set_kv(
+                        "parser_version:cursor",
+                        &providers::cursor::PARSER_VERSION.to_string(),
                     );
                 }
             }
