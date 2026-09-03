@@ -50,7 +50,10 @@ pub fn update_today_tooltip(app: &AppHandle) {
     let Ok(t) = state.store.totals_for_date(&crate::model::today_str()) else {
         return;
     };
-    let tooltip = format!("OTR · 今日 {} tokens", crate::model::fmt_tokens(t.total_tokens));
+    let tooltip = format!(
+        "OTR · 今日 {} tokens",
+        crate::model::fmt_tokens(t.total_tokens)
+    );
     if let Some(tray) = app.tray_by_id("main-tray") {
         let _ = tray.set_tooltip(Some(tooltip.as_str()));
     }

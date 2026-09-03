@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::model::UsageRecord;
-use crate::providers::{claude_code, codex, zcode, ScanCtx, AgentProvider};
+use crate::providers::{claude_code, codex, zcode, AgentProvider, ScanCtx};
 use crate::settings::CustomAgentConfig;
 
 /// 用户自定义 Agent:按所选格式复用内置解析器,数据目录由用户指定

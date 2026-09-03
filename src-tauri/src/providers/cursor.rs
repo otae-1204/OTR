@@ -42,7 +42,8 @@ impl AgentProvider for CursorProvider {
 
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {
         let prev = ctx.state.clone();
-        let mut st: CursorState = serde_json::from_value(std::mem::take(ctx.state)).unwrap_or_default();
+        let mut st: CursorState =
+            serde_json::from_value(std::mem::take(ctx.state)).unwrap_or_default();
         match scan_usage(ctx.full, &mut st) {
             Ok(records) => {
                 *ctx.state = serde_json::to_value(&st).unwrap_or(Value::Null);
@@ -280,7 +281,11 @@ fn parse_event(v: &Value) -> Option<UsageEvent> {
     };
     if input + output + cache_read + cache_write == 0 && cost.abs() < f64::EPSILON {
         // 仍计入请求次数(套餐内 0 成本调用)
-        if v.get("model").and_then(|x| x.as_str()).unwrap_or("").is_empty() {
+        if v.get("model")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .is_empty()
+        {
             return None;
         }
     }
@@ -305,7 +310,10 @@ fn parse_event(v: &Value) -> Option<UsageEvent> {
         cache_read,
         cache_write,
         cost,
-        headless: v.get("isHeadless").and_then(|x| x.as_bool()).unwrap_or(false),
+        headless: v
+            .get("isHeadless")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
     })
 }
 
@@ -388,7 +396,12 @@ fn json_u64_opt(v: &Value) -> Option<u64> {
     v.as_u64()
         .or_else(|| v.as_i64().map(|n| n.max(0) as u64))
         .or_else(|| v.as_f64().map(|n| n.max(0.0).round() as u64))
-        .or_else(|| v.as_str()?.parse::<f64>().ok().map(|n| n.max(0.0).round() as u64))
+        .or_else(|| {
+            v.as_str()?
+                .parse::<f64>()
+                .ok()
+                .map(|n| n.max(0.0).round() as u64)
+        })
 }
 
 fn json_f64(v: &Value) -> Option<f64> {
@@ -487,7 +500,9 @@ mod tests {
         let prev_keys: HashSet<&str> = [events[0].key.as_str()].into_iter().collect();
         let new: Vec<_> = events
             .iter()
-            .filter(|ev| !(ev.ts < prev_ts || (ev.ts == prev_ts && prev_keys.contains(ev.key.as_str()))))
+            .filter(|ev| {
+                !(ev.ts < prev_ts || (ev.ts == prev_ts && prev_keys.contains(ev.key.as_str())))
+            })
             .collect();
         assert_eq!(new.len(), 1);
         assert_eq!(new[0].model, "claude-4.6-sonnet");

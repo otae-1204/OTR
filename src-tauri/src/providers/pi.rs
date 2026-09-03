@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::model::{iso_to_ms, UsageRecord};
 use crate::paths;
 use crate::providers::jsonl_util::{self, u64f};
-use crate::providers::{ScanCtx, AgentProvider};
+use crate::providers::{AgentProvider, ScanCtx};
 
 pub struct PiProvider;
 

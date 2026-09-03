@@ -77,10 +77,7 @@ pub const BUILTIN_AGENTS: &[&str] = &[
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            enabled_agents: BUILTIN_AGENTS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            enabled_agents: BUILTIN_AGENTS.iter().map(|s| s.to_string()).collect(),
             start_minimized: false,
             theme: "dark".into(),
             custom_agents: vec![],

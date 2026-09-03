@@ -1,6 +1,6 @@
 [package]
 name = "otr"
-version = "0.1.4"
+version = "0.1.5"
 description = "Otae's Token Radar"
 edition = "2021"
 

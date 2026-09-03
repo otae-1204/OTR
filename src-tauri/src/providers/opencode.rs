@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::error::Result;
 use crate::model::{now_ms, UsageRecord};
 use crate::paths;
-use crate::providers::{ScanCtx, AgentProvider};
+use crate::providers::{AgentProvider, ScanCtx};
 
 pub struct OpencodeProvider;
 
@@ -30,10 +30,7 @@ impl AgentProvider for OpencodeProvider {
     /// WAL 模式下写都落在 -wal 文件上,所以 db 和 -wal 都要监
     fn watch_paths(&self) -> Vec<PathBuf> {
         let db = paths::opencode_db();
-        vec![
-            db.clone(),
-            db.with_extension("db-wal"),
-        ]
+        vec![db.clone(), db.with_extension("db-wal")]
     }
 
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {
@@ -183,9 +180,7 @@ fn parse_model(model: Option<&str>) -> (Option<String>, Option<String>) {
         return (None, None);
     };
     (
-        v.get("id")
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string()),
+        v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()),
         v.get("providerID")
             .and_then(|x| x.as_str())
             .map(|s| s.to_string()),

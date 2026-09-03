@@ -21,12 +21,8 @@ export function fmtTokens(n: number): string {
   return String(Math.round(n));
 }
 
-/** 成本显示:>=0.01 保留 2 位,否则保留 4 位 */
-export function fmtCost(
-  n: number,
-  currency: string = "CNY",
-  rate: number = 7.2,
-): string {
+/** 成本显示:后端金额统一为 ¥,展示时按全局币种换算。>=0.01 保留 2 位,否则 4 位 */
+export function fmtCost(n: number, currency: string, rate: number): string {
   if (currency === "USD") {
     const v = n / rate;
     return `≈$${v.toFixed(Math.abs(v) >= 0.01 || v === 0 ? 2 : 4)}`;

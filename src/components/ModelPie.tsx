@@ -274,7 +274,7 @@ export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps)
               </span>
               <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                 占比 {totalPct(selectedSlice.totals.totalTokens)}% · 成本{" "}
-                {fmtCost(selectedSlice.totals.cost)}
+                {fmtCost(selectedSlice.totals.cost, currency, rate)}
               </span>
             </div>
             <HitRateBar totals={selectedSlice.totals} />

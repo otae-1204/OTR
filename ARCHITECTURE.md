@@ -127,9 +127,9 @@ pub struct UsageRecord {
 ### 5.4 ZCode
 | 项 | 内容 |
 |---|---|
-| 数据源 | `~/.zcode/cli/rollout/model-io-sess_*.jsonl`(本机确认) |
-| 格式 | JSONL,同一次调用会出现两种 usage 形态:Anthropic 风格 `{input_tokens, output_tokens, cache_read_input_tokens, ...}` 与汇总风格 `{inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens}` |
-| 解析要点 | **两形态疑似同一次调用的请求/响应记录,必须按 sess + 轮次去重,否则翻倍**;文件名带 session id,天然可按会话聚合;格式未公开,需宽容解析(`serde` 默认值 + 忽略未知字段),fixtures 测试锁行为 |
+| 数据源 | `~/.zcode/cli/rollout/model-io-sess_*.jsonl`(主会话,清理快)+ `~/.zcode/cli/agents/<sess>/<agent>/transcript.jsonl`(子代理,留存较久) |
+| 格式 | JSONL。用量以 camelCase `{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}` 为准;Anthropic snake_case 是同一次调用写在 `providerMetadata` 里的副本,不再计 |
+| 解析要点 | 双源按 `requestId` 去重。transcript 一次调用会写多条带 usage 的事件,只收能解析出 `modelId` 的单次完成(`model_network_status` / `model_request_completed`);**丢掉** `model_complete`(相同 usage、无模型、无 requestId,时间戳差几十毫秒,否则变成「未知模型」并翻倍)和 `turn_complete`(整轮汇总,含 `modelRequestCount`)。空模型不入库。`PARSER_VERSION` 变更会 wipe zcode 后全量重扫 |
 
 ### 5.5 OpenCode
 | 项 | 内容 |
@@ -265,7 +265,7 @@ src/
 |---|---|
 | 各家落盘格式无官方契约,版本升级会漂移 | Provider 完全隔离;宽容解析(默认值+忽略未知字段);fixtures 单测锁行为;解析失败只降级不崩溃 |
 | 首次全量扫描可能面对数百 MB JSONL | offset 游标增量;全量放后台线程,UI 先显示"扫描中" |
-| 重复计数(Claude 流式重复、ZCode 双形态) | 每个 Provider 内置去重规则并用样例数据测试 |
+| 重复计数(Claude 流式重复、ZCode transcript 多事件) | 每个 Provider 内置去重规则并用样例数据测试;ZCode 只收带 modelId 的单次完成 |
 | 读 SQLite(WAL)读到中间态 | 只读 + immutable 打开,或读快照副本 |
 | Agent 清理/轮转历史文件 | 自持 SQLite 快照,曲线不断;游标文件消失时重置该 provider |
 | 计量口径争议(cache/reasoning) | 分列展示不加总,UI 注明口径:`total = input + output + cache_read + cache_write` |

@@ -127,6 +127,7 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
     let codex_parser_version = providers::codex::PARSER_VERSION.to_string();
     let dsh_parser_version = providers::dsh::PARSER_VERSION.to_string();
     let cursor_parser_version = providers::cursor::PARSER_VERSION.to_string();
+    let zcode_parser_version = providers::zcode::PARSER_VERSION.to_string();
     let mut changed = false;
     let mut did_full_scan = false;
 
@@ -151,7 +152,10 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
                     != Some(dsh_parser_version.as_str()))
             || (p.id() == "cursor"
                 && state.store.get_kv("parser_version:cursor").as_deref()
-                    != Some(cursor_parser_version.as_str()));
+                    != Some(cursor_parser_version.as_str()))
+            || (p.id() == "zcode"
+                && state.store.get_kv("parser_version:zcode").as_deref()
+                    != Some(zcode_parser_version.as_str()));
         did_full_scan |= provider_full;
         let result = {
             let mut meta = state.scan_meta.lock().unwrap();
@@ -220,6 +224,12 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
                     let _ = state.store.set_kv(
                         "parser_version:cursor",
                         &providers::cursor::PARSER_VERSION.to_string(),
+                    );
+                }
+                if p.id() == "zcode" {
+                    let _ = state.store.set_kv(
+                        "parser_version:zcode",
+                        &providers::zcode::PARSER_VERSION.to_string(),
                     );
                 }
             }

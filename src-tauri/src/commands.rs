@@ -1,7 +1,7 @@
 use tauri::{AppHandle, Manager};
 
 use crate::model::{
-    AgentStatus, DailyUsage, RangeSummary, SessionUsage, UsageSummary, date_str, today_str,
+    date_str, today_str, AgentStatus, DailyUsage, RangeSummary, SessionUsage, UsageSummary,
 };
 use crate::settings::Settings;
 use crate::{providers, run_scan, AppState};
@@ -34,17 +34,21 @@ pub fn list_agents(app: AppHandle) -> Vec<AgentStatus> {
         .providers
         .iter()
         .map(|b| b.as_ref() as &dyn providers::AgentProvider)
-        .chain(customs.iter().map(|b| b.as_ref() as &dyn providers::AgentProvider));
+        .chain(
+            customs
+                .iter()
+                .map(|b| b.as_ref() as &dyn providers::AgentProvider),
+        );
     all.map(|p| AgentStatus {
-            id: p.id().to_string(),
-            display_name: p.display_name().to_string(),
-            detected: p.detect(),
-            enabled: settings.is_enabled(p.id()),
-            today_tokens: t_today.get(p.id()).map(|t| t.total_tokens).unwrap_or(0),
-            today_cost: t_today.get(p.id()).map(|t| t.cost).unwrap_or(0.0),
-            total_tokens: t_all.get(p.id()).map(|t| t.total_tokens).unwrap_or(0),
-        })
-        .collect()
+        id: p.id().to_string(),
+        display_name: p.display_name().to_string(),
+        detected: p.detect(),
+        enabled: settings.is_enabled(p.id()),
+        today_tokens: t_today.get(p.id()).map(|t| t.total_tokens).unwrap_or(0),
+        today_cost: t_today.get(p.id()).map(|t| t.cost).unwrap_or(0.0),
+        total_tokens: t_all.get(p.id()).map(|t| t.total_tokens).unwrap_or(0),
+    })
+    .collect()
 }
 
 #[tauri::command]
