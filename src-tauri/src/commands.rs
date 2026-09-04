@@ -74,6 +74,7 @@ pub fn get_range_summary(
             &to,
             &settings.pricing,
             settings.exchange_rate,
+            Some(&settings.enabled_agents),
         )
         .map_err(err_str)?;
     s.currency = settings.currency.clone();
@@ -96,10 +97,15 @@ pub fn get_daily(
         "hour" | "month" => g,
         _ => "day".into(),
     };
-    state
+    let mut rows = state
         .store
         .daily(agent.as_deref(), &from, &to, &g)
-        .map_err(err_str)
+        .map_err(err_str)?;
+    if agent.is_none() {
+        let enabled = state.settings.lock().unwrap().enabled_agents.clone();
+        rows.retain(|r| enabled.iter().any(|id| id == &r.agent));
+    }
+    Ok(rows)
 }
 
 #[tauri::command]
@@ -122,6 +128,7 @@ pub fn get_sessions(
             to_ms,
             limit.unwrap_or(100) as i64,
             settings.exchange_rate,
+            Some(&settings.enabled_agents),
         )
         .map_err(err_str)
 }

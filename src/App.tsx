@@ -104,12 +104,13 @@ export default function App() {
     await refresh();
   }, [refresh]);
 
-  /** summary 变化(刷新/事件/轮询)时驱动子组件重新拉取明细 */
-  const refreshKey = summary?.generatedAt ?? 0;
+  /** summary 变化(刷新/事件/轮询)或启停 Agent 时驱动子组件重新拉取明细 */
+  const enabledKey = (settings?.enabledAgents ?? []).slice().sort().join(",");
+  const refreshKey = `${summary?.generatedAt ?? 0}:${enabledKey}`;
 
   useEffect(() => {
     if (view !== "dashboard") return;
-    const reqKey = `${agentId ?? ""}|${range.from}|${range.to}`;
+    const reqKey = `${agentId ?? ""}|${range.from}|${range.to}|${enabledKey}`;
     rangeReqRef.current = reqKey;
     setRangeLoading(true);
     let active = true;
@@ -133,8 +134,12 @@ export default function App() {
     };
   }, [view, agentId, range.from, range.to, refreshKey]);
 
-  /** 合并 listAgents 与 byAgentToday,保证已知 agent 始终有卡片 */
+  /** 合并 listAgents 与 byAgentToday;设置里停用的不进主页 */
   const agentCards = useMemo(() => {
+    const enabledIds = new Set(
+      settings?.enabledAgents ??
+        agents.filter((a) => a.enabled).map((a) => a.id),
+    );
     const map = new Map<string, AgentStatus>();
     for (const a of agents) map.set(a.id, a);
     for (const id of Object.keys(AGENT_LABELS)) {
@@ -143,7 +148,7 @@ export default function App() {
           id,
           displayName: AGENT_LABELS[id],
           detected: false,
-          enabled: false,
+          enabled: enabledIds.has(id),
           todayTokens: 0,
           todayCost: 0,
           totalTokens: 0,
@@ -154,7 +159,7 @@ export default function App() {
       (summary?.byAgentToday ?? []).map((s) => [s.agent, s.totals] as const),
     );
     for (const [id, totals] of todayByAgent) {
-      if (!map.has(id)) {
+      if (!map.has(id) && enabledIds.has(id)) {
         map.set(id, {
           id,
           displayName: id,
@@ -166,11 +171,19 @@ export default function App() {
         });
       }
     }
-    return [...map.values()].map((status) => ({
-      status,
-      today: todayByAgent.get(status.id),
-    }));
-  }, [agents, summary]);
+    return [...map.values()]
+      .filter((status) => enabledIds.has(status.id))
+      .map((status) => ({
+        status,
+        today: todayByAgent.get(status.id),
+      }));
+  }, [agents, summary, settings]);
+
+  useEffect(() => {
+    if (agentId && !agentCards.some((c) => c.status.id === agentId)) {
+      setAgentId(null);
+    }
+  }, [agentId, agentCards]);
 
   const agentName = agentId
     ? (agentCards.find((c) => c.status.id === agentId)?.status.displayName ??
@@ -408,6 +421,7 @@ export default function App() {
                     agentId={agentId}
                     from={range.from}
                     to={range.to}
+                    all={range.all}
                     refreshKey={refreshKey}
                   />
                   <ModelPie

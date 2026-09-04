@@ -22,7 +22,7 @@ interface SessionTableProps {
   /** null 表示不限(全部时间) */
   from: string | null;
   to: string | null;
-  refreshKey: number;
+  refreshKey: number | string;
   rangeLabel: string;
   currency: string;
   rate: number;

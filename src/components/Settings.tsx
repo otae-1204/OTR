@@ -511,7 +511,7 @@ export function Settings({
       <SectionCard
         icon={<DatabaseIcon className="h-4 w-4 text-primary" />}
         title="数据源"
-        description="各 AI Coding Agent 的检测状态与统计开关"
+        description="停用后主页不再展示该 Agent 的卡片与用量"
       >
         <div>
           {rows.map((row) => {

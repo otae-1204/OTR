@@ -336,6 +336,8 @@ impl Store {
         to: &str,
         pricing: &std::collections::HashMap<String, PriceEntry>,
         exchange_rate: f64,
+        // None = 不过滤;Some = 仅计入这些 Agent(设置里停用的不进主页合计)
+        enabled_agents: Option<&[String]>,
     ) -> Result<RangeSummary> {
         let conn = self.conn.lock().unwrap();
         let base_sql = "SELECT COALESCE(NULLIF(model,''),'(未知模型)'), agent,
@@ -382,7 +384,12 @@ impl Store {
             Ok(())
         }
 
-        // Q1:按 Agent 过滤 → totals + by_model
+        let enabled_ok = |id: &str| match enabled_agents {
+            None => true,
+            Some(list) => list.iter().any(|a| a == id),
+        };
+
+        // Q1:按 Agent 过滤 → totals + by_model;未指定 Agent 时排除已停用的
         let mut totals = Totals::default();
         let mut by_model = Vec::new();
         {
@@ -395,7 +402,10 @@ impl Store {
                 &[&from, &to, &agent],
                 pricing,
                 exchange_rate,
-                |model, _agent, t| {
+                |model, ag, t| {
+                    if agent.is_none() && !enabled_ok(ag) {
+                        return;
+                    }
                     merge(&mut totals, &t);
                     merge(model_map.entry(model.to_string()).or_default(), &t);
                 },
@@ -408,7 +418,7 @@ impl Store {
             by_model.truncate(12);
         }
 
-        // Q2:不按 Agent 过滤 → by_agent(Agent 卡片需要全部 Agent 的范围数据)
+        // Q2:不按选中 Agent 过滤 → by_agent(卡片用);仍排除设置里停用的
         let mut by_agent = Vec::new();
         {
             let sql = base_sql.replace("{agent_cond}", "");
@@ -420,8 +430,11 @@ impl Store {
                 &[&from, &to],
                 pricing,
                 exchange_rate,
-                |_model, agent, t| {
-                    merge(agent_map.entry(agent.to_string()).or_default(), &t);
+                |_model, ag, t| {
+                    if !enabled_ok(ag) {
+                        return;
+                    }
+                    merge(agent_map.entry(ag.to_string()).or_default(), &t);
                 },
             )?;
             by_agent = agent_map
@@ -512,8 +525,14 @@ impl Store {
         to_ms: Option<i64>,
         limit: i64,
         exchange_rate: f64,
+        // None = 不过滤;Some = 未指定单个 Agent 时仅返回这些 Agent 的会话
+        enabled_agents: Option<&[String]>,
     ) -> Result<Vec<SessionUsage>> {
         let conn = self.conn.lock().unwrap();
+        let enabled_json = match enabled_agents {
+            None => "null".to_string(),
+            Some(list) => serde_json::to_string(list).unwrap_or_else(|_| "[]".into()),
+        };
         let mut stmt = conn.prepare(
             "SELECT m.agent, m.session_id, MAX(meta.project), MAX(meta.title),
                     GROUP_CONCAT(DISTINCT NULLIF(m.model,'')),
@@ -526,11 +545,13 @@ impl Store {
              WHERE (?1 IS NULL OR m.agent = ?1)
                AND (?2 IS NULL OR m.last_ts >= ?2)
                AND (?3 IS NULL OR m.last_ts < ?3)
+               AND (?6 = 'null' OR ?1 IS NOT NULL
+                    OR m.agent IN (SELECT value FROM json_each(?6)))
              GROUP BY m.agent, m.session_id
              ORDER BY MAX(m.last_ts) DESC LIMIT ?5",
         )?;
         let rows = stmt.query_map(
-            params![agent, from_ms, to_ms, exchange_rate, limit],
+            params![agent, from_ms, to_ms, exchange_rate, limit, enabled_json],
             |row| {
                 let input: i64 = row.get(7)?;
                 let output: i64 = row.get(8)?;

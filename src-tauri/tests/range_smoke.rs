@@ -31,7 +31,7 @@ fn range_summary_combos() {
     ];
     for (agent, from, to) in combos {
         let s = store
-            .range_summary(agent, &from, &to, &pricing, 7.2)
+            .range_summary(agent, &from, &to, &pricing, 7.2, None)
             .expect("range_summary ok");
         println!(
             "agent={:<12} {} ~ {} -> total={} in={} out={} cr={} calls={} cost={:.4}",
