@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
@@ -13,9 +14,57 @@ pub struct ZcodeProvider;
 
 const AGENT: &str = "zcode";
 
-/// 解析规则变更时递增,启动时 wipe zcode 后全量重扫。
+/// 解析规则变更时递增,启动时全量重建该 Agent。
 /// v1: transcript 丢掉无模型的流结束重复与回合汇总,避免记成未知模型。
-pub const PARSER_VERSION: u64 = 1;
+/// v2: requestId 去重窗口跨扫描持久化 + 截断转全量重建。
+pub const PARSER_VERSION: u64 = 2;
+
+/// 跨扫描保留的 requestId 上限;rollout 与 transcript 分属不同文件,
+/// 同一调用可能落在两次扫描里,单次 HashSet 挡不住。
+const RECENT_CAP: usize = 1024;
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ZcodeState {
+    #[serde(default)]
+    recent: Vec<String>,
+}
+
+/// 有界去重窗口:HashSet 查重 + VecDeque 维持插入顺序,超出上限丢最旧的。
+#[derive(Default)]
+struct SeenWindow {
+    set: HashSet<String>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl SeenWindow {
+    fn from_recent(recent: Vec<String>) -> Self {
+        let mut window = Self::default();
+        for id in recent {
+            window.insert(id);
+        }
+        window
+    }
+
+    fn insert(&mut self, id: String) {
+        if self.set.insert(id.clone()) {
+            self.order.push_back(id);
+            while self.order.len() > RECENT_CAP {
+                if let Some(old) = self.order.pop_front() {
+                    self.set.remove(&old);
+                }
+            }
+        }
+    }
+
+    fn contains(&self, id: &str) -> bool {
+        self.set.contains(id)
+    }
+
+    fn into_recent(self) -> Vec<String> {
+        self.order.into_iter().collect()
+    }
+}
 
 impl AgentProvider for ZcodeProvider {
     fn id(&self) -> &str {
@@ -32,6 +81,10 @@ impl AgentProvider for ZcodeProvider {
 
     fn watch_paths(&self) -> Vec<PathBuf> {
         vec![paths::zcode_rollout(), paths::zcode_agents()]
+    }
+
+    fn parser_version(&self) -> u64 {
+        PARSER_VERSION
     }
 
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {
@@ -57,8 +110,10 @@ impl AgentProvider for ZcodeProvider {
             .filter(|f| !transcript.contains(f))
             .collect();
 
+        let mut st: ZcodeState =
+            serde_json::from_value(std::mem::take(ctx.state)).unwrap_or_default();
         let mut records = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut seen = SeenWindow::from_recent(st.recent);
         for file in rollout {
             if let Err(e) = scan_file(&file, false, AGENT, ctx, &mut seen, &mut records) {
                 eprintln!("[{}] {}: {}", AGENT, file.display(), e);
@@ -69,6 +124,8 @@ impl AgentProvider for ZcodeProvider {
                 eprintln!("[{}] {}: {}", AGENT, file.display(), e);
             }
         }
+        st.recent = seen.into_recent();
+        *ctx.state = serde_json::to_value(&st).unwrap_or(Value::Null);
         Ok(records)
     }
 }
@@ -78,7 +135,7 @@ pub fn scan_root(root: &Path, agent: &str, ctx: &mut ScanCtx) -> Result<Vec<Usag
     let mut files = Vec::new();
     jsonl_util::collect_jsonl(root, 1, &mut files);
     let mut records = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen = SeenWindow::default();
     for file in files {
         if let Err(e) = scan_file(&file, false, agent, ctx, &mut seen, &mut records) {
             eprintln!("[{}] {}: {}", agent, file.display(), e);
@@ -94,7 +151,7 @@ fn scan_file(
     transcript: bool,
     agent: &str,
     ctx: &mut ScanCtx,
-    seen: &mut HashSet<String>,
+    seen: &mut SeenWindow,
     out: &mut Vec<UsageRecord>,
 ) -> Result<()> {
     let key = path.to_string_lossy().to_string();
@@ -102,6 +159,11 @@ fn scan_file(
     let Some(update) = jsonl_util::read_appended(path, cursor.offset)? else {
         return Ok(());
     };
+    if update.truncated {
+        // 日志被截断/重写,已入库的贡献无法精确扣减 → 让编排层整 Agent 重建
+        ctx.force_full = true;
+        return Ok(());
+    }
     let file_session = if transcript {
         // agents/<sess>/<agent>/transcript.jsonl — 会话 id 在行内 sessionId
         None
@@ -169,9 +231,10 @@ fn scan_file(
                 input_total + output + cache_read + cache_write
             ),
         };
-        if !seen.insert(dedup) {
+        if seen.contains(&dedup) {
             continue;
         }
+        seen.insert(dedup);
 
         let r = UsageRecord {
             agent: agent.into(),
@@ -360,10 +423,11 @@ mod tests {
         let mut state = Value::Null;
         let mut ctx = ScanCtx {
             full: true,
+            force_full: false,
             cursors: &mut cursors,
             state: &mut state,
         };
-        let mut seen = HashSet::new();
+        let mut seen = SeenWindow::default();
         let mut records = Vec::new();
         for (path, transcript) in files {
             scan_file(path, *transcript, AGENT, &mut ctx, &mut seen, &mut records).unwrap();
@@ -457,5 +521,37 @@ mod tests {
         let records = scan_files(&[(&path, true)]);
         assert!(records.is_empty());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::{SeenWindow, ZcodeState, RECENT_CAP};
+
+    #[test]
+    fn seen_window_survives_state_roundtrip() {
+        let mut window = SeenWindow::from_recent(vec![]);
+        window.insert("r:abc".into());
+        let state = ZcodeState {
+            recent: window.into_recent(),
+        };
+        // 模拟 kv 持久化 → 下次扫描重新加载
+        let json = serde_json::to_value(&state).unwrap();
+        let back: ZcodeState = serde_json::from_value(json).unwrap();
+        let reloaded = SeenWindow::from_recent(back.recent);
+        assert!(reloaded.contains("r:abc"), "requestId 去重窗口必须跨扫描保留");
+        assert!(!reloaded.contains("r:other"));
+    }
+
+    #[test]
+    fn seen_window_is_bounded() {
+        let mut window = SeenWindow::from_recent(vec![]);
+        for i in 0..RECENT_CAP + 50 {
+            window.insert(format!("r:{i}"));
+        }
+        let recent = window.into_recent();
+        assert_eq!(recent.len(), RECENT_CAP, "窗口必须封顶,否则 kv 无限增长");
+        assert_eq!(recent.last().unwrap(), &format!("r:{}", RECENT_CAP + 49));
+        assert_eq!(recent.first().unwrap(), "r:50", "最旧的必须被淘汰");
     }
 }

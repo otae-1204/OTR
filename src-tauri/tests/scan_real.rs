@@ -19,6 +19,7 @@ fn scan_real_data_smoke() {
         let mut state = serde_json::Value::Null;
         let mut ctx = ScanCtx {
             full: true,
+            force_full: false,
             cursors: &mut cursors,
             state: &mut state,
         };
@@ -72,6 +73,7 @@ fn scan_custom_agent_smoke() {
     let mut state = serde_json::Value::Null;
     let mut ctx = ScanCtx {
         full: true,
+        force_full: false,
         cursors: &mut cursors,
         state: &mut state,
     };

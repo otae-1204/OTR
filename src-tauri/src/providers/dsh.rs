@@ -39,6 +39,10 @@ impl AgentProvider for DshProvider {
         vec![paths::dsh_storages(), paths::dsh_home().join("sessions")]
     }
 
+    fn parser_version(&self) -> u64 {
+        PARSER_VERSION
+    }
+
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {
         let mut st: DshState =
             serde_json::from_value(std::mem::take(ctx.state)).unwrap_or_default();

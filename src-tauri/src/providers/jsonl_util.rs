@@ -3,10 +3,14 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::error::Result;
+use crate::providers::FileCursor;
 
 pub struct FileUpdate {
     pub new_offset: u64,
     pub size: u64,
+    /// 本次是从 0 重读(文件比游标短,说明被截断/重写/轮转)。
+    /// 调用方**不能**把它当增量累加,必须走全量重建。
+    pub truncated: bool,
     pub lines: Vec<String>,
 }
 
@@ -14,7 +18,8 @@ pub struct FileUpdate {
 pub fn read_appended(path: &Path, offset: u64) -> Result<Option<FileUpdate>> {
     let meta = fs::metadata(path)?;
     let size = meta.len();
-    let offset = if size < offset { 0 } else { offset };
+    let truncated = size < offset;
+    let offset = if truncated { 0 } else { offset };
     if size <= offset {
         return Ok(None);
     }
@@ -35,8 +40,34 @@ pub fn read_appended(path: &Path, offset: u64) -> Result<Option<FileUpdate>> {
     Ok(Some(FileUpdate {
         new_offset: offset + cut as u64,
         size,
+        truncated,
         lines,
     }))
+}
+
+/// 跨扫描去重窗口:流式写盘产生的重复行常常分落在两次扫描之间,
+/// 只靠单次 HashSet 会各计一次。窗口只保留最近的 N 个 key。
+pub const DEDUP_WINDOW: usize = 64;
+
+pub fn load_seen(cursor: &FileCursor) -> Vec<String> {
+    cursor
+        .extra
+        .get("seen")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn save_seen(cursor: &mut FileCursor, seen: &[String]) {
+    let tail = &seen[seen.len().saturating_sub(DEDUP_WINDOW)..];
+    if !cursor.extra.is_object() {
+        cursor.extra = serde_json::json!({});
+    }
+    cursor.extra["seen"] = serde_json::json!(tail);
 }
 
 pub fn file_mtime_ms(path: &Path) -> i64 {
@@ -77,4 +108,75 @@ pub fn f64f(v: &serde_json::Value, key: &str) -> f64 {
 
 pub fn strstr<'a>(v: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(|x| x.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn temp_file(name: &str) -> std::path::PathBuf {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("otr-jsonl-{name}-{suffix}.jsonl"))
+    }
+
+    fn write(path: &Path, content: &str) {
+        let mut f = fs::File::create(path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn reads_only_complete_lines() {
+        let p = temp_file("partial");
+        write(&p, "{\"a\":1}\n{\"b\":2}\n{\"c\":");
+        let up = read_appended(&p, 0).unwrap().unwrap();
+        assert_eq!(up.lines.len(), 2, "末尾不完整的行必须留给下一次");
+        assert!(!up.truncated);
+        assert_eq!(up.new_offset, 16);
+        let _ = fs::remove_file(p);
+    }
+
+    #[test]
+    fn truncation_reports_flag_and_rereads_from_zero() {
+        let p = temp_file("trunc");
+        write(&p, "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
+        let first = read_appended(&p, 0).unwrap().unwrap();
+        assert_eq!(first.lines.len(), 3);
+        assert!(!first.truncated);
+
+        // 截断重写为两行:必须报告 truncated,否则调用方会当增量累加 → 双计
+        write(&p, "{\"a\":1}\n{\"b\":2}\n");
+        let second = read_appended(&p, first.new_offset).unwrap().unwrap();
+        assert!(second.truncated, "文件变短必须报告截断");
+        assert_eq!(second.lines.len(), 2);
+        assert_eq!(second.new_offset, 16);
+        let _ = fs::remove_file(p);
+    }
+
+    #[test]
+    fn growth_without_newline_returns_none() {
+        let p = temp_file("nonewline");
+        write(&p, "{\"a\":1}\n");
+        let up = read_appended(&p, 0).unwrap().unwrap();
+        write(&p, "{\"a\":1}\n{\"b\":");
+        assert!(read_appended(&p, up.new_offset).unwrap().is_none());
+        let _ = fs::remove_file(p);
+    }
+
+    #[test]
+    fn dedup_window_is_bounded_and_roundtrips() {
+        let mut cursor = FileCursor::default();
+        let keys: Vec<String> = (0..DEDUP_WINDOW + 10).map(|i| format!("k{i}")).collect();
+        save_seen(&mut cursor, &keys);
+        let loaded = load_seen(&cursor);
+        assert_eq!(loaded.len(), DEDUP_WINDOW, "窗口必须封顶");
+        assert_eq!(
+            loaded.last().unwrap(),
+            &format!("k{}", DEDUP_WINDOW + 9),
+            "必须保留最近的 key"
+        );
+    }
 }

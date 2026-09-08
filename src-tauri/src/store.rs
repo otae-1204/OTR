@@ -107,6 +107,96 @@ ON CONFLICT(agent,session_id) DO UPDATE SET
   last_active = MAX(COALESCE(last_active,0), COALESCE(excluded.last_active,0))
 "#;
 
+/// 把一批增量记录写入按天/按小时/会话/元数据表。
+/// 调用方负责事务边界与提交(apply_records 累加、replace_agent 先清后写)。
+fn write_records(
+    tx: &rusqlite::Transaction,
+    records: &[crate::model::UsageRecord],
+) -> Result<usize> {
+    let mut n = 0usize;
+    for r in records {
+        let has_usage = r.total_tokens() > 0 || r.calls > 0 || r.cost.abs() > f64::EPSILON;
+        if has_usage {
+            let date = r.bucket_date.clone().unwrap_or_else(|| local_date(r.ts));
+            let hour = r
+                .bucket_hour
+                .filter(|hour| (0..24).contains(hour))
+                .unwrap_or_else(|| local_hour(r.ts));
+            if !r.skip_daily {
+                tx.execute(
+                    SQL_DAILY_UPSERT,
+                    params![
+                        r.agent,
+                        date,
+                        r.model.clone().unwrap_or_default(),
+                        r.provider.clone().unwrap_or_default(),
+                        r.input_tokens as i64,
+                        r.output_tokens as i64,
+                        r.cache_read_tokens as i64,
+                        r.cache_write_tokens as i64,
+                        r.reasoning_tokens as i64,
+                        r.calls as i64,
+                        r.cost,
+                    ],
+                )?;
+            }
+            if !r.skip_hourly {
+                tx.execute(
+                    SQL_HOURLY_UPSERT,
+                    params![
+                        r.agent,
+                        date,
+                        hour,
+                        r.model.clone().unwrap_or_default(),
+                        r.provider.clone().unwrap_or_default(),
+                        r.input_tokens as i64,
+                        r.output_tokens as i64,
+                        r.cache_read_tokens as i64,
+                        r.cache_write_tokens as i64,
+                        r.reasoning_tokens as i64,
+                        r.calls as i64,
+                        r.cost,
+                    ],
+                )?;
+            }
+            n += 1;
+        }
+        if let Some(sid) = &r.session_id {
+            let last_ts = r.touch_ts.unwrap_or(r.ts);
+            let last_ts = if last_ts > 0 { last_ts } else { now_ms() };
+            tx.execute(
+                SQL_SESSION_UPSERT,
+                params![
+                    r.agent,
+                    sid,
+                    r.model.clone().unwrap_or_default(),
+                    r.provider.clone().unwrap_or_default(),
+                    r.input_tokens as i64,
+                    r.output_tokens as i64,
+                    r.cache_read_tokens as i64,
+                    r.cache_write_tokens as i64,
+                    r.reasoning_tokens as i64,
+                    r.calls as i64,
+                    r.cost,
+                    last_ts,
+                ],
+            )?;
+            tx.execute(
+                SQL_META_UPSERT,
+                params![
+                    r.agent,
+                    sid,
+                    r.project,
+                    r.title,
+                    if r.ts > 0 { Some(r.ts) } else { None },
+                    last_ts,
+                ],
+            )?;
+        }
+    }
+    Ok(n)
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -118,6 +208,14 @@ impl Store {
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// 全量重建前的安全网:用 SQLite 自身机制做一致性快照。
+    /// 连接开着时直接复制 db 文件不安全(WAL),`VACUUM INTO` 则是事务一致的。
+    pub fn snapshot(&self, dest: &Path) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("VACUUM INTO ?1", params![dest.to_string_lossy()])?;
+        Ok(())
     }
 
     pub fn wipe_agent(&self, agent: &str) -> Result<()> {
@@ -141,87 +239,43 @@ impl Store {
     pub fn apply_records(&self, records: &[crate::model::UsageRecord]) -> Result<usize> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let mut n = 0usize;
-        for r in records {
-            let has_usage = r.total_tokens() > 0 || r.calls > 0 || r.cost.abs() > f64::EPSILON;
-            if has_usage {
-                let date = r.bucket_date.clone().unwrap_or_else(|| local_date(r.ts));
-                let hour = r
-                    .bucket_hour
-                    .filter(|hour| (0..24).contains(hour))
-                    .unwrap_or_else(|| local_hour(r.ts));
-                if !r.skip_daily {
-                    tx.execute(
-                        SQL_DAILY_UPSERT,
-                        params![
-                            r.agent,
-                            date,
-                            r.model.clone().unwrap_or_default(),
-                            r.provider.clone().unwrap_or_default(),
-                            r.input_tokens as i64,
-                            r.output_tokens as i64,
-                            r.cache_read_tokens as i64,
-                            r.cache_write_tokens as i64,
-                            r.reasoning_tokens as i64,
-                            r.calls as i64,
-                            r.cost,
-                        ],
-                    )?;
-                }
-                if !r.skip_hourly {
-                    tx.execute(
-                        SQL_HOURLY_UPSERT,
-                        params![
-                            r.agent,
-                            date,
-                            hour,
-                            r.model.clone().unwrap_or_default(),
-                            r.provider.clone().unwrap_or_default(),
-                            r.input_tokens as i64,
-                            r.output_tokens as i64,
-                            r.cache_read_tokens as i64,
-                            r.cache_write_tokens as i64,
-                            r.reasoning_tokens as i64,
-                            r.calls as i64,
-                            r.cost,
-                        ],
-                    )?;
-                }
-                n += 1;
-            }
-            if let Some(sid) = &r.session_id {
-                let last_ts = r.touch_ts.unwrap_or(r.ts);
-                let last_ts = if last_ts > 0 { last_ts } else { now_ms() };
-                tx.execute(
-                    SQL_SESSION_UPSERT,
-                    params![
-                        r.agent,
-                        sid,
-                        r.model.clone().unwrap_or_default(),
-                        r.provider.clone().unwrap_or_default(),
-                        r.input_tokens as i64,
-                        r.output_tokens as i64,
-                        r.cache_read_tokens as i64,
-                        r.cache_write_tokens as i64,
-                        r.reasoning_tokens as i64,
-                        r.calls as i64,
-                        r.cost,
-                        last_ts,
-                    ],
-                )?;
-                tx.execute(
-                    SQL_META_UPSERT,
-                    params![
-                        r.agent,
-                        sid,
-                        r.project,
-                        r.title,
-                        if r.ts > 0 { Some(r.ts) } else { None },
-                        last_ts,
-                    ],
-                )?;
-            }
+        let n = write_records(&tx, records)?;
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// 全量重建:清空该 Agent 的用量/会话/游标行,写入新结果与新基线。
+    /// 删除与写入在**同一个事务**内提交,任何一步失败整体回滚,旧数据完好。
+    pub fn replace_agent(
+        &self,
+        agent: &str,
+        records: &[crate::model::UsageRecord],
+        cursors: &HashMap<String, FileCursor>,
+        state: &serde_json::Value,
+    ) -> Result<usize> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for sql in [
+            "DELETE FROM usage_daily WHERE agent=?1",
+            "DELETE FROM usage_hourly WHERE agent=?1",
+            "DELETE FROM usage_session_models WHERE agent=?1",
+            "DELETE FROM session_meta WHERE agent=?1",
+            "DELETE FROM file_cursors WHERE agent=?1",
+        ] {
+            tx.execute(sql, params![agent])?;
         }
+        let n = write_records(&tx, records)?;
+        for (path, cursor) in cursors {
+            tx.execute(
+                "INSERT INTO file_cursors (agent, path, data) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(agent, path) DO UPDATE SET data = excluded.data",
+                params![agent, path, serde_json::to_string(cursor)?],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO kv (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            params![format!("state:{}", agent), serde_json::to_string(state)?],
+        )?;
         tx.commit()?;
         Ok(n)
     }
@@ -695,6 +749,7 @@ fn estimate_cost(t: &Totals, p: &PriceEntry, rate: f64) -> f64 {
 mod tests {
     use super::Store;
     use crate::model::UsageRecord;
+    use crate::providers::FileCursor;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_db() -> std::path::PathBuf {
@@ -715,6 +770,46 @@ mod tests {
             calls: 1,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn replace_agent_replaces_instead_of_accumulating() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let recs: Vec<UsageRecord> = (0..3).map(|_| record()).collect();
+        store.apply_records(&recs).unwrap();
+        let date = crate::model::local_date(1_780_000_000_000);
+        assert_eq!(store.totals_for_date(&date).unwrap().input_tokens, 30);
+
+        // 重建只写 1 条:结果必须是 10(替换),而不是 40(累加)
+        let cursors = std::collections::HashMap::new();
+        let state = serde_json::json!({"marker": 1});
+        store
+            .replace_agent("dsh", &recs[..1], &cursors, &state)
+            .unwrap();
+        assert_eq!(store.totals_for_date(&date).unwrap().input_tokens, 10);
+        assert_eq!(store.get_kv("state:dsh").unwrap(), "{\"marker\":1}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn replace_agent_persists_cursors() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let mut cursors = std::collections::HashMap::new();
+        cursors.insert(
+            "p".to_string(),
+            FileCursor {
+                offset: 42,
+                ..Default::default()
+            },
+        );
+        store
+            .replace_agent("dsh", &[], &cursors, &serde_json::Value::Null)
+            .unwrap();
+        let loaded = store.load_cursors("dsh");
+        assert_eq!(loaded.get("p").unwrap().offset, 42);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

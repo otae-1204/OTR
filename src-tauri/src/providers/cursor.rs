@@ -40,6 +40,10 @@ impl AgentProvider for CursorProvider {
         vec![db.clone(), PathBuf::from(format!("{}-wal", db.display()))]
     }
 
+    fn parser_version(&self) -> u64 {
+        PARSER_VERSION
+    }
+
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {
         let prev = ctx.state.clone();
         let mut st: CursorState =

@@ -33,6 +33,9 @@ pub struct FileCursor {
 
 pub struct ScanCtx<'a> {
     pub full: bool,
+    /// 出口标志:解析器发现数据源被截断/重写,本次增量不可信,
+    /// 要求编排层丢弃本批记录并以全量重建的方式重跑一次。
+    pub force_full: bool,
     pub cursors: &'a mut HashMap<String, FileCursor>,
     /// Provider 级持久化状态(DSH/OpenCode 用它存绝对值 diff 基准)
     pub state: &'a mut serde_json::Value,
@@ -43,6 +46,11 @@ pub trait AgentProvider: Send + Sync {
     fn display_name(&self) -> &str;
     fn detect(&self) -> bool;
     fn watch_paths(&self) -> Vec<PathBuf>;
+    /// 解析语义版本;变更时启动会全量重建该 Agent。
+    /// 默认 1:新 Provider 上线时 kv 里没有键,自然触发一次全量扫描。
+    fn parser_version(&self) -> u64 {
+        1
+    }
     /// 增量扫描;full 时外部已重置游标与状态,Provider 自然输出全量
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>>;
 }

@@ -20,7 +20,7 @@ import {
   TrashIcon,
 } from "./icons";
 import { AgentIcon, usesImageIcon } from "./AgentIcon";
-import { fetchLatestVersion, fetchUsdCnyRate } from "../lib/remote";
+import { compareVersions, fetchLatestVersion, fetchUsdCnyRate } from "../lib/remote";
 
 const KNOWN_AGENTS = [
   "dsh",
@@ -253,7 +253,7 @@ export function Settings({
       if (latest === cur) {
         setUpdateState("latest");
         setUpdateMsg(`已是最新版本 v${cur}`);
-      } else if (latest > cur) {
+      } else if (compareVersions(latest, cur) > 0) {
         setUpdateState("available");
         setUpdateMsg(`发现新版本 v${latest}(当前 v${cur}),前往 Releases 页下载`);
       } else {
@@ -649,7 +649,7 @@ export function Settings({
             <input
               value={cDir}
               onChange={(e) => setCDir(e.target.value)}
-              placeholder="数据目录,如 C:\Users\you\.codebuddy\projects"
+              placeholder={"数据目录,如 C:\\Users\\you\\.codebuddy\\projects"}
               className="h-8 rounded-lg border border-border bg-background px-2.5 text-xs outline-none focus:border-primary"
             />
           </div>

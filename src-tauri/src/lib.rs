@@ -93,7 +93,7 @@ pub fn run() {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(400));
-                run_scan(&handle, true, None);
+                run_scan(&handle, false, None);
             });
             Ok(())
         })
@@ -112,7 +112,7 @@ pub fn run() {
         .expect("error while running OTR");
 }
 
-/// 串行执行增量扫描(全量时先 wipe),成功后刷新托盘并通知前端
+/// 串行执行扫描(需要重建时走 replace_agent 原子替换),成功后刷新托盘并通知前端
 pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
     let state = app.state::<AppState>();
     let _guard = state.scan_lock.lock().unwrap();
@@ -124,12 +124,9 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
         .map(|b| b.as_ref())
         .chain(customs.iter().map(|b| b.as_ref()))
         .collect();
-    let codex_parser_version = providers::codex::PARSER_VERSION.to_string();
-    let dsh_parser_version = providers::dsh::PARSER_VERSION.to_string();
-    let cursor_parser_version = providers::cursor::PARSER_VERSION.to_string();
-    let zcode_parser_version = providers::zcode::PARSER_VERSION.to_string();
     let mut changed = false;
     let mut did_full_scan = false;
+    let mut snapshot_done = false;
 
     for p in all {
         if let Some(want) = only {
@@ -143,96 +140,71 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
         if !p.detect() {
             continue;
         }
-        let provider_full = full
-            || (p.id() == "codex"
-                && state.store.get_kv("parser_version:codex").as_deref()
-                    != Some(codex_parser_version.as_str()))
-            || (p.id() == "dsh"
-                && state.store.get_kv("parser_version:dsh").as_deref()
-                    != Some(dsh_parser_version.as_str()))
-            || (p.id() == "cursor"
-                && state.store.get_kv("parser_version:cursor").as_deref()
-                    != Some(cursor_parser_version.as_str()))
-            || (p.id() == "zcode"
-                && state.store.get_kv("parser_version:zcode").as_deref()
-                    != Some(zcode_parser_version.as_str()));
+        let pv = p.parser_version();
+        let pv_key = format!("parser_version:{}", p.id());
+        let provider_full =
+            full || state.store.get_kv(&pv_key).as_deref() != Some(pv.to_string().as_str());
         did_full_scan |= provider_full;
-        let result = {
-            let mut meta = state.scan_meta.lock().unwrap();
-            if !meta.cursors.contains_key(p.id()) {
-                meta.cursors
-                    .insert(p.id().to_string(), state.store.load_cursors(p.id()));
+
+        // 版本升级导致的重建:先落一份一致性快照,失败不阻断
+        if provider_full && !full && !snapshot_done {
+            snapshot_done = true;
+            if let Some(dir) = state.settings_path.parent() {
+                let dest = dir.join(format!(
+                    "radar.db.bak-{}",
+                    chrono::Local::now().format("%Y%m%d%H%M%S")
+                ));
+                match state.store.snapshot(&dest) {
+                    Ok(()) => eprintln!("[otr] 重建前快照: {}", dest.display()),
+                    Err(e) => eprintln!("[otr] 快照失败(继续重建): {}", e),
+                }
             }
-            if !meta.states.contains_key(p.id()) {
-                let restored = state
-                    .store
-                    .get_kv(&format!("state:{}", p.id()))
-                    .and_then(|value| serde_json::from_str(&value).ok())
-                    .unwrap_or(serde_json::Value::Null);
-                meta.states.insert(p.id().to_string(), restored);
-            }
-            if provider_full {
-                let _ = state.store.wipe_agent(p.id());
-                meta.cursors.remove(p.id());
-                meta.states.remove(p.id());
-            }
-            // 通过 &mut 引用做字段级拆分借用(直接在 MutexGuard 上连续借用两个字段会 E0499)
-            let m: &mut ScanMeta = &mut meta;
-            let cursors = m.cursors.entry(p.id().to_string()).or_default();
-            let mut st = m.states.remove(p.id()).unwrap_or(serde_json::Value::Null);
-            let mut ctx = ScanCtx {
-                full: provider_full,
-                cursors,
-                state: &mut st,
-            };
-            let res = p.scan(&mut ctx);
-            m.states.insert(p.id().to_string(), st);
-            res
-        };
+        }
+        // 扫描一次;解析器若发现数据源被截断/重写,会要求升级为全量重建后重跑
+        let (mut result, force_full) =
+            scan_provider(&state.store, &state.scan_meta, p, provider_full);
+        let mut effective_full = provider_full;
+        if force_full && !effective_full {
+            eprintln!("[{}] 数据源被截断/重写,转为全量重建", p.id());
+            effective_full = true;
+            (result, _) = scan_provider(&state.store, &state.scan_meta, p, true);
+        }
+        did_full_scan |= effective_full;
+
         match result {
             Ok(records) => {
-                if !records.is_empty() {
-                    match state.store.apply_records(&records) {
-                        Ok(n) => changed = changed || n > 0,
-                        Err(e) => eprintln!("[{}] apply: {}", p.id(), e),
-                    }
+                let (cursors, st) = {
+                    let meta = state.scan_meta.lock().unwrap();
+                    (
+                        meta.cursors.get(p.id()).cloned().unwrap_or_default(),
+                        meta.states
+                            .get(p.id())
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                    )
+                };
+                let applied = if effective_full {
+                    // 原子替换:清空该 Agent 旧行 + 写入新结果 + 新基线,同一事务
+                    state.store.replace_agent(p.id(), &records, &cursors, &st)
+                } else {
+                    state.store.apply_records(&records)
+                };
+                match applied {
+                    Ok(n) => changed = changed || n > 0,
+                    Err(e) => eprintln!("[{}] apply: {}", p.id(), e),
                 }
-                let meta = state.scan_meta.lock().unwrap();
-                if let Some(cmap) = meta.cursors.get(p.id()) {
-                    for (path, cur) in cmap {
+                // replace_agent 已在同一事务内落盘游标与状态;增量路径这里补写
+                if !effective_full {
+                    for (path, cur) in &cursors {
                         let _ = state.store.set_cursor(p.id(), path, cur);
                     }
-                }
-                if let Some(st) = meta.states.get(p.id()) {
-                    if let Ok(s) = serde_json::to_string(st) {
+                    if let Ok(s) = serde_json::to_string(&st) {
                         let _ = state.store.set_kv(&format!("state:{}", p.id()), &s);
                     }
                 }
-                if p.id() == "codex" {
-                    let _ = state.store.set_kv(
-                        "parser_version:codex",
-                        &providers::codex::PARSER_VERSION.to_string(),
-                    );
-                }
-                if p.id() == "dsh" {
-                    let _ = state.store.set_kv(
-                        "parser_version:dsh",
-                        &providers::dsh::PARSER_VERSION.to_string(),
-                    );
-                }
-                if p.id() == "cursor" {
-                    let _ = state.store.set_kv(
-                        "parser_version:cursor",
-                        &providers::cursor::PARSER_VERSION.to_string(),
-                    );
-                }
-                if p.id() == "zcode" {
-                    let _ = state.store.set_kv(
-                        "parser_version:zcode",
-                        &providers::zcode::PARSER_VERSION.to_string(),
-                    );
-                }
+                let _ = state.store.set_kv(&pv_key, &pv.to_string());
             }
+            // 扫描失败:用量表一行没动,内存基线已在 scan_provider 内回滚
             Err(e) => eprintln!("[{}] scan: {}", p.id(), e),
         }
     }
@@ -240,5 +212,130 @@ pub fn run_scan(app: &AppHandle, full: bool, only: Option<&str>) {
     if changed || full || did_full_scan {
         tray::update_today_tooltip(app);
         let _ = app.emit("usage://updated", ());
+    }
+}
+
+/// 跑一次扫描:加载/重置基线 → 执行 → 失败回滚内存基线。
+/// 返回 (扫描结果, Provider 是否要求升级为全量重建)。
+/// 只依赖 Store 与 ScanMeta(不碰用量数据表),便于单测。
+fn scan_provider(
+    store: &Store,
+    scan_meta: &Mutex<ScanMeta>,
+    p: &dyn AgentProvider,
+    full: bool,
+) -> (crate::error::Result<Vec<crate::model::UsageRecord>>, bool) {
+    let id = p.id().to_string();
+    let mut meta = scan_meta.lock().unwrap();
+    meta.cursors
+        .entry(id.clone())
+        .or_insert_with(|| store.load_cursors(&id));
+    meta.states.entry(id.clone()).or_insert_with(|| {
+        store
+            .get_kv(&format!("state:{id}"))
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or(serde_json::Value::Null)
+    });
+
+    // full 时把基线清零;失败必须回滚,否则下次扫描拿空基线重放 → 双计
+    let saved = if full {
+        Some((
+            meta.cursors.get(&id).cloned().unwrap_or_default(),
+            meta.states
+                .get(&id)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        ))
+    } else {
+        None
+    };
+    if full {
+        meta.cursors.insert(id.clone(), HashMap::new());
+        meta.states.insert(id.clone(), serde_json::Value::Null);
+    }
+
+    // 通过 &mut 引用做字段级拆分借用(直接在 MutexGuard 上连续借用两个字段会 E0499)
+    let m: &mut ScanMeta = &mut meta;
+    let cursors = m.cursors.get_mut(&id).expect("just inserted");
+    let mut st = m.states.remove(&id).unwrap_or(serde_json::Value::Null);
+    let mut ctx = ScanCtx {
+        full,
+        force_full: false,
+        cursors,
+        state: &mut st,
+    };
+    let res = p.scan(&mut ctx);
+    let force_full = ctx.force_full;
+    m.states.insert(id.clone(), st);
+
+    if res.is_err() {
+        if let Some((cursors, state)) = saved {
+            m.cursors.insert(id.clone(), cursors);
+            m.states.insert(id.clone(), state);
+        }
+    }
+    (res, force_full)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::{AgentProvider, ScanCtx};
+    use std::path::PathBuf;
+
+    struct FailingProvider;
+
+    impl AgentProvider for FailingProvider {
+        fn id(&self) -> &str {
+            "fake"
+        }
+        fn display_name(&self) -> &str {
+            "Fake"
+        }
+        fn detect(&self) -> bool {
+            true
+        }
+        fn watch_paths(&self) -> Vec<PathBuf> {
+            vec![]
+        }
+        fn scan(&self, _ctx: &mut ScanCtx) -> crate::error::Result<Vec<crate::model::UsageRecord>> {
+            Err(crate::error::AppError::Msg("boom".into()))
+        }
+    }
+
+    #[test]
+    fn failed_full_scan_restores_baseline() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("otr-lib-{suffix}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("t.db")).unwrap();
+        store.set_kv("state:fake", "{\"v\":1}").unwrap();
+        store
+            .set_cursor(
+                "fake",
+                "p",
+                &FileCursor {
+                    offset: 7,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let meta = Mutex::new(ScanMeta::default());
+        let (res, force_full) = scan_provider(&store, &meta, &FailingProvider, true);
+        assert!(res.is_err());
+        assert!(!force_full);
+
+        let m = meta.lock().unwrap();
+        assert_eq!(
+            m.cursors.get("fake").unwrap().get("p").unwrap().offset,
+            7,
+            "失败必须回滚内存游标,否则下次扫描从 0 重放 → 双计"
+        );
+        assert_eq!(m.states.get("fake").unwrap(), &serde_json::json!({"v": 1}));
+        drop(m);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

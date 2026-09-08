@@ -13,6 +13,10 @@ pub struct OpencodeProvider;
 
 const AGENT: &str = "opencode";
 
+/// 解析语义版本;变更时启动会全量重建。
+/// v1: session 表绝对值 diff,基线随重建一起重算。
+pub const PARSER_VERSION: u64 = 1;
+
 impl AgentProvider for OpencodeProvider {
     fn id(&self) -> &str {
         AGENT
@@ -31,6 +35,10 @@ impl AgentProvider for OpencodeProvider {
     fn watch_paths(&self) -> Vec<PathBuf> {
         let db = paths::opencode_db();
         vec![db.clone(), db.with_extension("db-wal")]
+    }
+
+    fn parser_version(&self) -> u64 {
+        PARSER_VERSION
     }
 
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {

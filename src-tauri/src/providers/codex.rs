@@ -13,7 +13,7 @@ use crate::providers::{AgentProvider, ScanCtx};
 pub struct CodexProvider;
 
 const AGENT: &str = "codex";
-pub const PARSER_VERSION: u64 = 1;
+pub const PARSER_VERSION: u64 = 2;
 
 impl AgentProvider for CodexProvider {
     fn id(&self) -> &str {
@@ -30,6 +30,10 @@ impl AgentProvider for CodexProvider {
 
     fn watch_paths(&self) -> Vec<PathBuf> {
         vec![paths::codex_sessions(), paths::codex_archived_sessions()]
+    }
+
+    fn parser_version(&self) -> u64 {
+        PARSER_VERSION
     }
 
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {
@@ -132,13 +136,14 @@ fn scan_file(
 ) -> Result<()> {
     let key = path.to_string_lossy().to_string();
     let mut cursor = ctx.cursors.get(&key).cloned().unwrap_or_default();
-    let previous_offset = cursor.offset;
     let Some(update) = jsonl_util::read_appended(path, cursor.offset)? else {
         return Ok(());
     };
-
-    if update.new_offset < previous_offset {
-        cursor.extra = serde_json::Value::Null;
+    if update.truncated {
+        // rollout 被截断/重写(轮转、compaction、清理):增量不可信,
+        // 已入库的贡献无法精确扣减 → 让编排层整 Agent 重建
+        ctx.force_full = true;
+        return Ok(());
     }
 
     let mut session_id = cursor_string(&cursor, "session_id");
@@ -401,6 +406,7 @@ mod tests {
         let mut state = serde_json::Value::Null;
         let mut ctx = ScanCtx {
             full,
+            force_full: false,
             cursors,
             state: &mut state,
         };
@@ -484,6 +490,47 @@ mod tests {
         let second = scan(&root, &mut cursors, false);
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].model.as_deref(), Some("gpt-5.6-terra"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn truncated_rollout_requests_full_rebuild() {
+        let root = fixture_root();
+        let path =
+            root.join("rollout-2026-08-31T07-53-17-11111111-2222-3333-4444-555555555555.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        write_fixture(&mut file, "gpt-5.6-sol", 10);
+        write_token_count(&mut file, "2026-08-31T07:53:21.000Z", 20, 2);
+        file.flush().unwrap();
+        let original = fs::read_to_string(&path).unwrap();
+        let first_line = original.lines().next().unwrap().to_string();
+
+        let mut cursors = HashMap::new();
+        {
+            let mut state = serde_json::Value::Null;
+            let mut ctx = ScanCtx {
+                full: false,
+                force_full: false,
+                cursors: &mut cursors,
+                state: &mut state,
+            };
+            let recs = scan_roots(std::slice::from_ref(&root), "codex", &mut ctx).unwrap();
+            assert_eq!(recs.len(), 2);
+            assert!(!ctx.force_full);
+        }
+
+        // 截断重写(比原文件短):必须请求全量重建,且本次不得输出记录
+        fs::write(&path, format!("{first_line}\n")).unwrap();
+        let mut state = serde_json::Value::Null;
+        let mut ctx = ScanCtx {
+            full: false,
+            force_full: false,
+            cursors: &mut cursors,
+            state: &mut state,
+        };
+        let recs = scan_roots(std::slice::from_ref(&root), "codex", &mut ctx).unwrap();
+        assert!(ctx.force_full, "截断必须请求全量重建");
+        assert!(recs.is_empty(), "截断时不得输出增量记录");
         fs::remove_dir_all(root).unwrap();
     }
 }
