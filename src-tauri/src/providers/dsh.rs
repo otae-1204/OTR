@@ -56,11 +56,7 @@ impl AgentProvider for DshProvider {
             }
         };
         let mut session_paths = Vec::new();
-        if let Err(e) =
-            collect_session_logs(&paths::dsh_home().join("sessions"), &mut session_paths)
-        {
-            eprintln!("[dsh] session discovery: {}", e);
-        }
+        collect_session_logs(&paths::dsh_home().join("sessions"), &mut session_paths);
         let daily_source = select_daily_source(
             &mut st,
             ledger.as_ref().is_some_and(ledger_has_daily_data),
@@ -146,20 +142,25 @@ impl DshEntry {
         }
     }
 
+    /// "这次没有新增用量"的判据。
+    /// reasoning 只展示、不计入 total_tokens,但它同样是"这次调用产生了用量"的证据;
+    /// 高水位保护(floor 语义)是按字段逐项 max 的、包含 reasoning,如果这里不看它,
+    /// 只有 reasoning 变化的增量就会被保护住却永远不产出记录 —— 两边口径必须一致。
     fn is_zero(&self) -> bool {
-        self.input + self.output + self.cache_read + self.cache_write == 0
+        self.input + self.output + self.cache_read + self.cache_write + self.reasoning == 0
             && self.calls == 0
             && self.cost.abs() < f64::EPSILON
     }
 
-    fn floor_at(&mut self, previous: &DshEntry) {
-        self.input = self.input.max(previous.input);
-        self.output = self.output.max(previous.output);
-        self.cache_read = self.cache_read.max(previous.cache_read);
-        self.cache_write = self.cache_write.max(previous.cache_write);
-        self.reasoning = self.reasoning.max(previous.reasoning);
-        self.calls = self.calls.max(previous.calls);
-        self.cost = self.cost.max(previous.cost);
+    /// 同一个 "日期|小时|模型" 桶在多个会话文件上的合并
+    fn merge(&mut self, other: &DshEntry) {
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+        self.reasoning += other.reasoning;
+        self.calls += other.calls;
+        self.cost += other.cost;
     }
 }
 
@@ -181,7 +182,31 @@ struct DshState {
     /// key: "session_id|model"
     #[serde(default)]
     sessions: HashMap<String, DshEntry>,
+    /// 会话日志的 per-file 解析缓存,key = 文件绝对路径
+    #[serde(default)]
+    file_cache: HashMap<String, DshFileCache>,
 }
+
+/// 单个会话文件的绝对小时聚合缓存。
+/// 缓存的是**聚合结果**而不是日志正文:本机 ~/.dsh/sessions 有 2232 个文件 / 166MB,
+/// 正文不可能进 kv;而聚合每个文件只有少量 "日期|小时|provider:model" 桶(单桶约 130 字节)。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct DshFileCache {
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    mtime_ms: i64,
+    #[serde(default)]
+    aggregate: HashMap<String, DshEntry>,
+}
+
+/// state:dsh 是 kv 表里的一整行 JSON,每次扫描都要读写一次,必须封顶。
+/// 双重上限:文件数管条目开销,桶数管真正的体积来源。
+/// 淘汰顺序用 mtime_ms(最近写过的日志才是热数据)——不额外存"最近使用时间",
+/// 否则 state 每次扫描都会变,白白把整行 kv 重写一遍。
+const MAX_CACHED_FILES: usize = 4096;
+const MAX_CACHED_BUCKETS: usize = 32768;
 
 /// projcache 行可能是 {val: ...} 包装,也可能是裸对象
 fn row_val<'a>(row: &'a Value) -> &'a Value {
@@ -357,20 +382,29 @@ fn scan_ledger_sessions(st: &mut DshState, out: &mut Vec<UsageRecord>, ledger: &
     st.ledger_sessions.retain(|key, _| alive.contains(key));
 }
 
-fn collect_session_logs(root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    let projects = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
+/// 逐条目容错收集会话日志(参考 jsonl_util::collect_jsonl 的写法)。
+/// 以前整条链路上任何一次 read_dir / file_type 失败都会让整个 discovery 返回 Err,
+/// 调用方只能把 session_paths 留空 → 小时数据整块消失。单个坏目录不该有这种杀伤力。
+fn collect_session_logs(root: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(projects) = std::fs::read_dir(root) else {
+        return;
     };
-    for project in projects {
-        let project = project?;
-        if !project.file_type()?.is_dir() {
+    for project in projects.flatten() {
+        let Ok(kind) = project.file_type() else {
+            continue;
+        };
+        if !kind.is_dir() {
             continue;
         }
-        for session in std::fs::read_dir(project.path())? {
-            let session = session?;
-            if !session.file_type()?.is_dir() {
+        let Ok(sessions) = std::fs::read_dir(project.path()) else {
+            eprintln!("[dsh] 会话目录不可读,跳过: {}", project.path().display());
+            continue;
+        };
+        for session in sessions.flatten() {
+            let Ok(kind) = session.file_type() else {
+                continue;
+            };
+            if !kind.is_dir() {
                 continue;
             }
             for name in ["session.jsonl.zstd", "session.jsonl"] {
@@ -382,12 +416,18 @@ fn collect_session_logs(root: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<
             }
         }
     }
-    Ok(())
 }
 
+/// zstd 帧魔数(小端 0x28 0xB5 0x2F 0xFD)
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+
+/// 按**魔数**而不是扩展名判断是否 zstd 压过。
+/// 只看扩展名时,一个被改名/后缀异常(或被工具重写)的 zstd 文件会被当成 UTF-8:
+/// 解出来是乱码 → 每行 serde_json 解析失败 → 函数仍返回 true 但聚合为空
+/// → st.hourly 被空表覆盖 → 静默丢量。魔数判断让这条路走不通。
 fn read_session_text(path: &Path) -> Result<String> {
     let bytes = std::fs::read(path)?;
-    let decoded = if path.extension().and_then(|s| s.to_str()) == Some("zstd") {
+    let decoded = if bytes.starts_with(&ZSTD_MAGIC) {
         zstd::stream::decode_all(bytes.as_slice())?
     } else {
         bytes
@@ -489,6 +529,73 @@ fn scan_session_file(path: &Path, aggregate: &mut HashMap<String, DshEntry>) -> 
     true
 }
 
+/// 取一个会话文件的小时聚合:文件 (size, mtime) 未变则直接复用缓存,
+/// 跳过读盘 + zstd 解压 + 逐行 JSON 解析(本机 2232 个文件时这是全量扫描的绝大部分开销)。
+/// 返回 None 表示该文件本次读不出来。
+fn session_file_aggregate(st: &mut DshState, path: &Path) -> Option<HashMap<String, DshEntry>> {
+    let key = path.to_string_lossy().to_string();
+    let meta = std::fs::metadata(path).ok()?;
+    let size = meta.len();
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    if let Some(hit) = st.file_cache.get(&key) {
+        if hit.size == size && hit.mtime_ms == mtime_ms {
+            return Some(hit.aggregate.clone());
+        }
+    }
+
+    let mut aggregate = HashMap::new();
+    if !scan_session_file(path, &mut aggregate) {
+        // 读失败时保留旧缓存:它的桶集合是本次 floor 保护的依据
+        return None;
+    }
+    st.file_cache.insert(
+        key,
+        DshFileCache {
+            size,
+            mtime_ms,
+            aggregate: aggregate.clone(),
+        },
+    );
+    Some(aggregate)
+}
+
+/// 按 LRU 把文件缓存收敛到上限内;本次扫描触及过的文件优先保留
+fn trim_file_cache(
+    cache: &mut HashMap<String, DshFileCache>,
+    scanned: &std::collections::HashSet<String>,
+) {
+    let buckets: usize = cache.values().map(|c| c.aggregate.len()).sum();
+    if cache.len() <= MAX_CACHED_FILES && buckets <= MAX_CACHED_BUCKETS {
+        return;
+    }
+    let mut order: Vec<(bool, i64, String)> = cache
+        .iter()
+        .map(|(k, v)| (scanned.contains(k), v.mtime_ms, k.clone()))
+        .collect();
+    // 元组排序:false(本次未触及)排前面,同组内 mtime 越旧越先淘汰
+    order.sort();
+    let mut buckets = buckets;
+    for (_, _, key) in order {
+        if cache.len() <= MAX_CACHED_FILES && buckets <= MAX_CACHED_BUCKETS {
+            break;
+        }
+        if let Some(removed) = cache.remove(&key) {
+            buckets -= removed.aggregate.len();
+        }
+    }
+    eprintln!(
+        "[dsh] 文件缓存超出上限,按 LRU 收敛到 {} 个文件 / {} 个桶",
+        cache.len(),
+        buckets
+    );
+}
+
 fn scan_session_logs(
     st: &mut DshState,
     out: &mut Vec<UsageRecord>,
@@ -498,26 +605,50 @@ fn scan_session_logs(
     if paths.is_empty() {
         return Ok(false);
     }
-    let mut current = HashMap::new();
+    let mut current: HashMap<String, DshEntry> = HashMap::new();
     let mut usable = false;
-    let mut failed = false;
+    // 本次读失败、但缓存里还留着旧聚合的文件
+    let mut failed_with_cache: Vec<String> = Vec::new();
+    let mut scanned: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for path in paths {
-        if scan_session_file(&path, &mut current) {
-            usable = true;
-        } else {
-            failed = true;
+        let key = path.to_string_lossy().to_string();
+        scanned.insert(key.clone());
+        match session_file_aggregate(st, path) {
+            Some(aggregate) => {
+                usable = true;
+                for (bucket, entry) in aggregate {
+                    current.entry(bucket).or_default().merge(&entry);
+                }
+            }
+            None => {
+                if st.file_cache.contains_key(&key) {
+                    failed_with_cache.push(key);
+                }
+            }
         }
     }
-    if failed {
-        // 个别日志仍在写入或损坏时不让绝对快照倒退;其余可读日志的新小时桶
-        // 仍可继续入库,损坏日志恢复后只补超过旧快照的增量。
-        for (key, previous) in &st.hourly {
-            current
-                .entry(key.clone())
-                .and_modify(|entry| entry.floor_at(previous))
-                .or_insert_with(|| previous.clone());
+
+    // 有文件读不到时,只把它**自己名下**的桶顶回旧高水位。
+    // 以前是"只要有一个文件失败就对所有 key 做 floor",于是别的文件被轮转/compaction
+    // 造成的计数归零会被旧高水位写回当基线,之后那个桶的增量永远 saturating_sub 成 0、
+    // 无法自愈。只保护失败文件名下的桶,别的桶就能正常落到新基线。
+    if !failed_with_cache.is_empty() {
+        let mut protected: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for key in &failed_with_cache {
+            if let Some(cache) = st.file_cache.get(key) {
+                protected.extend(cache.aggregate.keys().map(String::as_str));
+            }
+        }
+        for (bucket, previous) in &st.hourly {
+            if current.contains_key(bucket) || !protected.contains(bucket.as_str()) {
+                continue;
+            }
+            current.insert(bucket.clone(), previous.clone());
         }
     }
+    trim_file_cache(&mut st.file_cache, &scanned);
+
     if !usable {
         // 日志文件存在但当前仍在写入/损坏时,不要切换到台账降级路径,
         // 否则日志恢复后同一增量可能被重复记入小时表。
@@ -553,8 +684,8 @@ fn scan_session_logs(
 #[cfg(test)]
 mod tests {
     use super::{
-        local_date, local_hour, scan_session_file, scan_session_logs, select_daily_source,
-        DshDailySource, DshEntry, DshState,
+        collect_session_logs, local_date, local_hour, scan_session_file, scan_session_logs,
+        select_daily_source, DshDailySource, DshEntry, DshState, ZSTD_MAGIC,
     };
     use std::collections::HashMap;
     use std::fs;
@@ -567,6 +698,28 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("otr-dsh-{suffix}.{ext}"))
+    }
+
+    /// 造一份会话日志正文;(turn, step, input, output) 四元组各产生一条用量事件
+    fn session_log(ts: i64, model: &str, entries: &[(u64, u64, u64, u64)]) -> String {
+        let mut out = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type":"session","id":"s-1","createdAt":ts - 1}),
+            serde_json::json!({
+                "type":"request/header","time":ts,
+                "data":{"header":{"config":{"provider":"p","model":model}}}
+            })
+        );
+        for (turn, step, input, output) in entries {
+            out.push_str(&format!(
+                "{}\n",
+                serde_json::json!({
+                    "type":"assistant/message","time":ts,
+                    "data":{"turn":turn,"step":step,"usage":{"inputTokens":input,"outputTokens":output}}
+                })
+            ));
+        }
+        out
     }
 
     #[test]
@@ -693,7 +846,10 @@ mod tests {
             ),
         )
         .unwrap();
-        fs::write(&broken, b"not a zstd stream").unwrap();
+        // 真·损坏的 zstd:魔数正确但帧数据是垃圾,解压必然失败
+        let mut corrupt = ZSTD_MAGIC.to_vec();
+        corrupt.extend_from_slice(b"garbage frame");
+        fs::write(&broken, corrupt).unwrap();
 
         let mut state = DshState::default();
         let mut records = Vec::new();
@@ -709,6 +865,100 @@ mod tests {
 
         fs::remove_file(valid).unwrap();
         fs::remove_file(broken).unwrap();
+    }
+
+    #[test]
+    fn session_file_cache_skips_unchanged_files_and_refreshes_on_write() {
+        let path = temp_path("jsonl");
+        let ts = 1_780_000_000_000i64;
+        fs::write(&path, session_log(ts, "m", &[(1, 1, 10, 2)])).unwrap();
+
+        let mut state = DshState::default();
+        let mut first = Vec::new();
+        assert!(scan_session_logs(&mut state, &mut first, &[path.clone()], true).unwrap());
+        assert_eq!(first.iter().map(|r| r.input_tokens).sum::<u64>(), 10);
+        let cached = state
+            .file_cache
+            .get(&path.to_string_lossy().to_string())
+            .expect("首次解析必须写入 per-file 缓存");
+        assert_eq!(cached.aggregate.len(), 1);
+
+        // 文件没动:命中缓存,不应产生任何新记录
+        let mut second = Vec::new();
+        assert!(scan_session_logs(&mut state, &mut second, &[path.clone()], true).unwrap());
+        assert!(second.is_empty(), "未变化的文件不该再产出记录");
+
+        // 追加一次调用:size 变化 → 缓存失效,只补新增量
+        fs::write(&path, session_log(ts, "m", &[(1, 1, 10, 2), (1, 2, 5, 1)])).unwrap();
+        let mut third = Vec::new();
+        assert!(scan_session_logs(&mut state, &mut third, &[path.clone()], true).unwrap());
+        assert_eq!(third.iter().map(|r| r.input_tokens).sum::<u64>(), 5);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rotated_log_drops_baseline_even_when_another_log_fails() {
+        let a = temp_path("jsonl");
+        let b = temp_path("jsonl");
+        let ts = 1_780_000_000_000i64;
+        fs::write(&a, session_log(ts, "m1", &[(1, 1, 10, 0)])).unwrap();
+        fs::write(&b, session_log(ts, "m2", &[(1, 1, 20, 0)])).unwrap();
+
+        let mut state = DshState::default();
+        let mut first = Vec::new();
+        scan_session_logs(&mut state, &mut first, &[a.clone(), b.clone()], true).unwrap();
+        let key_a = format!("{}|{}|p:m1", local_date(ts), local_hour(ts));
+        let key_b = format!("{}|{}|p:m2", local_date(ts), local_hour(ts));
+        assert_eq!(state.hourly.get(&key_a).map(|e| e.input), Some(10));
+        assert_eq!(state.hourly.get(&key_b).map(|e| e.input), Some(20));
+
+        // A 被轮转/compaction,用量事件整段消失;B 同一刻读不出来
+        fs::write(&a, session_log(ts, "m1", &[])).unwrap();
+        let mut corrupt = ZSTD_MAGIC.to_vec();
+        corrupt.extend_from_slice(b"garbage frame");
+        fs::write(&b, corrupt).unwrap();
+
+        let mut second = Vec::new();
+        scan_session_logs(&mut state, &mut second, &[a.clone(), b.clone()], true).unwrap();
+
+        assert!(
+            state.hourly.get(&key_a).is_none(),
+            "轮转归零是真实回落,必须落到新基线;旧口径会把它顶回高水位,此后该桶增量永远被 saturating_sub 成 0"
+        );
+        assert_eq!(
+            state.hourly.get(&key_b).map(|e| e.input),
+            Some(20),
+            "读失败的日志要保住自己的高水位,不能倒退"
+        );
+        assert!(second.is_empty());
+
+        fs::remove_file(a).unwrap();
+        fs::remove_file(b).unwrap();
+    }
+
+    #[test]
+    fn zstd_session_log_is_decoded_without_extension_hint() {
+        // 故意用 .jsonl 后缀装 zstd 内容:按扩展名判断会解出乱码 → 静默丢量
+        let path = temp_path("jsonl");
+        let ts = 1_780_000_000_000i64;
+        let plain = session_log(ts, "m", &[(1, 1, 12, 3)]);
+        fs::write(&path, zstd::stream::encode_all(plain.as_bytes(), 3).unwrap()).unwrap();
+
+        let mut state = DshState::default();
+        let mut records = Vec::new();
+        assert!(scan_session_logs(&mut state, &mut records, &[path.clone()], true).unwrap());
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].input_tokens, 12);
+        assert_eq!(records[0].output_tokens, 3);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn collect_session_logs_tolerates_missing_root() {
+        let mut out = Vec::new();
+        let missing = std::env::temp_dir().join("otr-dsh-missing-root-xyz");
+        collect_session_logs(&missing, &mut out);
+        assert!(out.is_empty());
     }
 }
 

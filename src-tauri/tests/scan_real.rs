@@ -52,6 +52,66 @@ fn scan_real_data_smoke() {
     }
 }
 
+/// DSH per-file 缓存回归:同一份 state 连扫两次,第二次必须全部命中缓存。
+/// 批次 4 的性能验收:冷扫 ~20s+ → 热扫亚秒级,且小时聚合逐字不变(纯记忆化)。
+///   cargo test --release --test scan_real -- --ignored --nocapture
+#[test]
+#[ignore]
+fn dsh_rescan_hits_file_cache() {
+    let p = otr_lib::providers::dsh::DshProvider;
+    if !p.detect() {
+        println!("dsh: not detected");
+        return;
+    }
+    let mut cursors: HashMap<String, FileCursor> = HashMap::new();
+    let mut state = serde_json::Value::Null;
+
+    let t0 = std::time::Instant::now();
+    let first = {
+        let mut ctx = ScanCtx {
+            full: true,
+            force_full: false,
+            cursors: &mut cursors,
+            state: &mut state,
+        };
+        p.scan(&mut ctx).expect("cold scan")
+    };
+    let cold = t0.elapsed();
+    let hourly_after_cold = state.get("hourly").cloned();
+
+    let t1 = std::time::Instant::now();
+    let second = {
+        let mut ctx = ScanCtx {
+            full: false,
+            force_full: false,
+            cursors: &mut cursors,
+            state: &mut state,
+        };
+        p.scan(&mut ctx).expect("warm scan")
+    };
+    let warm = t1.elapsed();
+
+    let cached = state
+        .get("fileCache")
+        .and_then(|v| v.as_object())
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let state_kib = serde_json::to_vec(&state).map(|v| v.len()).unwrap_or(0) / 1024;
+    println!(
+        "dsh 冷扫 {cold:?}(records={}) / 热扫 {warm:?}(records={}) fileCache={cached} 个文件 state={state_kib} KiB",
+        first.len(),
+        second.len()
+    );
+    assert!(cached > 0, "state 里必须有 per-file 缓存");
+    assert!(second.is_empty(), "文件没变时热扫不该产出任何新记录");
+    assert_eq!(
+        state.get("hourly").cloned(),
+        hourly_after_cold,
+        "热扫必须逐字复用缓存聚合,不能把小时基线冲掉"
+    );
+    assert!(warm * 5 < cold, "热扫必须显著快于冷扫");
+}
+
 /// 自定义 Agent 链路:用 CodeBuddy 的真实目录(claude-code 布局)验证 CustomProvider
 #[test]
 #[ignore]
@@ -66,7 +126,11 @@ fn scan_custom_agent_smoke() {
         ),
     };
     let p = CustomProvider::new(cfg);
-    assert!(p.detect(), "codebuddy dir should exist");
+    if !p.detect() {
+        // 本机没装 CodeBuddy 时不该让整轮冒烟失败(以前硬 assert,导致 --ignored 跑必挂一条)
+        println!("custom-codebuddy: 目录不存在,跳过");
+        return;
+    }
     assert_eq!(p.id(), "custom-codebuddy");
     assert_eq!(p.display_name(), "CodeBuddy");
     let mut cursors: HashMap<String, FileCursor> = HashMap::new();
