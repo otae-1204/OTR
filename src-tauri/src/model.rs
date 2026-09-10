@@ -140,13 +140,12 @@ pub struct ModelSlice {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSummary {
+    /// 数据最后一次真正变化的时间(kv data_updated_ms);从未写过数据时回退到当前时间
     pub generated_at: i64,
-    pub today: Totals,
-    pub week: Totals,
-    pub month: Totals,
-    pub all_time: Totals,
+    /// 只在真的写入用量时递增的版本号。前端拿它当刷新键:
+    /// 空闲轮询不再连锁触发明细查询,数据没变时子组件也不重拉。
+    pub data_version: i64,
     pub by_agent_today: Vec<AgentSlice>,
-    pub by_model_month: Vec<ModelSlice>,
 }
 
 /// 任意日期范围(可按 Agent 过滤)的统计

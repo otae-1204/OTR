@@ -23,22 +23,38 @@ export function useUsageData() {
 
   const mountedRef = useRef(true);
   const debounceRef = useRef<number | null>(null);
+  // in-flight 去重 + 尾沿重跑:30 秒轮询和 usage://updated 事件经常撞在一起,
+  // 并发拉取除了白跑两遍,还会让先发的旧响应覆盖后发的新响应。
+  const inFlightRef = useRef(false);
+  const pendingRef = useRef(false);
 
   const refresh = useCallback(async () => {
+    if (inFlightRef.current) {
+      pendingRef.current = true;
+      return;
+    }
+    inFlightRef.current = true;
     try {
-      const [nextSummary, nextAgents, nextSettings] = await Promise.all([
-        api.getSummary(),
-        api.listAgents(),
-        api.getSettings(),
-      ]);
-      if (!mountedRef.current) return;
-      setSummary(nextSummary);
-      setAgents(nextAgents);
-      setSettings(nextSettings);
-    } catch (err) {
-      console.error("[useUsageData] 拉取数据失败", err);
+      do {
+        pendingRef.current = false;
+        try {
+          const [nextSummary, nextAgents, nextSettings] = await Promise.all([
+            api.getSummary(),
+            api.listAgents(),
+            api.getSettings(),
+          ]);
+          if (!mountedRef.current) return;
+          setSummary(nextSummary);
+          setAgents(nextAgents);
+          setSettings(nextSettings);
+        } catch (err) {
+          console.error("[useUsageData] 拉取数据失败", err);
+        } finally {
+          if (mountedRef.current) setLoading(false);
+        }
+      } while (pendingRef.current && mountedRef.current);
     } finally {
-      if (mountedRef.current) setLoading(false);
+      inFlightRef.current = false;
     }
   }, []);
 

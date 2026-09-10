@@ -20,14 +20,13 @@ export interface ModelSlice {
   totals: Totals;
 }
 
+/** 轻量摘要:只有今日各 Agent 卡片 + 数据版本号(明细走 RangeSummary / DailyUsage / SessionUsage) */
 export interface UsageSummary {
+  /** 数据最后一次真正变化的时间,不是查询时间 */
   generatedAt: number;
-  today: Totals;
-  week: Totals;
-  month: Totals;
-  allTime: Totals;
+  /** 只在真的写入用量时递增;前端用它当刷新键 */
+  dataVersion: number;
   byAgentToday: AgentSlice[];
-  byModelMonth: ModelSlice[];
 }
 
 /** 任意日期范围(可按 Agent 过滤)的统计;日期格式 "YYYY-MM-DD"(本地) */

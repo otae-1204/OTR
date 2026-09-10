@@ -109,7 +109,7 @@ export function StatCard({
           {summary ? (
             <span
               className="rounded-md bg-muted/40 px-1.5 py-0.5 text-xs text-muted-foreground"
-              title="数据生成时间"
+              title="数据最后一次写入的时间(不是本次查询时间)"
             >
               更新于 {fmtDateTime(summary.generatedAt)}
             </span>

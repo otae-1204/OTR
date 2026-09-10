@@ -104,9 +104,14 @@ export default function App() {
     await refresh();
   }, [refresh]);
 
-  /** summary 变化(刷新/事件/轮询)或启停 Agent 时驱动子组件重新拉取明细 */
+  /**
+   * 数据版本 + 启停 Agent 决定子组件何时重拉明细。
+   * 以前用 summary.generatedAt,而它是 now_ms() —— 每 30 秒的轮询都会让它变,
+   * 于是 get_range_summary + get_daily + get_sessions 每轮白跑一遍。
+   * dataVersion 只在后端真的写入用量时递增,空闲时完全不动。
+   */
   const enabledKey = (settings?.enabledAgents ?? []).slice().sort().join(",");
-  const refreshKey = `${summary?.generatedAt ?? 0}:${enabledKey}`;
+  const refreshKey = `${summary?.dataVersion ?? 0}:${enabledKey}`;
 
   useEffect(() => {
     if (view !== "dashboard") return;

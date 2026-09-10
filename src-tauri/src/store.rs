@@ -6,8 +6,8 @@ use rusqlite::{params, Connection};
 
 use crate::error::Result;
 use crate::model::{
-    date_str, local_date, local_hour, now_ms, today_str, AgentSlice, DailyUsage, ModelSlice,
-    RangeSummary, SessionUsage, Totals, UsageSummary,
+    local_date, local_hour, now_ms, today_str, AgentSlice, DailyUsage, ModelSlice, RangeSummary,
+    SessionUsage, Totals, UsageSummary,
 };
 use crate::providers::FileCursor;
 use crate::settings::PriceEntry;
@@ -107,8 +107,26 @@ ON CONFLICT(agent,session_id) DO UPDATE SET
   last_active = MAX(COALESCE(last_active,0), COALESCE(excluded.last_active,0))
 "#;
 
+/// 数据版本号:只在**真的写入了行**时递增,和用量写入在同一个事务里。
+/// 前端拿它当刷新键(替代原来的 generated_at),空闲轮询就不再连锁触发
+/// get_range_summary / get_daily / get_sessions 这三条明细查询。
+fn bump_data_version(tx: &rusqlite::Transaction) -> Result<()> {
+    tx.execute(
+        "INSERT INTO kv (k, v) VALUES ('data_version', '1')
+         ON CONFLICT(k) DO UPDATE SET v = CAST(CAST(v AS INTEGER) + 1 AS TEXT)",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO kv (k, v) VALUES ('data_updated_ms', ?1)
+         ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+        params![now_ms().to_string()],
+    )?;
+    Ok(())
+}
+
 /// 把一批增量记录写入按天/按小时/会话/元数据表。
 /// 调用方负责事务边界与提交(apply_records 累加、replace_agent 先清后写)。
+/// 返回**实际写出的行数**:0 表示这批记录什么都没动(扫描很安静时不该推版本号)。
 fn write_records(
     tx: &rusqlite::Transaction,
     records: &[crate::model::UsageRecord],
@@ -192,6 +210,7 @@ fn write_records(
                     last_ts,
                 ],
             )?;
+            n += 1;
         }
     }
     Ok(n)
@@ -287,6 +306,9 @@ impl Store {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let n = write_records(&tx, records)?;
+        if n > 0 {
+            bump_data_version(&tx)?;
+        }
         tx.commit()?;
         Ok(n)
     }
@@ -323,6 +345,8 @@ impl Store {
             "INSERT INTO kv (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
             params![format!("state:{}", agent), serde_json::to_string(state)?],
         )?;
+        // 全量重建本身就是一次数据变更(哪怕结果恰好为空),必须让前端重拉
+        bump_data_version(&tx)?;
         tx.commit()?;
         Ok(n)
     }
@@ -331,14 +355,6 @@ impl Store {
 
     fn totals_eq(conn: &Connection, date: &str) -> Result<Totals> {
         Self::totals_query(conn, "WHERE date = ?1", rusqlite::params![date])
-    }
-
-    fn totals_ge(conn: &Connection, from: &str) -> Result<Totals> {
-        Self::totals_query(conn, "WHERE date >= ?1", rusqlite::params![from])
-    }
-
-    fn totals_all(conn: &Connection) -> Result<Totals> {
-        Self::totals_query(conn, "", rusqlite::params![])
     }
 
     fn totals_query(conn: &Connection, cond: &str, p: impl rusqlite::Params) -> Result<Totals> {
@@ -371,15 +387,15 @@ impl Store {
         Self::totals_eq(&conn, date)
     }
 
+    /// 轻量摘要:只给前端的"今日各 Agent"卡片 + 数据版本号。
+    ///
+    /// 以前这里跑 4 次 totals 聚合 + 2 次 GROUP BY,其中 week/month/allTime/byModelMonth
+    /// 前端**一次都没用过**(只消费 byAgentToday 和 generatedAt);而 generatedAt 又是
+    /// now_ms(),每轮都变 → App.tsx 的 refreshKey 每 30 秒变一次 → 连锁触发
+    /// get_range_summary + get_daily + get_sessions 共 6 次 invoke。
     pub fn summary(&self) -> Result<UsageSummary> {
         let conn = self.conn.lock().unwrap();
         let today = today_str();
-        let week_from = date_str(chrono::Duration::days(6));
-        let month_from = date_str(chrono::Duration::days(29));
-        let today_t = Self::totals_eq(&conn, &today)?;
-        let week_t = Self::totals_ge(&conn, &week_from)?;
-        let month_t = Self::totals_ge(&conn, &month_from)?;
-        let all_t = Self::totals_all(&conn)?;
 
         let mut by_agent = Vec::new();
         {
@@ -398,33 +414,23 @@ impl Store {
             }
         }
 
-        let mut by_model = Vec::new();
-        {
-            let mut stmt = conn.prepare(
-                "SELECT COALESCE(NULLIF(model,''),'(未知模型)'), SUM(input_tokens), SUM(output_tokens),
-                        SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(calls), SUM(cost)
-                 FROM usage_daily WHERE date >= ?1 GROUP BY model
-                 ORDER BY SUM(input_tokens+output_tokens+cache_read_tokens+cache_write_tokens) DESC
-                 LIMIT 12",
-            )?;
-            let rows = stmt.query_map(params![month_from], |row| {
-                Ok((row.get::<_, String>(0)?, totals_from_row(row, 1)))
-            })?;
-            for r in rows {
-                let (model, t) = r?;
-                by_model.push(crate::model::ModelSlice { model, totals: t });
-            }
-        }
-
         Ok(UsageSummary {
-            generated_at: now_ms(),
-            today: today_t,
-            week: week_t,
-            month: month_t,
-            all_time: all_t,
+            // 数据最后一次真正变化的时间(不是查询时间):StatCard 的"更新于"因此反映
+            // 数据新鲜度,而不是"刚刚查过一次"
+            generated_at: Self::kv_i64(&conn, "data_updated_ms")
+                .filter(|v| *v > 0)
+                .unwrap_or_else(now_ms),
+            data_version: Self::kv_i64(&conn, "data_version").unwrap_or(0),
             by_agent_today: by_agent,
-            by_model_month: by_model,
         })
+    }
+
+    fn kv_i64(conn: &Connection, key: &str) -> Option<i64> {
+        conn.query_row("SELECT v FROM kv WHERE k=?1", params![key], |row| {
+            row.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
     }
 
     /// 任意日期范围(可按 Agent 过滤)的统计;成本走 CostBasis(定价表为权威)。
@@ -932,6 +938,42 @@ mod tests {
             .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour")
             .unwrap()
             .is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 数据版本号只在真的写入时递增:前端拿它当刷新键,空扫描必须保持不动。
+    #[test]
+    fn data_version_only_advances_when_something_is_written() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.summary().unwrap().data_version, 0, "空库版本号应为 0");
+
+        store.apply_records(&[]).unwrap();
+        assert_eq!(
+            store.summary().unwrap().data_version,
+            0,
+            "空批次不该推版本号,否则空闲时每 2 秒一次的扫描会让前端一直重拉"
+        );
+
+        store.apply_records(&[record()]).unwrap();
+        let v1 = store.summary().unwrap().data_version;
+        assert_eq!(v1, 1);
+
+        store.apply_records(&[]).unwrap();
+        assert_eq!(store.summary().unwrap().data_version, v1);
+
+        store.apply_records(&[record()]).unwrap();
+        assert_eq!(store.summary().unwrap().data_version, v1 + 1);
+
+        // generated_at 是"数据最后变化时间"而不是查询时间:连续查询必须一致
+        let a = store.summary().unwrap().generated_at;
+        let b = store.summary().unwrap().generated_at;
+        assert_eq!(
+            a, b,
+            "generated_at 每轮都变的话,前端刷新键会连锁触发 6 次 invoke"
+        );
+        assert!(a > 1_700_000_000_000, "应当是毫秒时间戳: {a}");
+
         let _ = std::fs::remove_file(path);
     }
 
