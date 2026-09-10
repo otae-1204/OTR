@@ -144,6 +144,8 @@ pub fn run() {
             let store = Store::open(&dir.join("radar.db"))?;
             let settings_path = dir.join("settings.json");
             let settings = Settings::load(&settings_path);
+            // 启动时最小化:设置里声明了很久,但以前 Rust 侧从来没有读过它
+            let start_minimized = settings.start_minimized;
             app.manage(AppState {
                 store,
                 providers: providers::all_providers(),
@@ -155,6 +157,14 @@ pub fn run() {
                 rescan: RescanGate::default(),
             });
             tray::setup(app.handle())?;
+            if start_minimized {
+                // 托盘常驻应用:启动不弹主窗口,点托盘图标再打开
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(e) = window.hide() {
+                        eprintln!("[otr] 启动最小化失败: {e}");
+                    }
+                }
+            }
             let handle = watcher::start(app.handle().clone())?;
             {
                 let state = app.state::<AppState>();

@@ -172,6 +172,8 @@ pub struct AgentStatus {
     pub enabled: bool,
     /// 全部时间累计 tokens(卡片右侧那个"累计")
     pub total_tokens: u64,
+    /// 需要用户注意的健康提示(登录失效/分页截断…);None = 正常
+    pub notice: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

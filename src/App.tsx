@@ -155,6 +155,7 @@ export default function App() {
           detected: false,
           enabled: enabledIds.has(id),
           totalTokens: 0,
+          notice: null,
         });
       }
     }
@@ -169,6 +170,7 @@ export default function App() {
           detected: true,
           enabled: true,
           totalTokens: totals.totalTokens,
+          notice: null,
         });
       }
     }

@@ -49,6 +49,8 @@ export interface AgentStatus {
   enabled: boolean;
   /** 全部时间累计 tokens(卡片右侧那个"累计") */
   totalTokens: number;
+  /** 需要用户注意的健康提示(登录失效/分页截断…);null = 正常 */
+  notice: string | null;
 }
 
 export interface DailyUsage {

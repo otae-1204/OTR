@@ -495,8 +495,7 @@ impl Store {
 
         // Q1:按 Agent 过滤 → totals + by_model;未指定 Agent 时排除已停用的
         let mut totals = Totals::default();
-        let mut by_model = Vec::new();
-        {
+        let by_model: Vec<ModelSlice> = {
             let sql = base_sql.replace("{agent_cond}", "AND (?3 IS NULL OR agent = ?3)");
             let mut stmt = conn.prepare(&sql)?;
             let mut model_map: std::collections::HashMap<String, Totals> =
@@ -513,17 +512,17 @@ impl Store {
                     merge(model_map.entry(model.to_string()).or_default(), &t);
                 },
             )?;
-            by_model = model_map
+            let mut list: Vec<ModelSlice> = model_map
                 .into_iter()
                 .map(|(model, totals)| ModelSlice { model, totals })
                 .collect();
-            by_model.sort_by(|a, b| b.totals.total_tokens.cmp(&a.totals.total_tokens));
-            by_model.truncate(12);
-        }
+            list.sort_by(|a, b| b.totals.total_tokens.cmp(&a.totals.total_tokens));
+            list.truncate(12);
+            list
+        };
 
         // Q2:不按选中 Agent 过滤 → by_agent(卡片用);仍排除设置里停用的
-        let mut by_agent = Vec::new();
-        {
+        let by_agent: Vec<AgentSlice> = {
             let sql = base_sql.replace("{agent_cond}", "");
             let mut stmt = conn.prepare(&sql)?;
             let mut agent_map: std::collections::HashMap<String, Totals> =
@@ -539,12 +538,13 @@ impl Store {
                     merge(agent_map.entry(ag.to_string()).or_default(), &t);
                 },
             )?;
-            by_agent = agent_map
+            let mut list: Vec<AgentSlice> = agent_map
                 .into_iter()
                 .map(|(agent, totals)| AgentSlice { agent, totals })
                 .collect();
-            by_agent.sort_by(|a, b| b.totals.total_tokens.cmp(&a.totals.total_tokens));
-        }
+            list.sort_by(|a, b| b.totals.total_tokens.cmp(&a.totals.total_tokens));
+            list
+        };
 
         Ok(RangeSummary {
             generated_at: now_ms(),

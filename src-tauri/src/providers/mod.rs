@@ -59,6 +59,12 @@ pub trait AgentProvider: Send + Sync {
     fn native_cost_currency(&self) -> Option<&'static str> {
         None
     }
+    /// 从 Provider 自己持久化的 state(state:<id> 这条 kv)里提取需要让用户看到的
+    /// 健康提示:登录态失效、分页被截断之类。None = 一切正常。
+    /// 以前这类问题只 eprintln 到 stderr,打包后的托盘应用里用户完全看不到。
+    fn health(&self, _state: &serde_json::Value) -> Option<String> {
+        None
+    }
     /// 增量扫描;full 时外部已重置游标与状态,Provider 自然输出全量
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>>;
 }

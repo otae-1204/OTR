@@ -20,6 +20,13 @@ const USAGE_URL: &str = "https://cursor.com/api/dashboard/get-filtered-usage-eve
 const PAGE_SIZE: u32 = 500;
 const MAX_PAGES: u32 = 60;
 const THROTTLE_MS: i64 = 60_000;
+/// 分页被 MAX_PAGES 截断后的重试节流:别每 60 秒就去翻 60 页
+const TRUNCATED_THROTTLE_MS: i64 = 10 * 60_000;
+/// 水位回退窗口。以前只用 ts 比水位、更小的直接丢,晚到的事件会永久丢失;
+/// 现在每次都回退这么久重新拉,靠 key 去重保证不重复计入。
+const OVERLAP_MS: i64 = 10 * 60_000;
+/// 去重窗口里保留的最大 key 数(key 以 ts 开头,超出按时间裁掉最老的)
+const RECENT_KEYS_MAX: usize = 4096;
 const HTTP_TIMEOUT_SECS: u64 = 20;
 
 impl AgentProvider for CursorProvider {
@@ -49,6 +56,16 @@ impl AgentProvider for CursorProvider {
         Some("USD")
     }
 
+    /// 让 UI 能看到"登录态失效 / 分页被截断"这类问题,
+    /// 而不是只在 stderr 里打一行、用户完全不知情
+    fn health(&self, state: &Value) -> Option<String> {
+        let st: CursorState = serde_json::from_value(state.clone()).ok()?;
+        if st.last_error_ms <= 0 {
+            return None;
+        }
+        st.last_error
+    }
+
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {
         let prev = ctx.state.clone();
         let mut st: CursorState =
@@ -69,12 +86,26 @@ impl AgentProvider for CursorProvider {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct CursorState {
+    /// 水位:已计入的最大事件时间戳
     #[serde(default)]
     last_ts: i64,
+    /// 水位窗口内已经计过的 key(形如 "{ts}|{model}|{input}|..."),用于重叠窗口去重
     #[serde(default)]
-    last_ts_keys: Vec<String>,
+    recent_keys: Vec<String>,
     #[serde(default)]
     last_fetch_ms: i64,
+    /// 是否已经启用重叠窗口。老状态里没有这个字段,第一次升级上来必须退化成
+    /// "严格按水位拉",否则会把水位之前已经计过的事件重新算一遍。
+    #[serde(default)]
+    overlap: bool,
+    /// 上一次分页是否撞到 MAX_PAGES 上限(截断时不推进水位)
+    #[serde(default)]
+    truncated: bool,
+    /// 最近一次异常原因 + 时间,给 AgentCard 显示健康状态
+    #[serde(default)]
+    last_error: Option<String>,
+    #[serde(default)]
+    last_error_ms: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -91,52 +122,118 @@ struct UsageEvent {
     headless: bool,
 }
 
+/// dedup key 形如 "{ts}|{model}|{input}|...",取开头的 ts
+fn key_ts(key: &str) -> Option<i64> {
+    key.split('|').next()?.parse::<i64>().ok()
+}
+
+/// 从拉到的事件里挑出真正的新事件,并维护去重窗口。
+/// 判定标准只有"ts 是否落在窗口内"和"key 是否见过",不再要求 ts >= 水位 ——
+/// 晚到的事件(服务端补数据、时钟回拨)因此不会再被永久丢掉。
+fn select_new_events(
+    st: &mut CursorState,
+    events: &[UsageEvent],
+    window_cutoff: i64,
+) -> Vec<UsageRecord> {
+    // 老 key 先按时间裁一遍,窗口之外的不可能再出现
+    if window_cutoff > i64::MIN {
+        st.recent_keys
+            .retain(|k| key_ts(k).map_or(true, |ts| ts >= window_cutoff));
+    }
+    let known: HashSet<String> = st.recent_keys.iter().cloned().collect();
+
+    let mut records = Vec::new();
+    let mut fresh = Vec::new();
+    for ev in events {
+        if ev.ts < window_cutoff || known.contains(ev.key.as_str()) {
+            continue;
+        }
+        records.push(event_record(ev));
+        fresh.push(ev.key.clone());
+    }
+    st.recent_keys.extend(fresh);
+    if st.recent_keys.len() > RECENT_KEYS_MAX {
+        st.recent_keys.sort_by_key(|k| key_ts(k).unwrap_or(0));
+        let drop = st.recent_keys.len() - RECENT_KEYS_MAX;
+        st.recent_keys.drain(..drop);
+    }
+    records
+}
+
 fn scan_usage(full: bool, st: &mut CursorState) -> Result<Vec<UsageRecord>> {
     let now = now_ms();
-    if !full && st.last_fetch_ms > 0 && now - st.last_fetch_ms < THROTTLE_MS {
-        return Ok(vec![]);
+    if !full && st.last_fetch_ms > 0 {
+        let throttle = if st.truncated {
+            TRUNCATED_THROTTLE_MS
+        } else {
+            THROTTLE_MS
+        };
+        if now - st.last_fetch_ms < throttle {
+            return Ok(vec![]);
+        }
     }
 
     let jwt = match read_access_token() {
         Some(t) if !t.is_empty() => t,
         _ => {
-            eprintln!("[{AGENT}] 未找到本机登录态,打开 Cursor 并登录后再刷新");
+            st.last_fetch_ms = now;
+            st.last_error = Some("未找到本机登录态,请打开 Cursor 并登录".into());
+            st.last_error_ms = now;
             return Ok(vec![]);
         }
     };
 
-    let end_ms = now + 60_000;
-    // 全量不带 startDate:带日期过滤时部分账号会只返回极少事件
-    let start_ms = if full || st.last_ts <= 0 {
-        None
-    } else {
-        Some(st.last_ts)
-    };
-
-    let events = fetch_events(&jwt, start_ms, end_ms)?;
-    st.last_fetch_ms = now;
-    if events.is_empty() {
-        return Ok(vec![]);
-    }
-
     let prev_ts = st.last_ts;
-    let prev_keys: HashSet<&str> = st.last_ts_keys.iter().map(String::as_str).collect();
-    let mut records = Vec::new();
-    for ev in &events {
-        let seen = ev.ts < prev_ts || (ev.ts == prev_ts && prev_keys.contains(ev.key.as_str()));
-        if seen {
-            continue;
+    let end_ms = now + 60_000;
+    // 全量不带 startDate:带日期过滤时部分账号会只返回极少事件。
+    // 增量则在老状态(没有 recent_keys)下严格从水位拉,之后回退一个重叠窗口。
+    let start_ms = if full || prev_ts <= 0 {
+        None
+    } else if st.overlap {
+        Some(prev_ts.saturating_sub(OVERLAP_MS))
+    } else {
+        Some(prev_ts)
+    };
+    let window_cutoff = start_ms.unwrap_or(i64::MIN);
+
+    let outcome = match fetch_events(&jwt, start_ms, end_ms) {
+        Ok(o) => o,
+        Err(e) => {
+            // 失败也要记节流 + 健康状态:以前 Err 会让 scan_provider 回滚 state,
+            // last_fetch_ms 不更新 → 每个 watcher tick 都拿失效 token 再打一次 cursor.com,
+            // 用户还看不到任何提示。
+            st.last_fetch_ms = now;
+            st.last_error_ms = now;
+            let text = e.to_string();
+            st.last_error = Some(if text.contains("not_authenticated") {
+                "Cursor 登录态已失效,请在 Cursor 里重新登录".into()
+            } else {
+                format!("拉取用量失败:{text}")
+            });
+            return Ok(vec![]);
         }
-        records.push(event_record(ev));
+    };
+    st.last_fetch_ms = now;
+    st.last_error = None;
+    st.last_error_ms = 0;
+    st.truncated = outcome.truncated;
+    st.overlap = !full || st.overlap;
+
+    let records = select_new_events(st, &outcome.events, window_cutoff);
+
+    if outcome.truncated {
+        // 撞到分页上限:本次拿到的事件照常入库(已记进去重窗口),但**不推进水位**,
+        // 下次会重新拉同一段并靠 key 去重跳过已计部分,把后面的页补回来。
+        st.last_error = Some(format!(
+            "用量事件超过 {MAX_PAGES} 页上限(本次取到 {} 条),稍后自动重试补齐",
+            outcome.events.len()
+        ));
+        st.last_error_ms = now;
+        return Ok(records);
     }
 
-    if let Some(max_ts) = events.iter().map(|e| e.ts).max() {
+    if let Some(max_ts) = outcome.events.iter().map(|e| e.ts).max() {
         st.last_ts = st.last_ts.max(max_ts);
-        st.last_ts_keys = events
-            .iter()
-            .filter(|e| e.ts == st.last_ts)
-            .map(|e| e.key.clone())
-            .collect();
     }
     Ok(records)
 }
@@ -166,11 +263,16 @@ fn event_record(ev: &UsageEvent) -> UsageRecord {
     }
 }
 
-fn fetch_events(jwt: &str, start_ms: Option<i64>, end_ms: i64) -> Result<Vec<UsageEvent>> {
+struct FetchOutcome {
+    events: Vec<UsageEvent>,
+    /// 循环跑满 MAX_PAGES 仍未取完:静默截断会让数据无声丢失,必须标出来
+    truncated: bool,
+}
+
+fn fetch_events(jwt: &str, start_ms: Option<i64>, end_ms: i64) -> Result<FetchOutcome> {
     let cookies = cookie_candidates(jwt);
     if cookies.is_empty() {
-        eprintln!("[{AGENT}] 登录态无法解析");
-        return Ok(vec![]);
+        return Err(AppError::Msg("登录态无法解析".into()));
     }
 
     let agent = ureq::AgentBuilder::new()
@@ -180,7 +282,7 @@ fn fetch_events(jwt: &str, start_ms: Option<i64>, end_ms: i64) -> Result<Vec<Usa
     let mut last_err: Option<String> = None;
     for cookie in &cookies {
         match fetch_with_cookie(&agent, cookie, start_ms, end_ms) {
-            Ok(events) => return Ok(events),
+            Ok(outcome) => return Ok(outcome),
             Err(e) => last_err = Some(e),
         }
     }
@@ -195,9 +297,10 @@ fn fetch_with_cookie(
     cookie: &str,
     start_ms: Option<i64>,
     end_ms: i64,
-) -> std::result::Result<Vec<UsageEvent>, String> {
+) -> std::result::Result<FetchOutcome, String> {
     let mut all = Vec::new();
     let mut total: Option<u64> = None;
+    let mut truncated = false;
     for page in 1..=MAX_PAGES {
         let mut body = serde_json::json!({
             "endDate": end_ms.to_string(),
@@ -229,9 +332,6 @@ fn fetch_with_cookie(
         let page_events = parse_events(&value);
         let page_len = page_events.len();
         all.extend(page_events);
-        if page == 1 {
-            eprintln!("[{AGENT}] page1 events={page_len} api_total={total:?}");
-        }
         if page_len < PAGE_SIZE as usize {
             break;
         }
@@ -240,8 +340,15 @@ fn fetch_with_cookie(
                 break;
             }
         }
+        // 最后一个允许的页仍然取满 → 后面还有数据没拿到
+        if page == MAX_PAGES {
+            truncated = true;
+        }
     }
-    Ok(all)
+    Ok(FetchOutcome {
+        events: all,
+        truncated,
+    })
 }
 
 fn http_err(err: &ureq::Error) -> String {
@@ -431,7 +538,6 @@ fn json_ts(v: &Value) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     fn sample_body() -> Value {
         serde_json::json!({
@@ -502,18 +608,79 @@ mod tests {
         assert!(cookies[1].starts_with("github|user_01ABC%3A%3A"));
     }
 
+    fn ev(ts: i64, model: &str, input: u64) -> UsageEvent {
+        UsageEvent {
+            key: format!("{ts}|{model}|{input}|0|0|0|0.0000"),
+            ts,
+            model: model.into(),
+            kind: None,
+            input,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            cost: 0.0,
+            headless: false,
+        }
+    }
+
+    /// 晚到的事件(ts 比水位早)必须能补进来 —— 旧口径是 ev.ts < prev_ts 直接丢,
+    /// 服务端补数据 / 时钟回拨造成的事件会永久丢失。
     #[test]
-    fn watermark_skips_already_ingested_event() {
-        let events = parse_events(&sample_body());
-        let prev_ts = events[0].ts;
-        let prev_keys: HashSet<&str> = [events[0].key.as_str()].into_iter().collect();
-        let new: Vec<_> = events
-            .iter()
-            .filter(|ev| {
-                !(ev.ts < prev_ts || (ev.ts == prev_ts && prev_keys.contains(ev.key.as_str())))
-            })
+    fn late_arriving_event_is_not_dropped() {
+        let watermark = 1_756_700_000_000i64;
+        let mut st = CursorState {
+            last_ts: watermark,
+            overlap: true,
+            ..Default::default()
+        };
+        let cutoff = watermark - OVERLAP_MS;
+        let late = ev(watermark - 60_000, "composer-2", 100);
+
+        let records = select_new_events(&mut st, std::slice::from_ref(&late), cutoff);
+        assert_eq!(records.len(), 1, "晚到的事件不该被丢掉");
+
+        // 重叠窗口下一次会重复返回同一条 → key 去重后不能再计一遍
+        let again = select_new_events(&mut st, std::slice::from_ref(&late), cutoff);
+        assert!(again.is_empty(), "同一个 key 不能重复计入");
+
+        // 真正在窗口之外的仍然要丢掉(否则每轮都会把历史重算一遍)
+        let ancient = ev(cutoff - 1, "composer-2", 999);
+        assert!(select_new_events(&mut st, &[ancient], cutoff).is_empty());
+    }
+
+    /// 去重窗口必须有界,且裁剪掉的是最老的 key
+    #[test]
+    fn dedup_window_is_bounded_and_keeps_the_newest() {
+        let base = 1_756_700_000_000i64;
+        let events: Vec<UsageEvent> = (0..RECENT_KEYS_MAX + 50)
+            .map(|i| ev(base + i as i64 * 1000, "m", i as u64 + 1))
             .collect();
-        assert_eq!(new.len(), 1);
-        assert_eq!(new[0].model, "claude-4.6-sonnet");
+        let mut st = CursorState::default();
+        let records = select_new_events(&mut st, &events, i64::MIN);
+        assert_eq!(records.len(), events.len());
+        assert_eq!(st.recent_keys.len(), RECENT_KEYS_MAX, "去重窗口必须封顶");
+        let newest = base + (events.len() as i64 - 1) * 1000;
+        assert!(
+            st.recent_keys.iter().any(|k| key_ts(k) == Some(newest)),
+            "最新的 key 必须还在"
+        );
+        assert!(
+            !st.recent_keys.iter().any(|k| key_ts(k) == Some(base)),
+            "最老的 key 应该被裁掉"
+        );
+    }
+
+    /// 老状态没有 overlap 标记:第一次升级上来必须严格按水位拉,不能重算历史
+    #[test]
+    fn legacy_state_does_not_rewind_the_watermark() {
+        let st: CursorState = serde_json::from_value(serde_json::json!({
+            "lastTs": 1_756_700_000_000i64,
+            "lastTsKeys": ["x"],
+            "lastFetchMs": 1_756_700_100_000i64
+        }))
+        .unwrap();
+        assert!(!st.overlap, "老状态默认不开重叠窗口");
+        assert!(st.recent_keys.is_empty());
+        assert_eq!(st.last_ts, 1_756_700_000_000);
     }
 }

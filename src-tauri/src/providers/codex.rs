@@ -71,18 +71,69 @@ pub fn scan_roots(roots: &[PathBuf], agent: &str, ctx: &mut ScanCtx) -> Result<V
     }
     let selected: Vec<PathBuf> = groups.into_values().collect();
     let mut records = Vec::new();
+    // 派生会话整轮只汇总成一行日志:以前是每个文件打一条,一次全量扫描能刷几十行
+    let mut derived = 0usize;
+    let mut derived_parents: std::collections::HashSet<String> = std::collections::HashSet::new();
     for file in selected {
         // 子代理/派生会话(session_meta 带 parent_thread_id)的 rollout 会重放
         // 父线程的全部 token_count 历史,官方 /status 与 CC-Switch 均不计入,跳过
         if let Some((_, Some(parent))) = session_meta_thread_info(&file) {
-            eprintln!("[{}] 跳过派生会话(父线程 {})", agent, parent);
+            derived += 1;
+            derived_parents.insert(parent);
             continue;
         }
         if let Err(e) = scan_file(&file, agent, ctx, &mut records) {
             eprintln!("[{}] {}: {}", agent, file.display(), e);
         }
     }
+    if derived > 0 {
+        eprintln!(
+            "[{}] 跳过 {} 个派生会话(来自 {} 个父线程):它们的 rollout 重放了父线程的完整 token_count 历史",
+            agent,
+            derived,
+            derived_parents.len()
+        );
+    }
     Ok(records)
+}
+
+/// usage 对象的 5 个计数:(input, cached, output, cacheWrite, reasoning)。
+/// last_token_usage 与 total_token_usage 的字段名一致,可以共用一套读取。
+type UsageParts = (u64, u64, u64, u64, u64);
+
+fn usage_parts(v: &Value) -> UsageParts {
+    (
+        u64f(v, "input_tokens"),
+        u64f(v, "cached_input_tokens"),
+        u64f(v, "output_tokens"),
+        u64f(v, "cache_write_input_tokens"),
+        u64f(v, "reasoning_output_tokens"),
+    )
+}
+
+fn parts_sum(p: UsageParts) -> u64 {
+    p.0 + p.1 + p.2 + p.3 + p.4
+}
+
+fn parts_delta(cur: UsageParts, prev: UsageParts) -> UsageParts {
+    (
+        cur.0.saturating_sub(prev.0),
+        cur.1.saturating_sub(prev.1),
+        cur.2.saturating_sub(prev.2),
+        cur.3.saturating_sub(prev.3),
+        cur.4.saturating_sub(prev.4),
+    )
+}
+
+/// 累计基准只增不减:累计值万一回退(会话重置),宁可饱和成 0 也不要下次再多算一遍
+fn parts_max(a: UsageParts, b: UsageParts) -> UsageParts {
+    (
+        a.0.max(b.0),
+        a.1.max(b.1),
+        a.2.max(b.2),
+        a.3.max(b.3),
+        a.4.max(b.4),
+    )
 }
 
 /// 读 session_meta(文件头部),返回 (自身 thread_id, parent_thread_id)
@@ -149,12 +200,14 @@ fn scan_file(
     let mut session_id = cursor_string(&cursor, "session_id");
     let mut project = cursor_string(&cursor, "project");
     let mut model = cursor_string(&cursor, "model");
-    let calls_prev = cursor
+    // total_token_usage 的上一次读数:last_token_usage 缺失/归零时用它算增量兜底。
+    // 以前这里存的是 "calls"(写出去之后从来没有任何地方读它)——已删掉换成真正有用的东西。
+    let mut prev_total: UsageParts = cursor
         .extra
-        .get("calls")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let mut new_calls = 0u64;
+        .get("total")
+        .and_then(|v| serde_json::from_value::<[u64; 5]>(v.clone()).ok())
+        .map(|a| (a[0], a[1], a[2], a[3], a[4]))
+        .unwrap_or_default();
     let mut last_ts: i64 = cursor.extra.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
 
     if cursor.offset > 0 && (session_id.is_none() || project.is_none() || model.is_none()) {
@@ -204,15 +257,35 @@ fn scan_file(
             }
             "token_count" => {
                 let info = payload.get("info").unwrap_or(&payload);
-                // 会话结束时 codex 会补一个 info 为空的 token_count 事件,跳过
-                let Some(lu) = info.get("last_token_usage") else {
-                    continue;
-                };
-                if !lu.is_object() {
+                let last = info.get("last_token_usage").filter(|v| v.is_object());
+                let total = info.get("total_token_usage").filter(|v| v.is_object());
+                if last.is_none() && total.is_none() {
+                    // 会话结束时 codex 会补一个 info 为空的 token_count 事件,跳过
                     continue;
                 }
-                let in_total = u64f(lu, "input_tokens");
-                let cached = u64f(lu, "cached_input_tokens");
+                let last_parts = last.map(usage_parts).unwrap_or_default();
+                let total_parts = total.map(usage_parts).unwrap_or_default();
+
+                // 优先用 last:它是这次请求的真实用量。
+                // 但 last 偶尔缺失/归零而 total 还在涨,那一次调用就会无声消失 ——
+                // 这时用累计值的增量兜底(ARCHITECTURE §5.3 的"取末次累计或用 last 累加")。
+                // 兜底要求先有累计基准,否则第一个只有 total 的事件会把历史全部重算一遍。
+                let parts = if parts_sum(last_parts) > 0 {
+                    last_parts
+                } else if parts_sum(prev_total) > 0 && parts_sum(total_parts) > 0 {
+                    parts_delta(total_parts, prev_total)
+                } else {
+                    if total.is_some() {
+                        prev_total = parts_max(prev_total, total_parts);
+                    }
+                    continue;
+                };
+                // 无论走哪条路都推进累计基准,避免下次 last 缺失时重复计算已经计过的部分
+                if total.is_some() {
+                    prev_total = parts_max(prev_total, total_parts);
+                }
+
+                let (in_total, cached, output, cache_write, reasoning) = parts;
                 let r = UsageRecord {
                     agent: agent.into(),
                     session_id: session_id.clone(),
@@ -223,17 +296,17 @@ fn scan_file(
                         .and_then(|x| x.as_str())
                         .and_then(iso_to_ms)
                         .unwrap_or_else(now_ms),
+                    // input_tokens 两种口径都含 cached,统一减掉才是"未命中缓存的输入"
                     input_tokens: in_total.saturating_sub(cached),
-                    output_tokens: u64f(lu, "output_tokens"),
+                    output_tokens: output,
                     cache_read_tokens: cached,
-                    cache_write_tokens: u64f(lu, "cache_write_input_tokens"),
-                    reasoning_tokens: u64f(lu, "reasoning_output_tokens"),
+                    cache_write_tokens: cache_write,
+                    reasoning_tokens: reasoning,
                     calls: 1,
                     ..Default::default()
                 };
                 if r.total_tokens() > 0 {
                     out.push(r);
-                    new_calls += 1;
                 }
             }
             _ => {}
@@ -245,7 +318,7 @@ fn scan_file(
     cursor.mtime_ms = jsonl_util::file_mtime_ms(path);
     cursor.extra = serde_json::json!({
         "version": PARSER_VERSION,
-        "calls": calls_prev + new_calls,
+        "total": [prev_total.0, prev_total.1, prev_total.2, prev_total.3, prev_total.4],
         "ts": last_ts,
         "session_id": session_id,
         "project": project,
@@ -350,7 +423,8 @@ mod tests {
         root
     }
 
-    fn write_fixture(file: &mut std::fs::File, model: &str, input: u64) {
+    /// 只写 session_meta + turn_context,方便拼自定义的事件序列
+    fn write_header(file: &mut std::fs::File, model: &str) {
         write_event(
             file,
             serde_json::json!({
@@ -371,7 +445,42 @@ mod tests {
                 "payload": {"type": "turn_context", "model": model}
             }),
         );
+    }
+
+    fn write_fixture(file: &mut std::fs::File, model: &str, input: u64) {
+        write_header(file, model);
         write_token_count(file, "2026-08-31T07:53:20.000Z", input, 1);
+    }
+
+    /// 同时带 last 与 total 的事件(真实 codex 的 info 里两者都有)
+    fn write_token_count_full(
+        file: &mut std::fs::File,
+        timestamp: &str,
+        last: (u64, u64),
+        total: (u64, u64),
+    ) {
+        write_event(
+            file,
+            serde_json::json!({
+                "timestamp": timestamp,
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": last.0,
+                            "cached_input_tokens": 0,
+                            "output_tokens": last.1
+                        },
+                        "total_token_usage": {
+                            "input_tokens": total.0,
+                            "cached_input_tokens": 0,
+                            "output_tokens": total.1
+                        }
+                    }
+                }
+            }),
+        );
     }
 
     fn write_event(file: &mut std::fs::File, value: serde_json::Value) {
@@ -490,6 +599,50 @@ mod tests {
         let second = scan(&root, &mut cursors, false);
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].model.as_deref(), Some("gpt-5.6-terra"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// last_token_usage 缺失/归零时,必须用 total_token_usage 的增量兜底,
+    /// 否则那一次调用会无声消失;同时又不能把已经计过的历史重算一遍。
+    #[test]
+    fn total_token_usage_backfills_a_missing_last_usage() {
+        let root = fixture_root();
+        let path =
+            root.join("rollout-2026-08-31T07-53-17-11111111-2222-3333-4444-555555555555.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        write_header(&mut file, "gpt-5.6-sol");
+        // 第一次:last 与 total 都在,累计 input=10 / output=1
+        write_token_count_full(&mut file, "2026-08-31T07:53:20.000Z", (10, 1), (10, 1));
+        // 第二次:last 整个缺失,只有累计值涨到 30 / 3 → 应当补出 20 / 2
+        write_event(
+            &mut file,
+            serde_json::json!({
+                "timestamp": "2026-08-31T07:53:21.000Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 30,
+                            "cached_input_tokens": 0,
+                            "output_tokens": 3
+                        }
+                    }
+                }
+            }),
+        );
+        file.flush().unwrap();
+
+        let mut cursors = HashMap::new();
+        let records = scan(&root, &mut cursors, true);
+        assert_eq!(records.len(), 2, "两次调用都该有记录");
+        assert_eq!(records[0].input_tokens, 10);
+        assert_eq!(records[0].output_tokens, 1);
+        assert_eq!(
+            records[1].input_tokens, 20,
+            "last 缺失时必须用 total 的增量兜底,而不是丢掉这一次"
+        );
+        assert_eq!(records[1].output_tokens, 2);
         fs::remove_dir_all(root).unwrap();
     }
 

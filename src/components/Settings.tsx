@@ -948,7 +948,7 @@ export function Settings({
 
       <SectionCard
         icon={<SunIcon className="h-4 w-4 text-primary" />}
-        title="外观"
+        title="外观与启动"
         description="主题切换即时生效,并保存在本机"
       >
         <div className="flex items-center justify-between px-4 py-3">
@@ -984,6 +984,36 @@ export function Settings({
               亮色
             </button>
           </div>
+        </div>
+
+        <div className="flex items-center justify-between border-t border-border/40 px-4 py-3">
+          <div>
+            <div className="text-sm font-medium">启动时最小化到托盘</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              开启后启动只常驻托盘、不弹主窗口(以前这个开关只有字段没有入口)
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings?.startMinimized ?? false}
+            onClick={() =>
+              settings &&
+              void persist({
+                ...settings,
+                startMinimized: !settings.startMinimized,
+              })
+            }
+            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+              settings?.startMinimized ? "bg-primary" : "bg-muted"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 h-4 w-4 rounded-full bg-background shadow transition-all ${
+                settings?.startMinimized ? "left-[18px]" : "left-0.5"
+              }`}
+            />
+          </button>
         </div>
       </SectionCard>
     </div>

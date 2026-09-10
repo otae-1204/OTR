@@ -58,7 +58,17 @@ export function AgentCard({
           />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">{label}</div>
+          <div className="flex items-center gap-1 text-sm font-medium">
+            <span className="truncate">{label}</span>
+            {status.notice ? (
+              <span
+                title={status.notice}
+                className="shrink-0 cursor-help text-amber-500"
+              >
+                ⚠
+              </span>
+            ) : null}
+          </div>
           <div
             className="mt-0.5 text-xl font-bold tabular-nums tracking-tight leading-none"
             title={`${rangeLabel} ${rangeTokens.toLocaleString()} tokens`}

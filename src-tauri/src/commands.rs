@@ -70,6 +70,12 @@ pub fn list_agents(app: AppHandle) -> Vec<AgentStatus> {
         detected: p.detect(),
         enabled: settings.is_enabled(p.id()),
         total_tokens: t_all.get(p.id()).map(|t| t.total_tokens).unwrap_or(0),
+        // Provider 的健康问题写在它自己的 state 里,这里读出来带给 UI
+        notice: state
+            .store
+            .get_kv(&format!("state:{}", p.id()))
+            .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
+            .and_then(|v| p.health(&v)),
     })
     .collect()
 }

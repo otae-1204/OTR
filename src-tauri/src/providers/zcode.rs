@@ -258,17 +258,21 @@ fn scan_file(
     Ok(())
 }
 
-/// transcript 里一次调用会写多条带 usage 的事件,只收单次完成,丢掉重复与回合汇总。
+/// transcript 里一次调用会写多条带 usage 的事件(model_complete 与 model_network_status
+/// 就是同一份 usage 的两条),只收**白名单**里的单次完成类型。
+///
+/// 以前是黑名单(只排除 turn_complete / model_complete 和带 modelRequestCount 的):
+/// ZCode 一旦新增一种带 usage + modelId 的事件类型就会被重复计入,而且不会有任何报错。
+/// 本机实测 transcript 里带 payload.usage 的 type 只有 model_complete / model_network_status /
+/// turn_complete 三种,其中 model_network_status 是唯一同时带 modelId 与 requestId 的那个,
+/// 所以白名单在当前数据上不会改变任何数字。
 fn transcript_usage_is_per_call(v: &Value, usage: &Value) -> bool {
     let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-    if ty == "turn_complete" || ty == "model_complete" {
+    if !matches!(ty, "model_network_status" | "model_request_completed") {
         return false;
     }
     // 回合汇总即使改了 type 名,usage 里也会带 modelRequestCount
-    if usage.get("modelRequestCount").is_some() {
-        return false;
-    }
-    true
+    usage.get("modelRequestCount").is_none()
 }
 
 fn nonempty_str(v: &Value) -> Option<&str> {
