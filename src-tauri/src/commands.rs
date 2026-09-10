@@ -50,7 +50,7 @@ fn date_boundary_ms(date: &str, end_of_day: bool) -> Option<i64> {
 #[tauri::command]
 pub fn list_agents(app: AppHandle) -> Vec<AgentStatus> {
     let state = app.state::<AppState>();
-    let settings = state.settings.lock().unwrap().clone();
+    let settings = crate::lock(&state.settings).clone();
     // 以前这里多查一次 agent_today 填 todayTokens/todayCost,但前端从未渲染过它们
     // (AgentCard 只读 displayName / totalTokens / 外部传入的 rangeTokens),已删。
     let t_all = state.store.agent_all().unwrap_or_default();
@@ -88,7 +88,7 @@ pub fn get_range_summary(
     to: String,
 ) -> std::result::Result<RangeSummary, String> {
     let state = app.state::<AppState>();
-    let settings = state.settings.lock().unwrap().clone();
+    let settings = crate::lock(&state.settings).clone();
     let currencies = native_cost_currencies(&state, &settings);
     let basis = CostBasis::new(&settings.pricing, settings.exchange_rate, &currencies);
     let mut s = state
@@ -127,7 +127,7 @@ pub fn get_daily(
         .daily(agent.as_deref(), &from, &to, &g)
         .map_err(err_str)?;
     if agent.is_none() {
-        let enabled = state.settings.lock().unwrap().enabled_agents.clone();
+        let enabled = crate::lock(&state.settings).enabled_agents.clone();
         rows.retain(|r| enabled.iter().any(|id| id == &r.agent));
     }
     Ok(rows)
@@ -144,7 +144,7 @@ pub fn get_sessions(
     let state = app.state::<AppState>();
     let from_ms = from.as_deref().and_then(|d| date_boundary_ms(d, false));
     let to_ms = to.as_deref().and_then(|d| date_boundary_ms(d, true));
-    let settings = state.settings.lock().unwrap().clone();
+    let settings = crate::lock(&state.settings).clone();
     let currencies = native_cost_currencies(&state, &settings);
     let basis = CostBasis::new(&settings.pricing, settings.exchange_rate, &currencies);
     state
@@ -160,16 +160,29 @@ pub fn get_sessions(
         .map_err(err_str)
 }
 
-/// 触发一次后台增量扫描;full=true 时清空该 Agent 本地数据重扫
+/// 触发一次后台增量扫描;full=true 时清空该 Agent 本地数据重扫。
+///
+/// 以前每次调用都无条件 spawn 一个线程:连点托盘就会排队一串扫描,一个接一个地跑完,
+/// 期间界面看起来像卡住。现在改成"登记 + 合并":已有 worker 时只把一个待跑标记置上,
+/// 由它跑完当前轮后在收尾处再跑一次;非全量请求遇到全量请求会升级成全量,而不是各跑一遍。
 #[tauri::command]
 pub fn rescan(app: AppHandle, full: Option<bool>) {
+    // 已经有 worker 时只登记请求:它收尾时会看到 pending > 0 并把这一轮跑掉
+    if !app.state::<AppState>().rescan.request(full.unwrap_or(false)) {
+        return;
+    }
     let handle = app.clone();
-    std::thread::spawn(move || run_scan(&handle, full.unwrap_or(false), None));
+    std::thread::spawn(move || loop {
+        match handle.state::<AppState>().rescan.next() {
+            crate::RescanStep::Run { full } => run_scan(&handle, full, None),
+            crate::RescanStep::Stop => break,
+        }
+    });
 }
 
 #[tauri::command]
 pub fn get_settings(app: AppHandle) -> Settings {
-    app.state::<AppState>().settings.lock().unwrap().clone()
+    crate::lock(&app.state::<AppState>().settings).clone()
 }
 
 /// 出现过的全部模型名(设置页定价表用)
@@ -185,15 +198,15 @@ pub fn list_models(app: AppHandle) -> Vec<String> {
 pub fn save_settings(app: AppHandle, settings: Settings) -> std::result::Result<(), String> {
     let state = app.state::<AppState>();
     {
-        let mut guard = state.settings.lock().unwrap();
+        let mut guard = crate::lock(&state.settings);
         *guard = settings.clone();
         guard.save(&state.settings_path).map_err(err_str)?;
     }
     // 新启用的 Agent 立即补一次扫描,并按新配置重挂文件监听
     let handle = app.clone();
     std::thread::spawn(move || run_scan(&handle, false, None));
-    let current = state.settings.lock().unwrap().clone();
-    if let Some(w) = state.watcher.lock().unwrap().as_ref() {
+    let current = crate::lock(&state.settings).clone();
+    if let Some(w) = crate::lock(&state.watcher).as_ref() {
         w.rewatch(crate::watcher::current_watch_paths(&state, &current));
     }
     Ok(())

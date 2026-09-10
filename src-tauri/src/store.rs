@@ -268,6 +268,11 @@ pub struct Store {
 }
 
 impl Store {
+    /// 连接锁:中毒时也继续用(见 crate::lock 的说明)
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        crate::lock(&self.conn)
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
@@ -279,13 +284,13 @@ impl Store {
     /// 全量重建前的安全网:用 SQLite 自身机制做一致性快照。
     /// 连接开着时直接复制 db 文件不安全(WAL),`VACUUM INTO` 则是事务一致的。
     pub fn snapshot(&self, dest: &Path) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute("VACUUM INTO ?1", params![dest.to_string_lossy()])?;
         Ok(())
     }
 
     pub fn wipe_agent(&self, agent: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute("DELETE FROM usage_daily WHERE agent=?1", params![agent])?;
         conn.execute("DELETE FROM usage_hourly WHERE agent=?1", params![agent])?;
         conn.execute(
@@ -303,7 +308,7 @@ impl Store {
 
     /// 记录均为增量语义,分别累加进按天/按小时/会话表;整体包在一个事务里。
     pub fn apply_records(&self, records: &[crate::model::UsageRecord]) -> Result<usize> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let n = write_records(&tx, records)?;
         if n > 0 {
@@ -322,7 +327,7 @@ impl Store {
         cursors: &HashMap<String, FileCursor>,
         state: &serde_json::Value,
     ) -> Result<usize> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         for sql in [
             "DELETE FROM usage_daily WHERE agent=?1",
@@ -383,7 +388,7 @@ impl Store {
     }
 
     pub fn totals_for_date(&self, date: &str) -> Result<Totals> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         Self::totals_eq(&conn, date)
     }
 
@@ -394,7 +399,7 @@ impl Store {
     /// now_ms(),每轮都变 → App.tsx 的 refreshKey 每 30 秒变一次 → 连锁触发
     /// get_range_summary + get_daily + get_sessions 共 6 次 invoke。
     pub fn summary(&self) -> Result<UsageSummary> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let today = today_str();
 
         let mut by_agent = Vec::new();
@@ -443,7 +448,7 @@ impl Store {
         // None = 不过滤;Some = 仅计入这些 Agent(设置里停用的不进主页合计)
         enabled_agents: Option<&[String]>,
     ) -> Result<RangeSummary> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let base_sql = "SELECT COALESCE(NULLIF(model,''),'(未知模型)'), agent,
                         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                         SUM(cache_write_tokens), SUM(calls), SUM(cost)
@@ -555,7 +560,7 @@ impl Store {
 
     /// 出现过的全部模型名(设置页定价表用)
     pub fn list_models(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn
             .prepare("SELECT DISTINCT model FROM usage_daily WHERE model != '' ORDER BY model")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
@@ -571,7 +576,7 @@ impl Store {
         to: &str,
         granularity: &str,
     ) -> Result<Vec<DailyUsage>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let sql = match granularity {
             "hour" => {
                 "SELECT date || ' ' || printf('%02d:00', hour) AS bucket, agent,
@@ -637,7 +642,7 @@ impl Store {
         // None = 不过滤;Some = 未指定单个 Agent 时仅返回这些 Agent 的会话
         enabled_agents: Option<&[String]>,
     ) -> Result<Vec<SessionUsage>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let enabled_json = match enabled_agents {
             None => "null".to_string(),
             Some(list) => serde_json::to_string(list).unwrap_or_else(|_| "[]".into()),
@@ -746,7 +751,7 @@ impl Store {
     }
 
     pub fn agent_all(&self) -> Result<HashMap<String, Totals>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT agent, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                     SUM(cache_write_tokens), SUM(calls), SUM(cost)
@@ -766,7 +771,7 @@ impl Store {
     // ---------- 游标 / KV ----------
 
     pub fn set_cursor(&self, agent: &str, path: &str, cursor: &FileCursor) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO file_cursors (agent, path, data) VALUES (?1, ?2, ?3)
              ON CONFLICT(agent, path) DO UPDATE SET data = excluded.data",
@@ -776,7 +781,7 @@ impl Store {
     }
 
     pub fn load_cursors(&self, agent: &str) -> HashMap<String, FileCursor> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut map = HashMap::new();
         let Ok(mut stmt) = conn.prepare("SELECT path, data FROM file_cursors WHERE agent=?1")
         else {
@@ -795,7 +800,7 @@ impl Store {
     }
 
     pub fn set_kv(&self, key: &str, value: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO kv (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
             params![key, value],
@@ -804,7 +809,7 @@ impl Store {
     }
 
     pub fn get_kv(&self, key: &str) -> Option<String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.query_row("SELECT v FROM kv WHERE k=?1", params![key], |row| {
             row.get::<_, String>(0)
         })
