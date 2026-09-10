@@ -41,6 +41,11 @@ impl AgentProvider for OpencodeProvider {
         PARSER_VERSION
     }
 
+    /// session.cost 由 OpenCode 按 models.dev 的美元单价算出
+    fn native_cost_currency(&self) -> Option<&'static str> {
+        Some("USD")
+    }
+
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {
         let mut st: OcState = serde_json::from_value(std::mem::take(ctx.state)).unwrap_or_default();
         let records = scan_sessions(&mut st)?;

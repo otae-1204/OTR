@@ -43,6 +43,11 @@ impl AgentProvider for DshProvider {
         PARSER_VERSION
     }
 
+    /// DSH 台账(cost-meter)记的是人民币实际计费金额
+    fn native_cost_currency(&self) -> Option<&'static str> {
+        Some("CNY")
+    }
+
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {
         let mut st: DshState =
             serde_json::from_value(std::mem::take(ctx.state)).unwrap_or_default();

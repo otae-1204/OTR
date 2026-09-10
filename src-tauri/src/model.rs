@@ -171,8 +171,7 @@ pub struct AgentStatus {
     pub display_name: String,
     pub detected: bool,
     pub enabled: bool,
-    pub today_tokens: u64,
-    pub today_cost: f64,
+    /// 全部时间累计 tokens(卡片右侧那个"累计")
     pub total_tokens: u64,
 }
 

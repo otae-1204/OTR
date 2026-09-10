@@ -44,6 +44,11 @@ impl AgentProvider for CursorProvider {
         PARSER_VERSION
     }
 
+    /// dashboard 的 tokenUsage.totalCents 是美元
+    fn native_cost_currency(&self) -> Option<&'static str> {
+        Some("USD")
+    }
+
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {
         let prev = ctx.state.clone();
         let mut st: CursorState =

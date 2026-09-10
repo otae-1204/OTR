@@ -149,8 +149,6 @@ export default function App() {
           displayName: AGENT_LABELS[id],
           detected: false,
           enabled: enabledIds.has(id),
-          todayTokens: 0,
-          todayCost: 0,
           totalTokens: 0,
         });
       }
@@ -165,8 +163,6 @@ export default function App() {
           displayName: id,
           detected: true,
           enabled: true,
-          todayTokens: totals.totalTokens,
-          todayCost: totals.cost,
           totalTokens: totals.totalTokens,
         });
       }

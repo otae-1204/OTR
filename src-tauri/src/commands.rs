@@ -4,10 +4,34 @@ use crate::model::{
     date_str, today_str, AgentStatus, DailyUsage, RangeSummary, SessionUsage, UsageSummary,
 };
 use crate::settings::Settings;
+use crate::store::CostBasis;
 use crate::{providers, run_scan, AppState};
 
 fn err_str<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
+}
+
+/// Agent → 自带成本币种,由各 Provider 自己声明。
+/// 通用查询代码以前写死 `agent != "dsh"` 猜币种,现在只认这份声明。
+fn native_cost_currencies(
+    state: &AppState,
+    settings: &Settings,
+) -> std::collections::HashMap<String, String> {
+    let customs = providers::build_customs(settings);
+    state
+        .providers
+        .iter()
+        .map(|b| b.as_ref() as &dyn providers::AgentProvider)
+        .chain(
+            customs
+                .iter()
+                .map(|b| b.as_ref() as &dyn providers::AgentProvider),
+        )
+        .filter_map(|p| {
+            p.native_cost_currency()
+                .map(|c| (p.id().to_string(), c.to_string()))
+        })
+        .collect()
 }
 
 /// "YYYY-MM-DD" -> 当天 00:00 / 23:59:59.999 的本地时间戳(ms)
@@ -27,7 +51,8 @@ fn date_boundary_ms(date: &str, end_of_day: bool) -> Option<i64> {
 pub fn list_agents(app: AppHandle) -> Vec<AgentStatus> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().unwrap().clone();
-    let t_today = state.store.agent_today(&today_str()).unwrap_or_default();
+    // 以前这里多查一次 agent_today 填 todayTokens/todayCost,但前端从未渲染过它们
+    // (AgentCard 只读 displayName / totalTokens / 外部传入的 rangeTokens),已删。
     let t_all = state.store.agent_all().unwrap_or_default();
     let customs = providers::build_customs(&settings);
     let all = state
@@ -44,8 +69,6 @@ pub fn list_agents(app: AppHandle) -> Vec<AgentStatus> {
         display_name: p.display_name().to_string(),
         detected: p.detect(),
         enabled: settings.is_enabled(p.id()),
-        today_tokens: t_today.get(p.id()).map(|t| t.total_tokens).unwrap_or(0),
-        today_cost: t_today.get(p.id()).map(|t| t.cost).unwrap_or(0.0),
         total_tokens: t_all.get(p.id()).map(|t| t.total_tokens).unwrap_or(0),
     })
     .collect()
@@ -66,17 +89,19 @@ pub fn get_range_summary(
 ) -> std::result::Result<RangeSummary, String> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().unwrap().clone();
+    let currencies = native_cost_currencies(&state, &settings);
+    let basis = CostBasis::new(&settings.pricing, settings.exchange_rate, &currencies);
     let mut s = state
         .store
         .range_summary(
             agent.as_deref(),
             &from,
             &to,
-            &settings.pricing,
-            settings.exchange_rate,
+            &basis,
             Some(&settings.enabled_agents),
         )
         .map_err(err_str)?;
+    // cost 字段恒为 ¥;currency 只是"前端该按哪个币种展示"的提示
     s.currency = settings.currency.clone();
     Ok(s)
 }
@@ -120,6 +145,8 @@ pub fn get_sessions(
     let from_ms = from.as_deref().and_then(|d| date_boundary_ms(d, false));
     let to_ms = to.as_deref().and_then(|d| date_boundary_ms(d, true));
     let settings = state.settings.lock().unwrap().clone();
+    let currencies = native_cost_currencies(&state, &settings);
+    let basis = CostBasis::new(&settings.pricing, settings.exchange_rate, &currencies);
     state
         .store
         .sessions(
@@ -127,7 +154,7 @@ pub fn get_sessions(
             from_ms,
             to_ms,
             limit.unwrap_or(100) as i64,
-            settings.exchange_rate,
+            &basis,
             Some(&settings.enabled_agents),
         )
         .map_err(err_str)

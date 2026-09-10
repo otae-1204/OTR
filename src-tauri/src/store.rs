@@ -197,6 +197,53 @@ fn write_records(
     Ok(n)
 }
 
+/// 成本口径(全应用唯一一套):**定价表为权威**。
+///
+/// 1. 模型在 settings.pricing 里有定价 → 按 tokens × 单价 × 汇率重算,**覆盖**自带成本;
+/// 2. 没有定价 → 用数据自带成本,按该 Agent 声明的币种归一化;
+/// 3. 都没有 → 0。
+///
+/// 输出恒为 ¥;展示币种由前端按 settings.currency 换算。
+///
+/// 以前两处口径不同:range_summary 会查定价表并写死 `agent != "dsh"` 猜币种,
+/// 而 sessions() 完全不查定价表、只按 dsh 特判换算 —— 明细表和顶部大卡系统性对不上。
+pub struct CostBasis<'a> {
+    pricing: &'a HashMap<String, PriceEntry>,
+    /// 美元 → 人民币
+    rate: f64,
+    /// Agent → 自带成本币种("CNY"/"USD"),由 Provider::native_cost_currency 声明
+    native_currency: &'a HashMap<String, String>,
+}
+
+impl<'a> CostBasis<'a> {
+    pub fn new(
+        pricing: &'a HashMap<String, PriceEntry>,
+        rate: f64,
+        native_currency: &'a HashMap<String, String>,
+    ) -> Self {
+        Self {
+            pricing,
+            rate,
+            native_currency,
+        }
+    }
+
+    /// 一条 (agent, model) 聚合行的成本;tokens 用于定价重算,raw_cost 是数据自带成本
+    pub fn row_cost(&self, model: &str, agent: &str, tokens: &Totals, raw_cost: f64) -> f64 {
+        if let Some(price) = self.pricing.get(model) {
+            return estimate_cost(tokens, price, self.rate);
+        }
+        if raw_cost.abs() <= f64::EPSILON {
+            return 0.0;
+        }
+        match self.native_currency.get(agent).map(String::as_str) {
+            Some("CNY") => raw_cost,
+            // 未声明币种的一律按美元处理(与历史行为一致),但不再针对某个具体 Agent 特判
+            _ => raw_cost * self.rate,
+        }
+    }
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -380,16 +427,13 @@ impl Store {
         })
     }
 
-    /// 任意日期范围(可按 Agent 过滤)的统计。
-    /// 成本规则:模型在 pricing 里有定价 → 按 tokens×定价×汇率 重算(**覆盖自带成本**);
-    /// 没有定价 → 用自带成本,并按来源币种归一化(DSH 为 ¥,其余为 $×汇率)。输出统一为 ¥。
+    /// 任意日期范围(可按 Agent 过滤)的统计;成本走 CostBasis(定价表为权威)。
     pub fn range_summary(
         &self,
         agent: Option<&str>,
         from: &str,
         to: &str,
-        pricing: &std::collections::HashMap<String, PriceEntry>,
-        exchange_rate: f64,
+        basis: &CostBasis,
         // None = 不过滤;Some = 仅计入这些 Agent(设置里停用的不进主页合计)
         enabled_agents: Option<&[String]>,
     ) -> Result<RangeSummary> {
@@ -414,8 +458,7 @@ impl Store {
         fn fold_rows(
             stmt: &mut rusqlite::Statement,
             params: &[&dyn rusqlite::ToSql],
-            p: &std::collections::HashMap<String, PriceEntry>,
-            rate: f64,
+            basis: &CostBasis,
             mut sink: impl FnMut(&str, &str, Totals),
         ) -> Result<()> {
             let rows = stmt.query_map(params, |row| {
@@ -428,11 +471,7 @@ impl Store {
             for r in rows {
                 let (model, agent, mut t) = r?;
                 let raw_cost = t.cost;
-                if let Some(pe) = p.get(&model) {
-                    t.cost = estimate_cost(&t, pe, rate);
-                } else if raw_cost.abs() > f64::EPSILON && agent != "dsh" {
-                    t.cost = raw_cost * rate;
-                }
+                t.cost = basis.row_cost(&model, &agent, &t, raw_cost);
                 sink(&model, &agent, t);
             }
             Ok(())
@@ -454,8 +493,7 @@ impl Store {
             fold_rows(
                 &mut stmt,
                 &[&from, &to, &agent],
-                pricing,
-                exchange_rate,
+                basis,
                 |model, ag, t| {
                     if agent.is_none() && !enabled_ok(ag) {
                         return;
@@ -482,8 +520,7 @@ impl Store {
             fold_rows(
                 &mut stmt,
                 &[&from, &to],
-                pricing,
-                exchange_rate,
+                basis,
                 |_model, ag, t| {
                     if !enabled_ok(ag) {
                         return;
@@ -572,13 +609,25 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    /// 会话明细;成本与 range_summary 走**同一套 CostBasis 口径**。
+    ///
+    /// 代价是必须在 Rust 里折价:定价表按模型查,SQL 里做不了这件事(以前正是因此
+    /// 干脆不查定价表、只按 agent='dsh' 特判,于是明细表的成本列和顶部大卡从来对不上)。
+    /// 做法:子查询先按会话级 MAX(last_ts) 选出最近的 limit 个会话,再取这些会话的
+    /// (session, model) 行,在 Rust 里按模型逐行算成本再合回会话。
+    ///
+    /// 注意与 range_summary 的**语义差异**(不是 bug,两表测的不是一回事):
+    /// daily 按记录日期过滤,只统计"范围内发生的用量";这里选的是"范围内活跃的会话",
+    /// 金额是该会话的**完整累计**,所以跨范围开始的长会话会把范围外的部分也算进来。
+    /// 实测 codex 近 30 天:大卡 3124.44 / 明细 4127.56,差额全部来自 4 个跨范围的长会话。
+    /// 另外 skip_daily 的记录(如 DSH projcache)只进 sessions 不进 usage_daily。
     pub fn sessions(
         &self,
         agent: Option<&str>,
         from_ms: Option<i64>,
         to_ms: Option<i64>,
         limit: i64,
-        exchange_rate: f64,
+        basis: &CostBasis,
         // None = 不过滤;Some = 未指定单个 Agent 时仅返回这些 Agent 的会话
         enabled_agents: Option<&[String]>,
     ) -> Result<Vec<SessionUsage>> {
@@ -587,67 +636,107 @@ impl Store {
             None => "null".to_string(),
             Some(list) => serde_json::to_string(list).unwrap_or_else(|_| "[]".into()),
         };
+        // 过滤按会话级 MAX(last_ts) 而不是逐行 last_ts:会话的"最后活跃"本来就是
+        // MAX(m.last_ts)(表格里展示的也是它),逐行过滤会让同一会话因某个模型行落在
+        // 范围内而被整段统计进来。
         let mut stmt = conn.prepare(
-            "SELECT m.agent, m.session_id, MAX(meta.project), MAX(meta.title),
-                    GROUP_CONCAT(DISTINCT NULLIF(m.model,'')),
-                    MIN(meta.started_at), MAX(m.last_ts),
-                    SUM(m.input_tokens), SUM(m.output_tokens), SUM(m.cache_read_tokens),
-                    SUM(m.cache_write_tokens), SUM(m.calls),
-                    SUM(CASE WHEN m.agent = 'dsh' THEN m.cost ELSE m.cost * ?4 END)
+            "WITH picked AS (
+                 SELECT agent, session_id, MAX(last_ts) AS last_ts
+                 FROM usage_session_models
+                 WHERE (?1 IS NULL OR agent = ?1)
+                   AND (?5 = 'null' OR ?1 IS NOT NULL
+                        OR agent IN (SELECT value FROM json_each(?5)))
+                 GROUP BY agent, session_id
+                 HAVING (?2 IS NULL OR MAX(last_ts) >= ?2)
+                    AND (?3 IS NULL OR MAX(last_ts) < ?3)
+                 ORDER BY last_ts DESC
+                 LIMIT ?4
+             )
+             SELECT m.agent, m.session_id, m.model, m.provider,
+                    SUM(m.input_tokens), SUM(m.output_tokens),
+                    SUM(m.cache_read_tokens), SUM(m.cache_write_tokens),
+                    SUM(m.calls), SUM(m.cost),
+                    p.last_ts, MAX(meta.project), MAX(meta.title), MIN(meta.started_at)
              FROM usage_session_models m
+             JOIN picked p ON p.agent = m.agent AND p.session_id = m.session_id
              LEFT JOIN session_meta meta ON meta.agent = m.agent AND meta.session_id = m.session_id
-             WHERE (?1 IS NULL OR m.agent = ?1)
-               AND (?2 IS NULL OR m.last_ts >= ?2)
-               AND (?3 IS NULL OR m.last_ts < ?3)
-               AND (?6 = 'null' OR ?1 IS NOT NULL
-                    OR m.agent IN (SELECT value FROM json_each(?6)))
-             GROUP BY m.agent, m.session_id
-             ORDER BY MAX(m.last_ts) DESC LIMIT ?5",
+             GROUP BY m.agent, m.session_id, m.model, m.provider
+             ORDER BY p.last_ts DESC",
         )?;
-        let rows = stmt.query_map(
-            params![agent, from_ms, to_ms, exchange_rate, limit, enabled_json],
-            |row| {
-                let input: i64 = row.get(7)?;
-                let output: i64 = row.get(8)?;
-                let cr: i64 = row.get(9)?;
-                let cw: i64 = row.get(10)?;
-                Ok(SessionUsage {
-                    agent: row.get(0)?,
-                    session_id: row.get(1)?,
-                    project: row.get(2)?,
-                    title: row.get(3)?,
-                    models: row.get(4)?,
-                    started_at: row.get(5)?,
-                    last_active: row.get(6)?,
-                    input_tokens: input as u64,
-                    output_tokens: output as u64,
-                    cache_read_tokens: cr as u64,
-                    cache_write_tokens: cw as u64,
-                    calls: row.get::<_, i64>(11)? as u64,
-                    cost: row.get(12)?,
-                    total_tokens: (input + output + cr + cw) as u64,
-                })
-            },
-        )?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
-    }
-
-    pub fn agent_today(&self, date: &str) -> Result<HashMap<String, Totals>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT agent, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
-                    SUM(cache_write_tokens), SUM(calls), SUM(cost)
-             FROM usage_daily WHERE date = ?1 GROUP BY agent",
-        )?;
-        let rows = stmt.query_map(params![date], |row| {
-            Ok((row.get::<_, String>(0)?, totals_from_row(row, 1)))
+        let rows = stmt.query_map(params![agent, from_ms, to_ms, limit, enabled_json], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                totals_from_row(row, 4),
+                row.get::<_, i64>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<i64>>(13)?,
+            ))
         })?;
-        let mut map = HashMap::new();
-        for r in rows {
-            let (agent, t) = r?;
-            map.insert(agent, t);
+
+        // 行按会话的 last_ts 降序到达,所以首次出现的顺序就是会话的展示顺序
+        let mut index: HashMap<(String, String), usize> = HashMap::new();
+        let mut out: Vec<SessionUsage> = Vec::new();
+        let mut model_names: Vec<Vec<String>> = Vec::new();
+        for row in rows {
+            let (row_agent, sid, model, totals, last_ts, project, title, started_at) = row?;
+            let raw_cost = totals.cost;
+            let cost = basis.row_cost(&model, &row_agent, &totals, raw_cost);
+            let idx = match index.get(&(row_agent.clone(), sid.clone())) {
+                Some(existing) => *existing,
+                None => {
+                    let i = out.len();
+                    index.insert((row_agent.clone(), sid.clone()), i);
+                    model_names.push(Vec::new());
+                    out.push(SessionUsage {
+                        agent: row_agent,
+                        session_id: Some(sid),
+                        project,
+                        title,
+                        models: None,
+                        started_at,
+                        last_active: Some(last_ts),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
+                        calls: 0,
+                        total_tokens: 0,
+                        cost: 0.0,
+                    });
+                    i
+                }
+            };
+            let slot = &mut out[idx];
+            slot.input_tokens += totals.input_tokens;
+            slot.output_tokens += totals.output_tokens;
+            slot.cache_read_tokens += totals.cache_read_tokens;
+            slot.cache_write_tokens += totals.cache_write_tokens;
+            slot.calls += totals.calls;
+            slot.total_tokens = slot.input_tokens
+                + slot.output_tokens
+                + slot.cache_read_tokens
+                + slot.cache_write_tokens;
+            slot.cost += cost;
+            slot.last_active = Some(slot.last_active.unwrap_or(0).max(last_ts));
+            // 与 SQL 的 MIN() 一致:忽略 NULL,保留 0
+            slot.started_at = match (slot.started_at, started_at) {
+                (None, other) => other,
+                (this, None) => this,
+                (Some(a), Some(b)) => Some(a.min(b)),
+            };
+            if !model.is_empty() && !model_names[idx].iter().any(|m| m == &model) {
+                model_names[idx].push(model);
+            }
         }
-        Ok(map)
+        for (i, slot) in out.iter_mut().enumerate() {
+            if !model_names[i].is_empty() {
+                slot.models = Some(model_names[i].join(","));
+            }
+        }
+        Ok(out)
     }
 
     pub fn agent_all(&self) -> Result<HashMap<String, Totals>> {
@@ -747,9 +836,11 @@ fn estimate_cost(t: &Totals, p: &PriceEntry, rate: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::Store;
+    use super::{CostBasis, Store};
     use crate::model::UsageRecord;
     use crate::providers::FileCursor;
+    use crate::settings::PriceEntry;
+    use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_db() -> std::path::PathBuf {
@@ -841,6 +932,68 @@ mod tests {
             .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour")
             .unwrap()
             .is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 明细表(sessions)与顶部大卡(range_summary)必须共用同一套成本口径。
+    /// 以前 sessions() 完全不查定价表、只按 agent='dsh' 特判换算,两边系统性对不上。
+    #[test]
+    fn sessions_and_range_summary_share_one_cost_basis() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let mut rec = record();
+        rec.session_id = Some("s1".into());
+        rec.input_tokens = 1_000_000;
+        rec.cost = 1.0; // 自带成本 1(单位由 Agent 币种决定)
+        store.apply_records(&[rec]).unwrap();
+
+        let none = HashMap::new();
+        let cny = HashMap::from([("dsh".to_string(), "CNY".to_string())]);
+        let range_of = |basis: &CostBasis| {
+            store
+                .range_summary(None, "2000-01-01", "2100-01-01", basis, None)
+                .unwrap()
+                .totals
+                .cost
+        };
+        let session_cost = |basis: &CostBasis| {
+            store
+                .sessions(None, None, None, 10, basis, None)
+                .unwrap()
+                .first()
+                .unwrap()
+                .cost
+        };
+
+        // 1) 没有定价 -> 用自带成本;dsh 声明为 CNY,不乘汇率
+        let basis = CostBasis::new(&none, 7.2, &cny);
+        assert!((range_of(&basis) - 1.0).abs() < 1e-9);
+        assert!((session_cost(&basis) - 1.0).abs() < 1e-9, "明细表必须和大卡同口径");
+
+        // 2) 有定价 -> 两边都按 tokens × 单价 × 汇率 重算,覆盖自带成本
+        let pricing = HashMap::from([(
+            "m".to_string(),
+            PriceEntry {
+                input: 2.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+        )]);
+        let expected = 1_000_000.0 / 1e6 * 2.0 * 7.2;
+        let basis = CostBasis::new(&pricing, 7.2, &cny);
+        assert!((range_of(&basis) - expected).abs() < 1e-9);
+        assert!(
+            (session_cost(&basis) - expected).abs() < 1e-9,
+            "明细表必须按定价重算,而不是只乘汇率: {}",
+            session_cost(&basis)
+        );
+
+        // 3) 没声明币种的 Agent 按美元处理(与历史行为一致,但不再针对 dsh 特判)
+        let no_currency = HashMap::new();
+        let basis = CostBasis::new(&none, 7.2, &no_currency);
+        assert!((session_cost(&basis) - 7.2).abs() < 1e-9);
+
         let _ = std::fs::remove_file(path);
     }
 }

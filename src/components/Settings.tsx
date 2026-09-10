@@ -374,7 +374,12 @@ export function Settings({
     };
     const v = parseFloat(raw);
     const next: PriceEntry = { ...cur, [field]: Number.isFinite(v) && v >= 0 ? v : 0 };
-    setSettings({ ...settings, pricing: { ...settings.pricing, [model]: next } });
+    setSettings({
+      ...settings,
+      pricing: { ...settings.pricing, [model]: next },
+      // 手工改过的定价标成 manual:下次从 models.dev 同步时会先问要不要覆盖
+      pricingSource: { ...settings.pricingSource, [model]: "manual" },
+    });
   };
 
   const persistNow = () => {
@@ -386,7 +391,9 @@ export function Settings({
     if (!settings) return;
     const pricing = { ...settings.pricing };
     delete pricing[model];
-    const next = { ...settings, pricing };
+    const pricingSource = { ...settings.pricingSource };
+    delete pricingSource[model];
+    const next = { ...settings, pricing, pricingSource };
     setSettings(next);
     void api.saveSettings(next).catch(() => undefined);
   };
@@ -454,7 +461,7 @@ export function Settings({
           catalog.set(key, list);
         }
       }
-      const pick = (model: string): PriceEntry | null => {
+      const pick = (model: string): { provider: string; entry: PriceEntry } | null => {
         const key = model.toLowerCase();
         const candidates = [key, model.split("/").pop()?.toLowerCase() ?? ""].filter(Boolean);
         for (const c of candidates) {
@@ -462,22 +469,64 @@ export function Settings({
           if (!list || list.length === 0) continue;
           const fam = familyProvider(c);
           const chosen = (fam && list.find((x) => x.provider === fam)) || list[0];
-          return chosen.entry;
+          return chosen;
         }
         return null;
       };
-      const next = { ...settings.pricing };
-      let matched = 0;
-      for (const model of models) {
-        const found = pick(model);
-        if (found) {
-          next[model] = found;
-          matched++;
-        }
+      const samePrice = (a: PriceEntry, b: PriceEntry) =>
+        a.input === b.input &&
+        a.output === b.output &&
+        a.cacheRead === b.cacheRead &&
+        a.cacheWrite === b.cacheWrite;
+
+      const picked = models
+        .map((model) => ({ model, found: pick(model) }))
+        .filter(
+          (
+            x,
+          ): x is {
+            model: string;
+            found: { provider: string; entry: PriceEntry };
+          } => x.found !== null,
+        );
+      // 已经填过定价、且不是上一次 models.dev 同步写入的那些:官方价与它不同就先问用户。
+      // 以前是 next[model] = found 静默覆盖,用户自己填的价格会被无声抹掉。
+      const conflicts = picked.filter(({ model, found }) => {
+        const cur = settings.pricing[model];
+        if (!cur) return false;
+        const src = (settings.pricingSource ?? {})[model];
+        if (src && src.startsWith("models.dev:")) return false;
+        return !samePrice(cur, found.entry);
+      });
+      let keepMine = false;
+      if (conflicts.length > 0) {
+        const names = conflicts
+          .slice(0, 12)
+          .map((c) => c.model)
+          .join("\n");
+        const more =
+          conflicts.length > 12 ? `\n…还有 ${conflicts.length - 12} 个` : "";
+        keepMine = !window.confirm(
+          `以下 ${conflicts.length} 个模型你已经填过定价,与官方价不同:\n\n${names}${more}\n\n` +
+            "「确定」= 用官方价覆盖这些模型\n「取消」= 保留你填的定价,只同步其余模型",
+        );
       }
-      await persist({ ...settings, pricing: next });
+      const skip = new Set(keepMine ? conflicts.map((c) => c.model) : []);
+      const next = { ...settings.pricing };
+      const nextSource = { ...(settings.pricingSource ?? {}) };
+      let matched = 0;
+      for (const { model, found } of picked) {
+        if (skip.has(model)) continue;
+        next[model] = found.entry;
+        nextSource[model] = `models.dev:${found.provider}`;
+        matched++;
+      }
+      await persist({ ...settings, pricing: next, pricingSource: nextSource });
       setFetchState("ok");
-      setFetchMsg(`已匹配 ${matched} / ${models.length} 个本地模型的官方定价`);
+      setFetchMsg(
+        `已匹配 ${matched} / ${models.length} 个本地模型的官方定价` +
+          (skip.size > 0 ? `(保留了 ${skip.size} 个你手动设置的)` : ""),
+      );
     } catch (err) {
       console.error("[Settings] models.dev 获取失败", err);
       setFetchState("error");
@@ -712,7 +761,7 @@ export function Settings({
       <SectionCard
         icon={<CoinsIcon className="h-4 w-4 text-primary" />}
         title="成本定价"
-        description="填了定价的模型一律按你的价格重算成本(覆盖自带成本);没填的用自带成本或 0。单位 $/百万 tokens,按汇率折算展示"
+        description="定价表是成本的唯一权威:填了定价的模型一律按你的价格重算(覆盖自带成本),没填的才用数据自带成本。单位 $/百万 tokens,按汇率折算展示。每行下方标出该价格的来源"
       >
         <div className="space-y-3 p-4">
           <div className="flex flex-wrap items-center gap-3">
@@ -801,6 +850,15 @@ export function Settings({
                 ) : (
                   models.map((model) => {
                     const p: PriceEntry | undefined = settings?.pricing[model];
+                    const src = settings?.pricingSource?.[model];
+                    // 定价来源提示:用户要能一眼看出这个价格是官方拉的、自己填的,还是根本没填
+                    const sourceLabel = !p
+                      ? "无定价 · 用自带成本或 0"
+                      : src === "manual"
+                        ? "手动填写"
+                        : src?.startsWith("models.dev:")
+                          ? `官方 · ${src.slice("models.dev:".length)}`
+                          : "来源未知";
                     const cell = (field: keyof PriceEntry) => (
                       <input
                         type="number"
@@ -815,8 +873,19 @@ export function Settings({
                     );
                     return (
                       <tr key={model} className="border-b border-border/30">
-                        <td className="max-w-[220px] truncate py-1.5 pr-2" title={model}>
-                          {model}
+                        <td className="max-w-[220px] py-1.5 pr-2" title={model}>
+                          <div className="truncate">{model}</div>
+                          <div
+                            className={`mt-0.5 text-[10px] ${
+                              !p
+                                ? "text-muted-foreground/50"
+                                : src === "manual"
+                                  ? "text-amber-500"
+                                  : "text-muted-foreground/70"
+                            }`}
+                          >
+                            {sourceLabel}
+                          </div>
                         </td>
                         <td className="py-1.5 pr-2 text-right">{cell("input")}</td>
                         <td className="py-1.5 pr-2 text-right">{cell("output")}</td>

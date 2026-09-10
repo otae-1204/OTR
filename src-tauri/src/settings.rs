@@ -50,8 +50,13 @@ pub struct Settings {
     pub start_minimized: bool,
     pub theme: String,
     pub custom_agents: Vec<CustomAgentConfig>,
-    /// 模型定价表(model → $/M tokens);用于给无自带成本的数据估算费用
+    /// 模型定价表(model → $/M tokens)。**成本的唯一权威**:填了定价的模型一律按它重算,
+    /// 没填的才回退到数据自带成本(币种由 Provider::native_cost_currency 声明)。
     pub pricing: std::collections::HashMap<String, PriceEntry>,
+    /// 定价来源:model → "manual" | "models.dev:<provider>"。只用于 UI 提示,
+    /// 以及"从 models.dev 同步时要不要先问用户"的判断。
+    #[serde(default)]
+    pub pricing_source: std::collections::HashMap<String, String>,
     /// 美元 → 人民币汇率(估算换算用)
     pub exchange_rate: f64,
     /// 全局成本显示币种:"CNY" | "USD"
@@ -82,6 +87,7 @@ impl Default for Settings {
             theme: "dark".into(),
             custom_agents: vec![],
             pricing: std::collections::HashMap::new(),
+            pricing_source: std::collections::HashMap::new(),
             exchange_rate: 7.2,
             currency: "CNY".into(),
             migrated_v2: false,

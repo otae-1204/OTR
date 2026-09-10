@@ -51,6 +51,14 @@ pub trait AgentProvider: Send + Sync {
     fn parser_version(&self) -> u64 {
         1
     }
+    /// UsageRecord.cost 里自带成本的币种:"CNY" 或 "USD"。
+    /// None = 该 Provider 没有自带成本,只能靠定价表估算。
+    ///
+    /// 以前 store.rs 用 `agent != "dsh"` 猜币种,把具体 Agent 的知识写进了通用查询代码;
+    /// 现在由 Provider 显式声明,Store 只按声明换算。
+    fn native_cost_currency(&self) -> Option<&'static str> {
+        None
+    }
     /// 增量扫描;full 时外部已重置游标与状态,Provider 自然输出全量
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>>;
 }

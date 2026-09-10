@@ -38,6 +38,11 @@ impl AgentProvider for PiProvider {
         PARSER_VERSION
     }
 
+    /// usage.cost.total 是美元
+    fn native_cost_currency(&self) -> Option<&'static str> {
+        Some("USD")
+    }
+
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>> {
         let root = paths::pi_sessions();
         let mut files = Vec::new();

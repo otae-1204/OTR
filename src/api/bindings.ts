@@ -48,8 +48,7 @@ export interface AgentStatus {
   displayName: string;
   detected: boolean;
   enabled: boolean;
-  todayTokens: number;
-  todayCost: number;
+  /** 全部时间累计 tokens(卡片右侧那个"累计") */
   totalTokens: number;
 }
 
@@ -104,6 +103,8 @@ export interface Settings {
   theme: string;
   customAgents: CustomAgentConfig[];
   pricing: Record<string, PriceEntry>;
+  /** 定价来源:model -> "manual" | "models.dev:<provider>";仅用于 UI 展示 */
+  pricingSource: Record<string, string>;
   /** 美元 → 人民币汇率(估算换算) */
   exchangeRate: number;
   /** 全局成本显示币种:"CNY" | "USD" */
