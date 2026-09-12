@@ -13,7 +13,7 @@ use crate::providers::{AgentProvider, ScanCtx};
 pub struct DshProvider;
 
 const AGENT: &str = "dsh";
-pub const PARSER_VERSION: u64 = 3;
+pub const PARSER_VERSION: u64 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,7 +94,7 @@ impl AgentProvider for DshProvider {
             }
         }
         // 会话表数据源:session_projcache.json(按会话×模型;不再写日/小时,避免与选定数据源双计)
-        if let Err(e) = scan_projcache(&mut st, &mut records) {
+        if let Err(e) = scan_projcache(&mut st, &mut records, &paths::dsh_storages()) {
             eprintln!("[dsh] projcache: {}", e);
         }
 
@@ -190,6 +190,23 @@ struct DshState {
     /// 会话日志的 per-file 解析缓存,key = 文件绝对路径
     #[serde(default)]
     file_cache: HashMap<String, DshFileCache>,
+    /// projcache 文件的 (size, mtime) 指纹,key = 文件绝对路径。
+    /// 现行布局把每个会话放一个文件(本机 2254 个),不缓存就会每次扫描都重新
+    /// 读盘 + 解析 JSON,"热扫"从 ~0.5s 退化到 ~2s。
+    #[serde(default)]
+    projcache_cache: HashMap<String, DshFileStamp>,
+}
+
+/// 一个 projcache 文件的 (size, mtime) 指纹。
+/// 只存指纹、不存解析摘要:文件没变时按 st.sessions 算出的 delta 必然为 0(不产出记录),
+/// 所以"跳过"与"重算"的产出完全一致,而指纹体积可以忽略。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DshFileStamp {
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    mtime_ms: i64,
 }
 
 /// 单个会话文件的绝对小时聚合缓存。
@@ -387,9 +404,36 @@ fn scan_ledger_sessions(st: &mut DshState, out: &mut Vec<UsageRecord>, ledger: &
     st.ledger_sessions.retain(|key, _| alive.contains(key));
 }
 
+/// 会话日志文件名的**代次**与是否压缩。
+/// DSH 的会话格式有"代"的概念(见 @deepseek-ai/dsh-session-format-catalog):
+/// 第 0 代叫 `session.jsonl`,之后是 `session.v{n}.jsonl`,压缩后统一加 `.zstd`。
+/// 以前这里硬编码两个文件名,于是格式升到 v3 之后(只有 `session.v3.jsonl.zstd`)
+/// 新会话一个都发现不了 —— 而按小时桶**只**由这条扫描产生,表现为按小时表整块消失。
+fn parse_log_name(name: &str) -> Option<(u64, bool)> {
+    let rest = name.strip_prefix("session")?;
+    let (generation, rest) = if let Some(rest) = rest.strip_prefix(".jsonl") {
+        (0u64, rest)
+    } else {
+        let rest = rest.strip_prefix(".v")?;
+        let (digits, rest) = rest.split_once(".jsonl")?;
+        (digits.parse::<u64>().ok()?, rest)
+    };
+    let zstd = match rest {
+        "" => false,
+        ".zstd" => true,
+        _ => return None,
+    };
+    Some((generation, zstd))
+}
+
 /// 逐条目容错收集会话日志(参考 jsonl_util::collect_jsonl 的写法)。
 /// 以前整条链路上任何一次 read_dir / file_type 失败都会让整个 discovery 返回 Err,
 /// 调用方只能把 session_paths 留空 → 小时数据整块消失。单个坏目录不该有这种杀伤力。
+///
+/// **每个会话目录只取代次最高的那一个文件**:格式升级后同一段历史会以新代次
+/// 重新完整编码(实测 10 个双格式目录里 v3 全是旧格式的无损超集,旧的独有事件 0 个),
+/// 两个都扫会把该会话的用量翻倍。同代次同时存在 `.jsonl` 与 `.jsonl.zstd` 时取压缩版
+/// (DSH 现行写法就是压缩的)。
 fn collect_session_logs(root: &Path, out: &mut Vec<PathBuf>) {
     let Ok(projects) = std::fs::read_dir(root) else {
         return;
@@ -412,12 +456,38 @@ fn collect_session_logs(root: &Path, out: &mut Vec<PathBuf>) {
             if !kind.is_dir() {
                 continue;
             }
-            for name in ["session.jsonl.zstd", "session.jsonl"] {
-                let path = session.path().join(name);
-                if path.is_file() {
-                    out.push(path);
-                    break;
+            let Ok(entries) = std::fs::read_dir(session.path()) else {
+                eprintln!("[dsh] 会话目录不可读,跳过: {}", session.path().display());
+                continue;
+            };
+            let mut best: Option<(u64, bool, PathBuf)> = None;
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let Some((generation, zstd)) = parse_log_name(&name) else {
+                    continue;
+                };
+                // 用 read_dir 已经带回来的文件类型,别再对路径做一次 stat:
+                // Windows 上目录枚举已经缓存了属性,DirEntry::file_type() 近乎免费,
+                // 而 path.is_file() 是每个文件一次完整的 CreateFile/GetFileAttributes
+                // (本机 2255 个文件实测 222.6ms vs 1.48ms,差 150 倍)。
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if !kind.is_file() {
+                    continue;
                 }
+                let better = match &best {
+                    None => true,
+                    Some((gen, was_zstd, _)) => {
+                        (generation, zstd) > (*gen, *was_zstd)
+                    }
+                };
+                if better {
+                    best = Some((generation, zstd, entry.path()));
+                }
+            }
+            if let Some((_, _, path)) = best {
+                out.push(path);
             }
         }
     }
@@ -692,6 +762,7 @@ mod tests {
         collect_session_logs, local_date, local_hour, scan_session_file, scan_session_logs,
         select_daily_source, DshDailySource, DshEntry, DshState, ZSTD_MAGIC,
     };
+    use serde_json::Value;
     use std::collections::HashMap;
     use std::fs;
     use std::io::Write;
@@ -965,72 +1036,374 @@ mod tests {
         collect_session_logs(&missing, &mut out);
         assert!(out.is_empty());
     }
+
+    #[test]
+    fn parse_log_name_recognizes_generations() {
+        use super::parse_log_name;
+        assert_eq!(parse_log_name("session.jsonl"), Some((0, false)));
+        assert_eq!(parse_log_name("session.jsonl.zstd"), Some((0, true)));
+        assert_eq!(parse_log_name("session.v3.jsonl.zstd"), Some((3, true)));
+        assert_eq!(parse_log_name("session.v3.jsonl"), Some((3, false)));
+        assert_eq!(parse_log_name("session.v12.jsonl.zstd"), Some((12, true)));
+        // 非日志文件不能被误收
+        assert_eq!(parse_log_name("session.v3.jsonl.zstd.tmp"), None);
+        assert_eq!(parse_log_name("session.v.jsonl"), None);
+        assert_eq!(parse_log_name("session.vX.jsonl"), None);
+        assert_eq!(parse_log_name("events.jsonl"), None);
+        assert_eq!(parse_log_name("session.jsonl.bak"), None);
+    }
+
+    /// 格式升级后同一目录里会同时留下旧代与新代日志。只取代次最高的那一个:
+    /// 两个都收会让该会话的用量翻倍(实测 v3 是旧格式的无损超集)。
+    #[test]
+    fn collect_session_logs_keeps_only_highest_generation() {
+        let root = temp_path("dir");
+        let project = root.join("proj");
+        let dual = project.join("session-dual");
+        let v3only = project.join("session-v3only");
+        let legacyonly = project.join("session-legacyonly");
+        for dir in [&dual, &v3only, &legacyonly] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(dual.join("session.jsonl.zstd"), b"old").unwrap();
+        fs::write(dual.join("session.v3.jsonl.zstd"), b"new").unwrap();
+        fs::write(v3only.join("session.v3.jsonl.zstd"), b"new").unwrap();
+        fs::write(legacyonly.join("session.jsonl.zstd"), b"old").unwrap();
+        // 噪音:非日志文件与目录都要被忽略
+        fs::write(dual.join("session.v3.jsonl.zstd.tmp"), b"junk").unwrap();
+        fs::create_dir_all(dual.join("nested")).unwrap();
+
+        let mut out = Vec::new();
+        collect_session_logs(&root, &mut out);
+        out.sort();
+        assert_eq!(
+            out.len(),
+            3,
+            "每个会话目录只应产出一个文件,双格式目录不能两个都收: {out:?}"
+        );
+        assert!(out.contains(&dual.join("session.v3.jsonl.zstd")));
+        assert!(out.contains(&v3only.join("session.v3.jsonl.zstd")));
+        assert!(out.contains(&legacyonly.join("session.jsonl.zstd")));
+        assert!(!out.contains(&dual.join("session.jsonl.zstd")));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 同代次同时存在 .jsonl 与 .jsonl.zstd 时取压缩版(现行 DSH 就写压缩的)
+    #[test]
+    fn collect_session_logs_prefers_compressed_on_tie() {
+        let root = temp_path("dir");
+        let dir = root.join("proj").join("session-x");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("session.v3.jsonl"), b"plain").unwrap();
+        fs::write(dir.join("session.v3.jsonl.zstd"), b"packed").unwrap();
+
+        let mut out = Vec::new();
+        collect_session_logs(&root, &mut out);
+        assert_eq!(out, vec![dir.join("session.v3.jsonl.zstd")]);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 造一份按记录目录布局的 projcache 文件(DSH 0.1.5-rc.1 现行写法)
+    fn projcache_record(created: i64, last_prompt: i64, model: &str) -> Value {
+        serde_json::json!({
+            "version": 7,
+            "record": {
+                "identity": {"formatVersion": 3, "createdAt": created, "cwd": "/proj/x"},
+                "rows": {
+                    "title": {"ver": 1, "seq": 1, "val": "标题"},
+                    "sessionListMetadata": {"ver": 1, "seq": 1, "val": {"lastPromptAt": last_prompt}},
+                    "costUsage": {"ver": 4, "seq": 1, "val": {
+                        "provider": "deepseek-official",
+                        "model": model,
+                        "byModel": {model: {"input": 100, "output": 20, "cacheRead": 5,
+                                            "cacheWrite": 0, "reasoning": 1, "cost": 0.5}}
+                    }}
+                }
+            }
+        })
+    }
+
+    /// 现行布局是**按记录目录**,只读老的单一文件会让新会话一条都进不来
+    /// (表现为"会话明细"最近几天整段空白)。
+    #[test]
+    fn scan_projcache_reads_per_record_directory() {
+        let root = temp_path("dir");
+        let dir = root.join("session_projcache").join("sessions");
+        fs::create_dir_all(&dir).unwrap();
+        let created = 1_780_000_000_000i64;
+        let last_prompt = created + 7_200_000;
+        fs::write(
+            dir.join("session-abc.json"),
+            serde_json::to_string(&projcache_record(created, last_prompt, "deepseek-v4-flash")).unwrap(),
+        )
+        .unwrap();
+        // 坏记录不该让整张表消失
+        fs::write(dir.join("session-broken.json"), b"{not json").unwrap();
+
+        let mut st = DshState::default();
+        let mut out = Vec::new();
+        super::scan_projcache(&mut st, &mut out, &root).unwrap();
+
+        assert_eq!(out.len(), 1, "应只产出坏记录之外的那一条: {out:?}");
+        let r = &out[0];
+        assert_eq!(r.session_id.as_deref(), Some("session-abc"));
+        assert_eq!(r.input_tokens, 100);
+        assert_eq!(r.output_tokens, 20);
+        assert_eq!(r.model.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(r.provider.as_deref(), Some("deepseek-official"));
+        assert_eq!(r.title.as_deref(), Some("标题"));
+        assert_eq!(r.project.as_deref(), Some("/proj/x"));
+        // 会话表按"最后活跃"过滤:必须是真实提问时间,不是扫描时刻。
+        // 写成 now_ms() 的话全量重建后所有历史会话都会被算进"当天"。
+        assert_eq!(
+            r.touch_ts,
+            Some(last_prompt),
+            "最后活跃要取 sessionListMetadata.lastPromptAt,不能用 now_ms()"
+        );
+        assert_ne!(r.touch_ts, Some(crate::model::now_ms()));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 老的单文件布局要作为兜底继续可读(实测仍有 3 个会话只存在于单文件)
+    #[test]
+    fn scan_projcache_falls_back_to_legacy_single_file() {
+        let root = temp_path("dir");
+        fs::create_dir_all(&root).unwrap();
+        let created = 1_780_000_000_000i64;
+        let legacy = serde_json::json!({
+            "tables": {"sessions": {
+                "session-old": {
+                    "identity": {"createdAt": created, "cwd": "/proj/old"},
+                    "rows": {
+                        "title": {"ver": 1, "seq": 1, "val": "老会话"},
+                        "sessionListMetadata": {"ver": 1, "seq": 1, "val": {"lastPromptAt": created + 1000}},
+                        "costUsage": {"ver": 4, "seq": 1, "val": {
+                            "provider": "deepseek-official", "model": "m",
+                            "byModel": {"m": {"input": 7, "output": 3, "cost": 0.1}}
+                        }}
+                    }
+                }
+            }}
+        });
+        fs::write(
+            root.join("session_projcache.json"),
+            serde_json::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let mut st = DshState::default();
+        let mut out = Vec::new();
+        super::scan_projcache(&mut st, &mut out, &root).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].session_id.as_deref(), Some("session-old"));
+        assert_eq!(out[0].input_tokens, 7);
+        assert_eq!(out[0].title.as_deref(), Some("老会话"));
+        assert_eq!(out[0].touch_ts, Some(created + 1000));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 两种布局同时存在时,目录里的会话不能被单文件再算一遍(否则用量翻倍)
+    #[test]
+    fn scan_projcache_does_not_double_count_across_layouts() {
+        let root = temp_path("dir");
+        let dir = root.join("session_projcache").join("sessions");
+        fs::create_dir_all(&dir).unwrap();
+        let created = 1_780_000_000_000i64;
+        let sid = "session-same";
+        let record = projcache_record(created, created + 5000, "m");
+        fs::write(
+            dir.join(format!("{sid}.json")),
+            serde_json::to_string(&record).unwrap(),
+        )
+        .unwrap();
+        // 单文件里同一个会话(内容一致,老布局)
+        let legacy = serde_json::json!({
+            "tables": {"sessions": {sid: record["record"]}}
+        });
+        fs::write(
+            root.join("session_projcache.json"),
+            serde_json::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let mut st = DshState::default();
+        let mut out = Vec::new();
+        super::scan_projcache(&mut st, &mut out, &root).unwrap();
+        assert_eq!(out.len(), 1, "同一会话只应产出一次: {out:?}");
+        assert_eq!(out[0].input_tokens, 100);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 第二次扫描必须靠 (size, mtime) 指纹跳过重新解析:
+    /// 现行布局是每个会话一个文件(本机 2254 个),不缓存的话每次扫描都要重读全部 JSON,
+    /// "热扫"会从亚秒级退化到 ~2s(实测)。
+    #[test]
+    fn scan_projcache_skips_unchanged_files_on_rescan() {
+        let root = temp_path("dir");
+        let dir = root.join("session_projcache").join("sessions");
+        fs::create_dir_all(&dir).unwrap();
+        let created = 1_780_000_000_000i64;
+        let path = dir.join("session-a.json");
+        fs::write(
+            &path,
+            serde_json::to_string(&projcache_record(created, created + 1000, "m")).unwrap(),
+        )
+        .unwrap();
+
+        let mut st = DshState::default();
+        let mut first = Vec::new();
+        super::scan_projcache(&mut st, &mut first, &root).unwrap();
+        assert_eq!(first.len(), 1, "首次扫描要产出记录");
+        assert_eq!(
+            st.projcache_cache.len(),
+            1,
+            "首次扫描要记下指纹,供下次跳过"
+        );
+
+        // 内容未变 → 不产出任何记录(与旧实现一致:delta 为 0),但也不该再解析一次
+        let mut second = Vec::new();
+        super::scan_projcache(&mut st, &mut second, &root).unwrap();
+        assert!(second.is_empty(), "文件没变时不该产出新记录: {second:?}");
+
+        // 内容变了(大小也变) → 指纹失效,必须重新解析并产出增量
+        let mut bumped = projcache_record(created, created + 2000, "m");
+        bumped["record"]["rows"]["costUsage"]["val"]["byModel"]["m"]["input"] =
+            serde_json::json!(300);
+        fs::write(&path, serde_json::to_string(&bumped).unwrap()).unwrap();
+        let mut third = Vec::new();
+        super::scan_projcache(&mut st, &mut third, &root).unwrap();
+        assert_eq!(third.len(), 1, "文件改动后必须重新解析: {third:?}");
+        assert_eq!(third[0].input_tokens, 200, "增量应为 300-100");
+
+        // 文件消失后指纹要跟着清掉,缓存不会无限增长
+        fs::remove_file(&path).unwrap();
+        let mut fourth = Vec::new();
+        super::scan_projcache(&mut st, &mut fourth, &root).unwrap();
+        assert!(
+            st.projcache_cache.is_empty(),
+            "文件删掉后指纹也要清理: {:?}",
+            st.projcache_cache
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
-fn scan_projcache(st: &mut DshState, out: &mut Vec<UsageRecord>) -> Result<()> {
-    let path = paths::dsh_storages().join("session_projcache.json");
-    if !path.is_file() {
-        return Ok(());
+/// 把一个会话的 projcache 记录(identity + rows)转成用量记录。
+/// 现行"按记录目录"与老"单文件"两种布局共用这段逻辑,区别只在怎么拿到 identity/rows。
+fn scan_projcache_session(
+    st: &mut DshState,
+    out: &mut Vec<UsageRecord>,
+    sid: &str,
+    identity: &Value,
+    rows: &Value,
+) {
+    let created_at = identity
+        .get("createdAt")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    let cwd = identity
+        .get("cwd")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    // 优先 costUsage(带 provider/model/成本),缺失则退回 tokenUsage.totals
+    let cost_usage = rows.get("costUsage").map(row_val);
+    // 标题尽力而为
+    let title = rows
+        .get("title")
+        .map(row_val)
+        .and_then(|t| {
+            t.get("title")
+                .and_then(|x| x.as_str())
+                .or_else(|| t.as_str())
+        })
+        .map(|s| s.to_string());
+    // "最后活跃"用 DSH 自己记的最后一次提问时间。
+    // 以前这里写 now_ms():全量重建会清空 state:dsh ⇒ 每个会话都被盖上"刚刚",
+    // 于是"当天"筛选会把全部历史会话都列出来,而不是只列当天真正动过的。
+    let last_active = rows
+        .get("sessionListMetadata")
+        .map(row_val)
+        .and_then(|m| m.get("lastPromptAt"))
+        .and_then(|x| x.as_i64())
+        .filter(|v| *v > 0)
+        .or_else(|| {
+            cost_usage
+                .and_then(|c| c.get("createdAt"))
+                .and_then(|x| x.as_i64())
+                .filter(|v| *v > 0)
+        })
+        .unwrap_or(created_at);
+    let touch_ts = if last_active > 0 { last_active } else { now_ms() };
+    let by_model = cost_usage.and_then(|c| c.get("byModel")).cloned();
+    let mut used_by_model = false;
+    if let Some(models) = by_model.as_ref().and_then(|v| v.as_object()) {
+        used_by_model = true;
+        for (model, m) in models {
+            let key = format!("{}|{}", sid, model);
+            let cur = DshEntry::from_json(m);
+            let prev = st.sessions.get(&key).cloned().unwrap_or_default();
+            let delta = cur.delta_from(&prev);
+            if delta.is_zero() {
+                continue;
+            }
+            let provider = cost_usage
+                .and_then(|c| c.get("provider"))
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string());
+            out.push(UsageRecord {
+                agent: AGENT.into(),
+                session_id: Some(sid.to_string()),
+                project: cwd.clone(),
+                title: title.clone(),
+                model: Some(model.clone()),
+                provider,
+                ts: created_at,
+                touch_ts: Some(touch_ts),
+                input_tokens: delta.input,
+                output_tokens: delta.output,
+                cache_read_tokens: delta.cache_read,
+                cache_write_tokens: delta.cache_write,
+                reasoning_tokens: delta.reasoning,
+                calls: delta.calls,
+                cost: delta.cost,
+                skip_daily: true,
+                skip_hourly: true,
+                ..Default::default()
+            });
+            st.sessions.insert(key, cur);
+        }
     }
-    let v = read_json_file(&path)?;
-    let Some(sessions) = v.pointer("/tables/sessions").and_then(|s| s.as_object()) else {
-        return Ok(());
-    };
-    for (sid, entry) in sessions {
-        let identity = entry.get("identity").cloned().unwrap_or(Value::Null);
-        let created_at = identity
-            .get("createdAt")
-            .and_then(|x| x.as_i64())
-            .unwrap_or(0);
-        let cwd = identity
-            .get("cwd")
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string());
-        let rows = entry.get("rows").cloned().unwrap_or(Value::Null);
-        // 标题尽力而为
-        let title = rows
-            .get("title")
-            .map(row_val)
-            .and_then(|t| {
-                t.get("title")
-                    .and_then(|x| x.as_str())
-                    .or_else(|| t.as_str())
-            })
-            .map(|s| s.to_string());
-        // 优先 costUsage(带 provider/model/成本),缺失则退回 tokenUsage.totals
-        let cost_usage = rows.get("costUsage").map(row_val);
-        let by_model = cost_usage.and_then(|c| c.get("byModel")).cloned();
-        let mut used_by_model = false;
-        if let Some(models) = by_model.as_ref().and_then(|v| v.as_object()) {
-            used_by_model = true;
-            for (model, m) in models {
-                let key = format!("{}|{}", sid, model);
-                let cur = DshEntry::from_json(m);
-                let prev = st.sessions.get(&key).cloned().unwrap_or_default();
-                let delta = cur.delta_from(&prev);
-                if delta.is_zero() {
-                    continue;
-                }
-                let provider = cost_usage
-                    .and_then(|c| c.get("provider"))
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.to_string());
+    if !used_by_model {
+        if let Some(tok) = rows.get("tokenUsage").map(row_val) {
+            let totals = tok.get("totals").cloned().unwrap_or(Value::Null);
+            let cur = DshEntry {
+                input: u64f(&totals, "uncachedInputTokens"),
+                output: u64f(&totals, "outputTokens"),
+                cache_read: u64f(&totals, "cacheReadTokens"),
+                cache_write: u64f(&totals, "cacheWriteTokens"),
+                ..Default::default()
+            };
+            let key = format!("{}|", sid);
+            let prev = st.sessions.get(&key).cloned().unwrap_or_default();
+            let delta = cur.delta_from(&prev);
+            if !delta.is_zero() {
                 out.push(UsageRecord {
                     agent: AGENT.into(),
-                    session_id: Some(sid.clone()),
+                    session_id: Some(sid.to_string()),
                     project: cwd.clone(),
                     title: title.clone(),
-                    model: Some(model.clone()),
-                    provider,
                     ts: created_at,
-                    touch_ts: Some(now_ms()),
+                    touch_ts: Some(touch_ts),
                     input_tokens: delta.input,
                     output_tokens: delta.output,
                     cache_read_tokens: delta.cache_read,
                     cache_write_tokens: delta.cache_write,
-                    reasoning_tokens: delta.reasoning,
-                    calls: delta.calls,
-                    cost: delta.cost,
                     skip_daily: true,
                     skip_hourly: true,
                     ..Default::default()
@@ -1038,39 +1411,100 @@ fn scan_projcache(st: &mut DshState, out: &mut Vec<UsageRecord>) -> Result<()> {
                 st.sessions.insert(key, cur);
             }
         }
-        if !used_by_model {
-            if let Some(tok) = rows.get("tokenUsage").map(row_val) {
-                let totals = tok.get("totals").cloned().unwrap_or(Value::Null);
-                let cur = DshEntry {
-                    input: u64f(&totals, "uncachedInputTokens"),
-                    output: u64f(&totals, "outputTokens"),
-                    cache_read: u64f(&totals, "cacheReadTokens"),
-                    cache_write: u64f(&totals, "cacheWriteTokens"),
-                    ..Default::default()
-                };
-                let key = format!("{}|", sid);
-                let prev = st.sessions.get(&key).cloned().unwrap_or_default();
-                let delta = cur.delta_from(&prev);
-                if !delta.is_zero() {
-                    out.push(UsageRecord {
-                        agent: AGENT.into(),
-                        session_id: Some(sid.clone()),
-                        project: cwd.clone(),
-                        title: title.clone(),
-                        ts: created_at,
-                        touch_ts: Some(now_ms()),
-                        input_tokens: delta.input,
-                        output_tokens: delta.output,
-                        cache_read_tokens: delta.cache_read,
-                        cache_write_tokens: delta.cache_write,
-                        skip_daily: true,
-                        skip_hourly: true,
-                        ..Default::default()
-                    });
-                    st.sessions.insert(key, cur);
+    }
+}
+
+/// 会话表数据源。
+/// 现行布局是**按记录目录** `session_projcache/sessions/<id>.json`(DSH 0.1.5-rc.1),
+/// 数据在 `record.{identity,rows}` 下;老的单一文件 `session_projcache.json`
+/// 数据在 `tables.sessions.<id>.{identity,rows}` 下,升级后不再更新但仍是兜底。
+/// 只读单文件时,新会话一条都进不来 —— 表现为"会话明细"里最近几天整段空白。
+fn scan_projcache(st: &mut DshState, out: &mut Vec<UsageRecord>, storages: &Path) -> Result<()> {
+    let dir = storages.join("session_projcache").join("sessions");
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut scanned: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // 1) 按记录目录(现行):文件名(去掉 .json)就是会话 id,与 session_meta 里的 id 一致。
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(stem) = name.strip_suffix(".json") else {
+                continue;
+            };
+            // 同上:用目录枚举自带的属性,避免每个文件再来一次 stat。
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if !kind.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            // 会话 id 来自文件名,和内容无关,所以先登记:即便下面因缓存跳过,
+            // 单文件兜底也不该把同一个会话再算一遍。
+            seen.insert(stem.to_string());
+            let key = path.to_string_lossy().into_owned();
+            scanned.insert(key.clone());
+
+            // (size, mtime) 没变就跳过解析。文件没变时按 st.sessions 算出的 delta 必为 0,
+            // 所以跳过与重算的产出完全一致;但省掉的是每次扫描 2254 次读盘 + JSON 解析,
+            // 这正是"热扫"从 ~0.5s 退化到 ~2s 的原因。
+            // 全量重建时 state 被清零(lib.rs 里 full ⇒ state = Null),缓存自然失效,
+            // 不会出现"数据库清空了、会话却没重新写回"。
+            let Some(stamp) = entry_stamp(&entry) else {
+                continue;
+            };
+            if st.projcache_cache.get(&key) == Some(&stamp) {
+                continue;
+            }
+            // 单个坏记录不该让整张会话表消失
+            let Ok(v) = read_json_file(&path) else {
+                eprintln!("[dsh] projcache 记录不可读,跳过: {}", path.display());
+                continue;
+            };
+            let Some(record) = v.get("record") else {
+                continue;
+            };
+            let identity = record.get("identity").cloned().unwrap_or(Value::Null);
+            let rows = record.get("rows").cloned().unwrap_or(Value::Null);
+            st.projcache_cache.insert(key, stamp);
+            scan_projcache_session(st, out, stem, &identity, &rows);
+        }
+    }
+    // 已消失的文件不留指纹,缓存规模跟随实际文件数(本机 2254),不会无限增长
+    st.projcache_cache.retain(|k, _| scanned.contains(k));
+
+    // 2) 单文件兜底:只补目录里没有的会话(实测 2234 个老键里仅 3 个只存在于单文件,
+    //    且两种布局的 id 命名没有交叉形式,所以不会重复计)。
+    let legacy = storages.join("session_projcache.json"); // storages 直接来自调用方
+    if legacy.is_file() {
+        let v = read_json_file(&legacy)?;
+        if let Some(sessions) = v.pointer("/tables/sessions").and_then(|s| s.as_object()) {
+            for (sid, entry) in sessions {
+                if seen.contains(sid) {
+                    continue;
                 }
+                let identity = entry.get("identity").cloned().unwrap_or(Value::Null);
+                let rows = entry.get("rows").cloned().unwrap_or(Value::Null);
+                scan_projcache_session(st, out, sid, &identity, &rows);
             }
         }
     }
     Ok(())
+}
+
+/// 取一个目录项自带的 (size, mtime) 指纹。
+/// 刻意用 `DirEntry::metadata()` 而不是 `fs::metadata(entry.path())`:Windows 的目录枚举
+/// 已经把属性一起返回,前者近乎免费,后者是每个文件一次完整 stat(实测 150 倍差距)。
+fn entry_stamp(entry: &std::fs::DirEntry) -> Option<DshFileStamp> {
+    let meta = entry.metadata().ok()?;
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    Some(DshFileStamp {
+        size: meta.len(),
+        mtime_ms,
+    })
 }
