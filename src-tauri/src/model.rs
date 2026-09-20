@@ -39,6 +39,12 @@ pub struct UsageRecord {
     /// 不写按小时表(按天快照没有可靠的小时信息时使用)
     #[serde(default)]
     pub skip_hourly: bool,
+    /// 该按天值是**当天绝对总量**,而不是相对上次的增量 → 写库时先删后写(替换)。
+    /// 台账首次看到某天(没有旧基线)时就是这种情况。
+    /// 不替换的话,与"日志回填"写下的同一行相加会双计。
+    #[serde(default)]
+    pub absolute_daily: bool,
+
     /// 覆盖按天/小时桶日期(例如 DSH 会话快照的日期)
     #[serde(default)]
     pub bucket_date: Option<String>,

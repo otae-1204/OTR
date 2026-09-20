@@ -141,6 +141,19 @@ fn write_records(
                 .filter(|hour| (0..24).contains(hour))
                 .unwrap_or_else(|| local_hour(r.ts));
             if !r.skip_daily {
+                // 绝对总量(台账第一次看到某天)要先删后写:同一行可能已被
+                // "按小时表回填"写过,直接累加会双计。
+                if r.absolute_daily {
+                    tx.execute(
+                        "DELETE FROM usage_daily WHERE agent=?1 AND date=?2 AND model=?3 AND provider=?4",
+                        params![
+                            r.agent,
+                            date,
+                            r.model.clone().unwrap_or_default(),
+                            r.provider.clone().unwrap_or_default(),
+                        ],
+                    )?;
+                }
                 tx.execute(
                     SQL_DAILY_UPSERT,
                     params![
@@ -320,6 +333,12 @@ impl Store {
 
     /// 全量重建:清空该 Agent 的用量/会话/游标行,写入新结果与新基线。
     /// 删除与写入在**同一个事务**内提交,任何一步失败整体回滚,旧数据完好。
+    ///
+    /// 按天/按小时只替换**本次扫描覆盖到的日期**,其余日期的历史行原样保留。
+    /// 以前是无条件 `DELETE ... WHERE agent=?1` 清空整表,于是日志换代后
+    /// (旧日志被重写、已不含早期事件)一次全量重建就把那些日期的按天**和**按小时
+    /// 数据一起抹掉 —— 而且因为日志里已经没有了,再也无法重建。
+    /// 现在覆盖不到的日期不动,重建只影响它真正重读过的那些日子。
     pub fn replace_agent(
         &self,
         agent: &str,
@@ -329,9 +348,31 @@ impl Store {
     ) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
+        // 本次扫描**会写进按天或按小时表**的日期:只有这些日期允许被替换。
+        // 判据与 write_records 对齐 —— 两个表都不写的记录(如只进会话表的 projcache)
+        // 不能让它把那个日期的历史删掉。空集时 json_each 不产生行 → 一条都不删。
+        let covered: std::collections::HashSet<String> = records
+            .iter()
+            .filter(|r| {
+                let has_usage =
+                    r.total_tokens() > 0 || r.calls > 0 || r.cost.abs() > f64::EPSILON;
+                has_usage && !(r.skip_daily && r.skip_hourly)
+            })
+            .map(|r| {
+                r.bucket_date
+                    .clone()
+                    .unwrap_or_else(|| local_date(r.ts))
+            })
+            .collect();
+        let covered_json = serde_json::to_string(&covered)?;
         for sql in [
-            "DELETE FROM usage_daily WHERE agent=?1",
-            "DELETE FROM usage_hourly WHERE agent=?1",
+            "DELETE FROM usage_daily WHERE agent=?1 AND date IN (SELECT value FROM json_each(?2))",
+            "DELETE FROM usage_hourly WHERE agent=?1 AND date IN (SELECT value FROM json_each(?2))",
+        ] {
+            tx.execute(sql, params![agent, covered_json])?;
+        }
+        // 会话表与游标表按 Agent 整体重建(它们不是按日期的历史,重扫即最新)
+        for sql in [
             "DELETE FROM usage_session_models WHERE agent=?1",
             "DELETE FROM session_meta WHERE agent=?1",
             "DELETE FROM file_cursors WHERE agent=?1",
@@ -356,6 +397,76 @@ impl Store {
         Ok(n)
     }
 
+    /// 用按小时表回填**按天表整天缺失**的日期。
+    ///
+    /// 存在的理由:DSH 升级重写 cost-meter 台账后,按天口径一度把每条日志记录都标成
+    /// "台账负责",于是那些日期的增量只进了按小时表(轴表有数据),按天表一条没有
+    /// (当天卡片恒为 0)。记录是**增量**语义,这些日期不会被重放,只能在库里修回来。
+    ///
+    /// 只填 usage_daily 里整天没有行的日期:这些日期按天数据为零,补进去只增加、
+    /// 不与任何已有行相加,所以不会双计 —— 历史台账写过的日期因此原样不动。
+    /// skip_dates(台账负责的日期)一律不碰,避免台账日后重写该日时两边各记一次。
+    /// 幂等,可每次扫描后安全重跑。
+    pub fn backfill_daily_from_hourly(
+        &self,
+        agent: &str,
+        skip_dates: &std::collections::HashSet<String>,
+    ) -> Result<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        // 先在只读语句里挑出候选行(整天没有按天数据的日期),再逐行过滤 skip_dates
+        // (date, model, provider, input, output, cache_read, cache_write, reasoning, calls, cost)
+        type Row = (String, String, String, i64, i64, i64, i64, i64, i64, f64);
+        let candidates: Vec<Row> = {
+            let mut stmt = tx.prepare(
+                "SELECT h.date, h.model, h.provider,\
+                 SUM(h.input_tokens), SUM(h.output_tokens), SUM(h.cache_read_tokens),\
+                 SUM(h.cache_write_tokens), SUM(h.reasoning_tokens), SUM(h.calls), SUM(h.cost) \
+                 FROM usage_hourly h \
+                 WHERE h.agent = ?1 \
+                   AND NOT EXISTS ( \
+                       SELECT 1 FROM usage_daily d WHERE d.agent = h.agent AND d.date = h.date \
+                   ) \
+                 GROUP BY h.date, h.model, h.provider",
+            )?;
+            let rows = stmt.query_map(params![agent], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, f64>(9)?,
+                ))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let mut n = 0usize;
+        for (date, model, provider, input, output, cache_read, cache_write, reasoning, calls, cost) in
+            candidates
+        {
+            if skip_dates.contains(&date) {
+                continue;
+            }
+            tx.execute(
+                SQL_DAILY_UPSERT,
+                params![
+                    agent, date, model, provider, input, output, cache_read, cache_write,
+                    reasoning, calls, cost,
+                ],
+            )?;
+            n += 1;
+        }
+        if n > 0 {
+            bump_data_version(&tx)?;
+        }
+        tx.commit()?;
+        Ok(n)
+    }
     // ---------- 查询 ----------
 
     fn totals_eq(conn: &Connection, date: &str) -> Result<Totals> {
@@ -894,6 +1005,159 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// absolute_daily(台账首次看到某天的绝对总量)必须先删后写,不能与回填的行累加。
+    #[test]
+    fn absolute_daily_replaces_instead_of_accumulating() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+
+        // 回填先写下 100
+        let mut backfilled = record();
+        backfilled.bucket_date = Some("2026-08-31".into());
+        backfilled.input_tokens = 100;
+        store.apply_records(&[backfilled]).unwrap();
+        assert_eq!(store.totals_for_date("2026-08-31").unwrap().input_tokens, 100);
+
+        // 台账报到当天绝对总量 30 → 结果必须是 30,不是 130
+        let mut absolute = record();
+        absolute.bucket_date = Some("2026-08-31".into());
+        absolute.input_tokens = 30;
+        absolute.absolute_daily = true;
+        store.apply_records(&[absolute]).unwrap();
+        assert_eq!(
+            store.totals_for_date("2026-08-31").unwrap().input_tokens,
+            30,
+            "绝对总量必须替换,不能与回填的行相加"
+        );
+
+        // 普通增量语义不变:再写 5 条 = 35
+        let mut increment = record();
+        increment.bucket_date = Some("2026-08-31".into());
+        increment.input_tokens = 5;
+        store.apply_records(&[increment]).unwrap();
+        assert_eq!(store.totals_for_date("2026-08-31").unwrap().input_tokens, 35);
+        let _ = std::fs::remove_file(path);
+    }
+    /// 全量重建只替换**本次扫描覆盖到的日期**,覆盖不到的日期历史必须原样保留。
+    /// 以前是无条件清空整表:日志换代后旧事件已不在日志里,一次重建就把那些日期
+    /// 的按天+按小时数据永久抹掉(日志里已经没有,无法再重建)。
+    #[test]
+    fn replace_agent_preserves_days_outside_the_new_scan() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+
+        // 旧历史:08-14(新扫描不会再产出这个日期,因为日志里已经没有了)
+        let mut old = record();
+        old.bucket_date = Some("2026-08-14".into());
+        old.bucket_hour = Some(5);
+        store.apply_records(&[old]).unwrap();
+        let before = store.totals_for_date("2026-08-14").unwrap();
+        assert_eq!(before.input_tokens, 10);
+
+        // 重建:新扫描只覆盖 09-20
+        let mut fresh = record();
+        fresh.bucket_date = Some("2026-09-20".into());
+        fresh.bucket_hour = Some(7);
+        fresh.input_tokens = 3;
+        let cursors = std::collections::HashMap::new();
+        store
+            .replace_agent("dsh", std::slice::from_ref(&fresh), &cursors, &serde_json::Value::Null)
+            .unwrap();
+
+        assert_eq!(
+            store.totals_for_date("2026-08-14").unwrap().input_tokens,
+            before.input_tokens,
+            "重建覆盖不到的日期被删掉了 → 历史丢失"
+        );
+        assert_eq!(store.totals_for_date("2026-09-20").unwrap().input_tokens, 3);
+        // 覆盖到的日期仍然只写本次结果(不累加)
+        store
+            .replace_agent("dsh", std::slice::from_ref(&fresh), &cursors, &serde_json::Value::Null)
+            .unwrap();
+        assert_eq!(store.totals_for_date("2026-09-20").unwrap().input_tokens, 3);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 只进会话表、两张用量表都不写的记录(projcache)不能让重建删掉那个日期的历史。
+    #[test]
+    fn replace_agent_ignores_records_that_write_no_usage_tables() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let mut old = record();
+        old.bucket_date = Some("2026-08-14".into());
+        store.apply_records(&[old]).unwrap();
+
+        let mut session_only = record();
+        session_only.bucket_date = Some("2026-08-14".into());
+        session_only.skip_daily = true;
+        session_only.skip_hourly = true;
+        let cursors = std::collections::HashMap::new();
+        store
+            .replace_agent("dsh", &[session_only], &cursors, &serde_json::Value::Null)
+            .unwrap();
+        assert_eq!(
+            store.totals_for_date("2026-08-14").unwrap().input_tokens,
+            10,
+            "两张用量表都不写的记录不该触发删除"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+    /// 回填:只填 usage_daily 整天没有行的日期,已有行的日期原样不动(幂等、不双计)。
+    #[test]
+    fn backfill_fills_only_days_with_no_daily_rows() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+
+        // 09-18:只有按小时数据(模拟"按天交给台账"期间被丢掉的日期)
+        let mut hourly_only = record();
+        hourly_only.skip_daily = true;
+        hourly_only.bucket_date = Some("2026-09-18".into());
+        hourly_only.bucket_hour = Some(3);
+        store.apply_records(&[hourly_only]).unwrap();
+        assert_eq!(store.totals_for_date("2026-09-18").unwrap().input_tokens, 0);
+
+        // 09-19:按天/按小时都有 —— 台账写过的历史,回填绝不能碰
+        let mut both = record();
+        both.bucket_date = Some("2026-09-19".into());
+        both.bucket_hour = Some(1);
+        store.apply_records(&[both]).unwrap();
+        let before = store.totals_for_date("2026-09-19").unwrap();
+
+        let skip = std::collections::HashSet::new();
+        assert_eq!(store.backfill_daily_from_hourly("dsh", &skip).unwrap(), 1);
+        assert_eq!(
+            store.totals_for_date("2026-09-18").unwrap().input_tokens,
+            10,
+            "整天缺按天数据的日期必须被补上"
+        );
+        assert_eq!(
+            store.totals_for_date("2026-09-19").unwrap().input_tokens,
+            before.input_tokens,
+            "已有按天行的日期不能被回填再加一遍"
+        );
+
+        // 幂等:再跑一次不该再写任何行
+        assert_eq!(store.backfill_daily_from_hourly("dsh", &skip).unwrap(), 0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 台账负责的日期不参与回填(否则台账重写该日时会两边各记一次)。
+    #[test]
+    fn backfill_skips_dates_owned_by_the_ledger() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let mut hourly_only = record();
+        hourly_only.skip_daily = true;
+        hourly_only.bucket_date = Some("2026-09-18".into());
+        hourly_only.bucket_hour = Some(3);
+        store.apply_records(&[hourly_only]).unwrap();
+
+        let skip: std::collections::HashSet<String> =
+            ["2026-09-18".to_string()].into_iter().collect();
+        assert_eq!(store.backfill_daily_from_hourly("dsh", &skip).unwrap(), 0);
+        assert_eq!(store.totals_for_date("2026-09-18").unwrap().input_tokens, 0);
+        let _ = std::fs::remove_file(path);
+    }
     #[test]
     fn replace_agent_persists_cursors() {
         let path = temp_db();

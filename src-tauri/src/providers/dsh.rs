@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,27 @@ impl AgentProvider for DshProvider {
         PARSER_VERSION
     }
 
+    /// state.ledger 的键是台账当前覆盖的 "日期|provider:model",取其日期部分。
+    ///
+    /// 只有**按天口径真的归台账**时才上报这些日期:历史状态若已选定日志口径
+    /// (`dailySource == SessionLogs`),台账不参与按天写入,这时遗留的 ledger 键
+    /// 只是过时快照,不能拿它挡住回填。
+    ///
+    /// 台账读不出来时 scan_ledger 不跑,st.ledger 保持上一次快照 —— 上报它即"保守":
+    /// 这些日期不回填,等台账恢复后由台账自己写,避免两边各记一次。
+    fn ledger_owned_dates(&self, state: &Value) -> Option<HashSet<String>> {
+        let st: DshState = serde_json::from_value(state.clone()).ok()?;
+        if st.daily_source != Some(DshDailySource::Ledger) {
+            return Some(HashSet::new());
+        }
+        Some(
+            st.ledger
+                .keys()
+                .filter_map(|key| key.split('|').next().map(str::to_string))
+                .collect(),
+        )
+    }
+
     /// DSH 台账(cost-meter)记的是人民币实际计费金额
     fn native_cost_currency(&self) -> Option<&'static str> {
         Some("CNY")
@@ -53,18 +74,21 @@ impl AgentProvider for DshProvider {
             serde_json::from_value(std::mem::take(ctx.state)).unwrap_or_default();
         let mut records = Vec::new();
 
-        let ledger = match load_ledger() {
-            Ok(value) => value,
-            Err(e) => {
-                eprintln!("[dsh] ledger: {}", e);
-                None
-            }
+        let ledger_read = load_ledger();
+        let ledger = match &ledger_read {
+            LedgerRead::Loaded(value) => Some(value),
+            LedgerRead::Absent | LedgerRead::Unreadable => None,
         };
         let mut session_paths = Vec::new();
         collect_session_logs(&paths::dsh_home().join("sessions"), &mut session_paths);
+        // 台账**实际覆盖**的 (日期, provider:model) 桶。逐桶判定,而不是"台账整体可用/
+        // 不可用":DSH 升级会重写 cost-meter 台账并丢掉历史,只留下个别旧日期,
+        // 老逻辑看到"台账里还有一天有数据"就把按天表整块交给台账,于是台账没覆盖的
+        // 日期一条按天数据都没有 —— 按小时表有数据、当天卡片却恒为 0,正是这个形状。
+        let ledger_keys = ledger_daily_keys(ledger);
         let daily_source = select_daily_source(
             &mut st,
-            ledger.as_ref().is_some_and(ledger_has_daily_data),
+            !ledger_keys.is_empty(),
             !session_paths.is_empty(),
         );
 
@@ -74,12 +98,27 @@ impl AgentProvider for DshProvider {
                 scan_ledger(&mut st, &mut records, value);
             }
         }
-        // 按小时表始终使用会话日志的真实事件时间;回退模式下同一增量也写入按天表。
+        // 按小时表始终使用会话日志的真实事件时间;台账没覆盖的桶,同一增量也写入
+        // 按天表(台账丢了当天记录时,当天统计不至于整段空白)。
+        //
+        // None = 台账覆盖范围未知(文件在但这次读不出来),按天仍全算台账的职责,
+        // 日志一条不写 —— 与升级前行为一致,台账恢复后不会双计。
+        let no_ledger_keys: HashSet<String> = HashSet::new();
+        let ledger_covered: Option<&HashSet<String>> = match daily_source {
+            Some(DshDailySource::Ledger) => match ledger_read {
+                LedgerRead::Unreadable => None,
+                // 台账已加载(或根本没有台账文件)时,逐个桶看它认领了哪些;
+                // Absent 时 ledger_keys 必然为空 → 所有桶都归日志,正是老回退行为。
+                LedgerRead::Loaded(_) | LedgerRead::Absent => Some(&ledger_keys),
+            },
+            // 历史状态已选定日志口径:所有桶都由日志负责,与升级前一致。
+            _ => Some(&no_ledger_keys),
+        };
         let logs_available = match scan_session_logs(
             &mut st,
             &mut records,
             &session_paths,
-            daily_source == Some(DshDailySource::SessionLogs),
+            ledger_covered,
         ) {
             Ok(available) => available,
             Err(e) => {
@@ -254,25 +293,64 @@ fn read_json_file(path: &Path) -> Result<Value> {
         .into())
 }
 
-fn load_ledger() -> Result<Option<Value>> {
-    let path = paths::dsh_storages().join("cost-meter").join("ledger.json");
-    if !path.is_file() {
-        return Ok(None);
-    }
-    read_json_file(&path).map(Some)
+/// 读取 cost-meter 台账。
+///
+/// 区分三种结果,因为它们对"按天数据由谁负责"的含义不同:
+/// - `Absent`:没有台账文件 → 按天完全由会话日志负责(老设备/无 cost-meter);
+/// - `Loaded`:读到台账 → 逐桶判定它认领了哪些 (日期, provider:model);
+/// - `Unreadable`:文件在但这次读不出来 → 覆盖范围未知,按天仍视为台账的职责,
+///   不能让日志顶进来(否则台账恢复后同一段增量会被台账再写一遍 → 双计)。
+enum LedgerRead {
+    Absent,
+    Loaded(Value),
+    Unreadable,
 }
 
-fn ledger_has_daily_data(value: &Value) -> bool {
-    value
-        .get("days")
+fn load_ledger() -> LedgerRead {
+    let path = paths::dsh_storages().join("cost-meter").join("ledger.json");
+    if !path.is_file() {
+        return LedgerRead::Absent;
+    }
+    match read_json_file(&path) {
+        Ok(value) => LedgerRead::Loaded(value),
+        Err(e) => {
+            eprintln!("[dsh] ledger: {}", e);
+            LedgerRead::Unreadable
+        }
+    }
+}
+
+/// 台账**实际覆盖**的按天桶集合,键是 "日期|provider:model"(与 scan_ledger 写库的键一致)。
+///
+/// 逐桶判定而不是"台账整体可用/不可用":DSH 升级会重写 cost-meter 台账并丢掉历史,
+/// 只留下个别旧日期。老逻辑看到"台账里还有一天有数据"就把按天表整块交给台账,
+/// 于是台账没覆盖的日期一条按天数据都没有 —— 按小时表有数据、当天卡片却恒为 0。
+///
+/// 逐桶(而不是逐日)还顺带保住了"台账只记了一部分 provider"的日期:
+/// 台账认领它自己有的桶,同一天里别的模型仍由会话日志补上,不会整日丢失。
+///
+/// 兼容老版本台账:只有 sessions、没有 byProviderModel 的日期产不出任何键,
+/// 那一天的按天数据交给会话日志补,而不是当成"台账有数据"整块让位。
+fn ledger_daily_keys(ledger: Option<&Value>) -> HashSet<String> {
+    ledger
+        .and_then(|value| value.get("days"))
         .and_then(|days| days.as_object())
-        .is_some_and(|days| {
-            days.values().any(|day| {
-                day.get("byProviderModel")
-                    .and_then(|models| models.as_object())
-                    .is_some_and(|models| !models.is_empty())
-            })
+        .map(|days| {
+            days.iter()
+                .flat_map(|(date, day)| {
+                    day.get("byProviderModel")
+                        .and_then(|models| models.as_object())
+                        .map(|models| {
+                            models
+                                .keys()
+                                .map(|mkey| format!("{}|{}", date, mkey))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
         })
+        .unwrap_or_default()
 }
 
 fn select_daily_source(
@@ -346,11 +424,15 @@ fn scan_ledger(st: &mut DshState, out: &mut Vec<UsageRecord>, ledger: &Value) {
                 let key = format!("{}|{}", date, mkey);
                 alive.insert(key.clone());
                 let cur = DshEntry::from_json(m);
+                // 没有旧基线 = 台账第一次看到这一天,cur 就是当天绝对总量。
+                // 这种情况写库必须替换而不是累加:否则会和"日志回填"写下的同一行相加。
+                let first_seen = !st.ledger.contains_key(&key);
                 let prev = st.ledger.get(&key).cloned().unwrap_or_default();
                 let delta = cur.delta_from(&prev);
                 if !delta.is_zero() {
                     let mut record = record_from_entry(&delta, mkey, ts, None, None);
                     record.skip_hourly = true;
+                    record.absolute_daily = first_seen;
                     out.push(record);
                 }
                 st.ledger.insert(key, cur);
@@ -671,11 +753,17 @@ fn trim_file_cache(
     );
 }
 
+/// ledger_covered:台账覆盖的按天桶,键 "日期|provider:model"。
+/// - Some(keys):命中 keys 的增量不写按天表(该桶按天数据由台账负责,重复写会双计);
+///   没命中的照写,于是台账丢掉当天记录时当天统计仍有数据。没有可用台账时传
+///   Some(&空集),退化为"日志负责全部按天数据"(升级前行为)。
+/// - None:台账文件在但这次读不出来,覆盖范围未知 → 一条都不写按天表,
+///   避免台账恢复后同一段增量被两边各记一次。
 fn scan_session_logs(
     st: &mut DshState,
     out: &mut Vec<UsageRecord>,
     paths: &[PathBuf],
-    include_daily: bool,
+    ledger_covered: Option<&HashSet<String>>,
 ) -> Result<bool> {
     if paths.is_empty() {
         return Ok(false);
@@ -746,10 +834,13 @@ fn scan_session_logs(
             &delta,
             model_key,
             date_start_ms(&date),
-            Some(date),
+            Some(date.clone()),
             Some(hour),
         );
-        record.skip_daily = !include_daily;
+        record.skip_daily = match ledger_covered {
+            None => true,
+            Some(keys) => keys.contains(&format!("{}|{}", date, model_key)),
+        };
         out.push(record);
     }
     st.hourly = current;
@@ -759,11 +850,12 @@ fn scan_session_logs(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_session_logs, local_date, local_hour, scan_session_file, scan_session_logs,
-        select_daily_source, DshDailySource, DshEntry, DshState, ZSTD_MAGIC,
+        collect_session_logs, ledger_daily_keys, local_date, local_hour, scan_ledger,
+        scan_session_file, scan_session_logs, select_daily_source, DshDailySource, DshEntry, DshState,
+        ZSTD_MAGIC,
     };
     use serde_json::Value;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -871,18 +963,135 @@ mod tests {
         .unwrap();
         let mut state = DshState::default();
         let mut records = Vec::new();
-        assert!(scan_session_logs(&mut state, &mut records, &[path.clone()], true).unwrap());
+        assert!(scan_session_logs(&mut state, &mut records, &[path.clone()], Some(&HashSet::new())).unwrap());
         assert_eq!(records.len(), 1);
         assert!(!records[0].skip_daily);
         assert!(!records[0].skip_hourly);
         assert_eq!(records[0].input_tokens, 12);
 
         let mut second = Vec::new();
-        assert!(scan_session_logs(&mut state, &mut second, &[path.clone()], true).unwrap());
+        assert!(scan_session_logs(&mut state, &mut second, &[path.clone()], Some(&HashSet::new())).unwrap());
         assert!(second.is_empty());
         fs::remove_file(path).unwrap();
     }
 
+    /// 台账只有 sessions、没有 byProviderModel 的日期产不出任何覆盖键。
+    /// 老版本 DSH 的台账就是这种形状,不能因为 days 非空就让按天表整块让位。
+    #[test]
+    fn ledger_daily_keys_ignores_days_without_by_provider_model() {
+        let ledger = serde_json::json!({
+            "days": {
+                "2026-08-31": {"byProviderModel": {"p:m": {"input": 1}}},
+                "2026-09-01": {"sessions": [{"id": "s"}]},
+                "2026-09-02": {"byProviderModel": {}},
+            }
+        });
+        let keys = ledger_daily_keys(Some(&ledger));
+        assert!(keys.contains("2026-08-31|p:m"));
+        assert!(keys.iter().all(|k| !k.starts_with("2026-09-01")), "只有 sessions 的日期不算覆盖");
+        assert!(keys.iter().all(|k| !k.starts_with("2026-09-02")), "空的 byProviderModel 不算覆盖");
+        assert!(ledger_daily_keys(None).is_empty());
+        assert!(ledger_daily_keys(Some(&serde_json::json!({}))).is_empty());
+    }
+
+    /// 台账只认领自己有的桶:同一天里台账没记的 provider:model 仍由日志补。
+    #[test]
+    fn ledger_daily_keys_are_per_provider_model_not_per_day() {
+        let ledger = serde_json::json!({
+            "days": {"2026-08-31": {"byProviderModel": {"deepseek-official:deepseek-v4-pro": {}}}}
+        });
+        let keys = ledger_daily_keys(Some(&ledger));
+        assert!(keys.contains("2026-08-31|deepseek-official:deepseek-v4-pro"));
+        assert!(!keys.contains("2026-08-31|me:deepseek-v4.1-flash"));
+    }
+
+    /// 核心回归:台账只覆盖了历史某一天时,当天(以及其它未覆盖的桶)的按天数据
+    /// 必须由会话日志补上。老逻辑下 skip_daily 恒为 true,按天表整段空白,
+    /// 表现为"按小时轴表有数据、当天 Token 恒为 0"。
+    #[test]
+    fn session_logs_write_daily_for_buckets_the_ledger_does_not_cover() {
+        let path = temp_path("jsonl");
+        let ts = 1_780_000_000_000i64;
+        fs::write(&path, session_log(ts, "m", &[(1, 1, 10, 2)])).unwrap();
+        let day = local_date(ts);
+        let own_key = format!("{}|p:m", day);
+
+        // 台账认领了这个桶 → 按天交给台账,日志只写小时表(避免双计)
+        let mut covered_state = DshState::default();
+        let mut covered = Vec::new();
+        let covered_keys: HashSet<String> = [own_key.clone()].into_iter().collect();
+        assert!(scan_session_logs(
+            &mut covered_state,
+            &mut covered,
+            &[path.clone()],
+            Some(&covered_keys),
+        )
+        .unwrap());
+        assert_eq!(covered.len(), 1);
+        assert!(covered[0].skip_daily, "台账认领的桶不能重复写按天表");
+        assert!(!covered[0].skip_hourly, "按小时表始终由日志负责");
+
+        // 台账只认领了同一天的别的模型 → 本桶仍必须写按天表(逐桶判定,不整日让位)
+        let mut partial_state = DshState::default();
+        let mut partial = Vec::new();
+        let sibling: HashSet<String> = [format!("{}|other:model", day)].into_iter().collect();
+        assert!(scan_session_logs(
+            &mut partial_state,
+            &mut partial,
+            &[path.clone()],
+            Some(&sibling),
+        )
+        .unwrap());
+        assert_eq!(partial.len(), 1);
+        assert!(!partial[0].skip_daily, "台账没认领的桶必须自己写按天表");
+
+        // 台账只覆盖了别的旧日期(DSH 升级后的真实形状)→ 当天必须补按天表
+        let mut uncovered_state = DshState::default();
+        let mut uncovered = Vec::new();
+        let other_days: HashSet<String> = ["1999-01-01|p:m".to_string()].into_iter().collect();
+        assert!(scan_session_logs(
+            &mut uncovered_state,
+            &mut uncovered,
+            &[path.clone()],
+            Some(&other_days),
+        )
+        .unwrap());
+        assert_eq!(uncovered.len(), 1);
+        assert!(!uncovered[0].skip_daily, "台账没覆盖的日期必须自己写按天表");
+        assert_eq!(uncovered[0].input_tokens, 10);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    /// 台账第一次看到某天时,产出的是**绝对总量**,必须标记 absolute_daily,
+    /// 否则会与"按小时表回填"写下的同一行相加(台账重新拿到某天时的双计路径)。
+    #[test]
+    fn ledger_first_seen_day_is_marked_absolute() {
+        let ledger = serde_json::json!({
+            "days": {"2026-08-31": {"byProviderModel": {"p:m": {
+                "input": 100, "output": 5, "calls": 2
+            }}}}
+        });
+        let mut state = DshState::default();
+        let mut first = Vec::new();
+        scan_ledger(&mut state, &mut first, &ledger);
+        assert_eq!(first.len(), 1);
+        assert!(first[0].absolute_daily, "首次见到该天 = 当天绝对总量,必须替换写入");
+        assert!(first[0].skip_hourly, "台账不写按小时表");
+        assert_eq!(first[0].input_tokens, 100);
+
+        // 台账把该天从 100 涨到 130 → 这是相对增量,不能再替换整行
+        let bumped = serde_json::json!({
+            "days": {"2026-08-31": {"byProviderModel": {"p:m": {
+                "input": 130, "output": 5, "calls": 2
+            }}}}
+        });
+        let mut second = Vec::new();
+        scan_ledger(&mut state, &mut second, &bumped);
+        assert_eq!(second.len(), 1);
+        assert!(!second[0].absolute_daily, "已有基线时是增量,不能替换");
+        assert_eq!(second[0].input_tokens, 30, "增量应为 130-100");
+    }
     #[test]
     fn daily_source_does_not_switch_after_fallback_has_started() {
         let mut state = DshState::default();
@@ -933,7 +1142,7 @@ mod tests {
             &mut state,
             &mut records,
             &[valid.clone(), broken.clone()],
-            true
+            Some(&HashSet::new()),
         )
         .unwrap());
         assert_eq!(records.len(), 1);
@@ -951,7 +1160,7 @@ mod tests {
 
         let mut state = DshState::default();
         let mut first = Vec::new();
-        assert!(scan_session_logs(&mut state, &mut first, &[path.clone()], true).unwrap());
+        assert!(scan_session_logs(&mut state, &mut first, &[path.clone()], Some(&HashSet::new())).unwrap());
         assert_eq!(first.iter().map(|r| r.input_tokens).sum::<u64>(), 10);
         let cached = state
             .file_cache
@@ -961,13 +1170,13 @@ mod tests {
 
         // 文件没动:命中缓存,不应产生任何新记录
         let mut second = Vec::new();
-        assert!(scan_session_logs(&mut state, &mut second, &[path.clone()], true).unwrap());
+        assert!(scan_session_logs(&mut state, &mut second, &[path.clone()], Some(&HashSet::new())).unwrap());
         assert!(second.is_empty(), "未变化的文件不该再产出记录");
 
         // 追加一次调用:size 变化 → 缓存失效,只补新增量
         fs::write(&path, session_log(ts, "m", &[(1, 1, 10, 2), (1, 2, 5, 1)])).unwrap();
         let mut third = Vec::new();
-        assert!(scan_session_logs(&mut state, &mut third, &[path.clone()], true).unwrap());
+        assert!(scan_session_logs(&mut state, &mut third, &[path.clone()], Some(&HashSet::new())).unwrap());
         assert_eq!(third.iter().map(|r| r.input_tokens).sum::<u64>(), 5);
         fs::remove_file(path).unwrap();
     }
@@ -982,7 +1191,7 @@ mod tests {
 
         let mut state = DshState::default();
         let mut first = Vec::new();
-        scan_session_logs(&mut state, &mut first, &[a.clone(), b.clone()], true).unwrap();
+        scan_session_logs(&mut state, &mut first, &[a.clone(), b.clone()], Some(&HashSet::new())).unwrap();
         let key_a = format!("{}|{}|p:m1", local_date(ts), local_hour(ts));
         let key_b = format!("{}|{}|p:m2", local_date(ts), local_hour(ts));
         assert_eq!(state.hourly.get(&key_a).map(|e| e.input), Some(10));
@@ -995,7 +1204,7 @@ mod tests {
         fs::write(&b, corrupt).unwrap();
 
         let mut second = Vec::new();
-        scan_session_logs(&mut state, &mut second, &[a.clone(), b.clone()], true).unwrap();
+        scan_session_logs(&mut state, &mut second, &[a.clone(), b.clone()], Some(&HashSet::new())).unwrap();
 
         assert!(
             state.hourly.get(&key_a).is_none(),
@@ -1022,7 +1231,7 @@ mod tests {
 
         let mut state = DshState::default();
         let mut records = Vec::new();
-        assert!(scan_session_logs(&mut state, &mut records, &[path.clone()], true).unwrap());
+        assert!(scan_session_logs(&mut state, &mut records, &[path.clone()], Some(&HashSet::new())).unwrap());
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].input_tokens, 12);
         assert_eq!(records[0].output_tokens, 3);

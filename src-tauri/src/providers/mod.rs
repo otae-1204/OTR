@@ -65,6 +65,18 @@ pub trait AgentProvider: Send + Sync {
     fn health(&self, _state: &serde_json::Value) -> Option<String> {
         None
     }
+    /// 该 Provider 的**按天数据由外部台账负责**的日期集合。
+    ///
+    /// 这些日期不参与"按小时表回填按天表"(见 Store::backfill_daily_from_hourly),
+    /// 否则台账重写该日时会与回填的数据各记一次。
+    /// None = 该 Provider 不做按小时→按天回填。
+    fn ledger_owned_dates(
+        &self,
+        _state: &serde_json::Value,
+    ) -> Option<std::collections::HashSet<String>> {
+        None
+    }
+
     /// 增量扫描;full 时外部已重置游标与状态,Provider 自然输出全量
     fn scan(&self, ctx: &mut ScanCtx) -> Result<Vec<UsageRecord>>;
 }

@@ -294,6 +294,19 @@ fn run_scan_inner(app: &AppHandle, full: bool, only: Option<&str>) {
                         let _ = state.store.set_kv(&format!("state:{}", p.id()), &s);
                     }
                 }
+                // 修历史:某些日期曾因"按天交给台账"而只写进了按小时表(轴表有数据、
+                // 当天卡片恒为 0),而记录是增量语义、不会重放,只能在库里补回来。
+                // 只填 usage_daily 整天没有行的日期,幂等,可安全每次重跑。
+                if let Some(skip) = p.ledger_owned_dates(&st) {
+                    match state.store.backfill_daily_from_hourly(p.id(), &skip) {
+                        Ok(n) if n > 0 => {
+                            eprintln!("[{}] 按小时表回填按天表 {} 行", p.id(), n);
+                            changed = true;
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[{}] 回填按天表: {}", p.id(), e),
+                    }
+                }
                 let _ = state.store.set_kv(&pv_key, &pv.to_string());
             }
             // 扫描失败:用量表一行没动,内存基线已在 scan_provider 内回滚
