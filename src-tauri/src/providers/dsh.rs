@@ -43,25 +43,20 @@ impl AgentProvider for DshProvider {
         PARSER_VERSION
     }
 
-    /// state.ledger 的键是台账当前覆盖的 "日期|provider:model",取其日期部分。
+    /// state.ledger 的键就是台账当前覆盖的 "日期|provider:model",原样上报。
     ///
-    /// 只有**按天口径真的归台账**时才上报这些日期:历史状态若已选定日志口径
+    /// 只有**按天口径真的归台账**时才上报:历史状态若已选定日志口径
     /// (`dailySource == SessionLogs`),台账不参与按天写入,这时遗留的 ledger 键
-    /// 只是过时快照,不能拿它挡住回填。
+    /// 只是过时快照,不能拿它挡住校正。
     ///
     /// 台账读不出来时 scan_ledger 不跑,st.ledger 保持上一次快照 —— 上报它即"保守":
-    /// 这些日期不回填,等台账恢复后由台账自己写,避免两边各记一次。
-    fn ledger_owned_dates(&self, state: &Value) -> Option<HashSet<String>> {
+    /// 这些桶不校正,等台账恢复后由台账自己写,避免两边各记一次。
+    fn ledger_owned_buckets(&self, state: &Value) -> Option<HashSet<String>> {
         let st: DshState = serde_json::from_value(state.clone()).ok()?;
         if st.daily_source != Some(DshDailySource::Ledger) {
             return Some(HashSet::new());
         }
-        Some(
-            st.ledger
-                .keys()
-                .filter_map(|key| key.split('|').next().map(str::to_string))
-                .collect(),
-        )
+        Some(st.ledger.keys().cloned().collect())
     }
 
     /// DSH 台账(cost-meter)记的是人民币实际计费金额

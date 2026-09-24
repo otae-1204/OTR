@@ -245,6 +245,8 @@ pub struct CostBasis<'a> {
     rate: f64,
     /// Agent → 自带成本币种("CNY"/"USD"),由 Provider::native_cost_currency 声明
     native_currency: &'a HashMap<String, String>,
+    /// 峰谷占比;None = 不做峰谷(整段按平价计,与加峰谷之前逐位一致)
+    peaks: Option<&'a crate::peak::PeakShares>,
 }
 
 impl<'a> CostBasis<'a> {
@@ -257,13 +259,28 @@ impl<'a> CostBasis<'a> {
             pricing,
             rate,
             native_currency,
+            peaks: None,
         }
     }
 
-    /// 一条 (agent, model) 聚合行的成本;tokens 用于定价重算,raw_cost 是数据自带成本
-    pub fn row_cost(&self, model: &str, agent: &str, tokens: &Totals, raw_cost: f64) -> f64 {
+    /// 挂上峰谷占比表:只有填了 `peak` 档的模型会受影响,其余模型逐位不变。
+    pub fn with_peaks(mut self, peaks: &'a crate::peak::PeakShares) -> Self {
+        self.peaks = Some(peaks);
+        self
+    }
+
+    /// 一条 (agent, model) 聚合行的成本;tokens 用于定价重算,raw_cost 是数据自带成本。
+    /// `peak` 是该行对应的峰值占比 —— 按天聚合时逐桶取,按会话聚合时取模型级兜底。
+    pub fn row_cost(
+        &self,
+        model: &str,
+        agent: &str,
+        tokens: &Totals,
+        raw_cost: f64,
+        peak: crate::peak::PeakShare,
+    ) -> f64 {
         if let Some(price) = self.pricing.get(model) {
-            return estimate_cost(tokens, price, self.rate);
+            return estimate_cost(tokens, price, self.rate, peak);
         }
         if raw_cost.abs() <= f64::EPSILON {
             return 0.0;
@@ -397,36 +414,38 @@ impl Store {
         Ok(n)
     }
 
-    /// 用按小时表回填**按天表整天缺失**的日期。
+    /// 用按小时表**校正**按天表:逐 (date, model, provider) 桶,只增不减。
     ///
-    /// 存在的理由:DSH 升级重写 cost-meter 台账后,按天口径一度把每条日志记录都标成
-    /// "台账负责",于是那些日期的增量只进了按小时表(轴表有数据),按天表一条没有
-    /// (当天卡片恒为 0)。记录是**增量**语义,这些日期不会被重放,只能在库里修回来。
+    /// 存在的理由:DSH 的按天数据由会话日志补齐,而日志是**增量**消费的
+    /// (state.hourly 是绝对高水位,同一增量不会被重放)。某天的增量一旦被判成
+    /// "台账负责"(skip_daily),或者刚好落在台账读不出来的那个窗口里,那天就只进了
+    /// 按小时表;按天表要么整天空白、要么只剩下一小段增量 —— 表现为"轴表有数据、
+    /// 当天卡片与模型占比几乎为 0"(用户报的现场:今日只有一个模型、511.3K)。
+    /// 记录不会重放,只能在库里修回来。
     ///
-    /// 只填 usage_daily 里整天没有行的日期:这些日期按天数据为零,补进去只增加、
-    /// 不与任何已有行相加,所以不会双计 —— 历史台账写过的日期因此原样不动。
-    /// skip_dates(台账负责的日期)一律不碰,避免台账日后重写该日时两边各记一次。
-    /// 幂等,可每次扫描后安全重跑。
-    pub fn backfill_daily_from_hourly(
+    /// 规则(逐桶):
+    /// - 桶的按小时合计 > 按天合计(按天缺行算 0)→ 用按小时合计**替换**该行;
+    /// - 按天 >= 按小时 → 原样不动(台账写过的日期按天更高,不能拿日志把它抹小);
+    /// - skip_buckets(台账负责的桶)不碰,避免台账日后重写该桶时两边各记一次。
+    ///
+    /// 替换而不是累加:两张表记的是同一批增量,相加就是双计。
+    /// 幂等:第二次跑两边已经相等,写 0 行。可每次扫描后安全重跑。
+    pub fn reconcile_daily_from_hourly(
         &self,
         agent: &str,
-        skip_dates: &std::collections::HashSet<String>,
+        skip_buckets: &std::collections::HashSet<String>,
     ) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        // 先在只读语句里挑出候选行(整天没有按天数据的日期),再逐行过滤 skip_dates
+        // 只读语句先取两张表的逐桶合计,再在内存里比对、逐个写回
         // (date, model, provider, input, output, cache_read, cache_write, reasoning, calls, cost)
         type Row = (String, String, String, i64, i64, i64, i64, i64, i64, f64);
-        let candidates: Vec<Row> = {
+        let hourly: Vec<Row> = {
             let mut stmt = tx.prepare(
                 "SELECT h.date, h.model, h.provider,\
                  SUM(h.input_tokens), SUM(h.output_tokens), SUM(h.cache_read_tokens),\
                  SUM(h.cache_write_tokens), SUM(h.reasoning_tokens), SUM(h.calls), SUM(h.cost) \
-                 FROM usage_hourly h \
-                 WHERE h.agent = ?1 \
-                   AND NOT EXISTS ( \
-                       SELECT 1 FROM usage_daily d WHERE d.agent = h.agent AND d.date = h.date \
-                   ) \
+                 FROM usage_hourly h WHERE h.agent = ?1 \
                  GROUP BY h.date, h.model, h.provider",
             )?;
             let rows = stmt.query_map(params![agent], |row| {
@@ -445,13 +464,42 @@ impl Store {
             })?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
         };
+        let daily: HashMap<(String, String, String), i64> = {
+            let mut stmt = tx.prepare(
+                "SELECT d.date, d.model, d.provider, \
+                 SUM(d.input_tokens + d.output_tokens + d.cache_read_tokens + d.cache_write_tokens) \
+                 FROM usage_daily d WHERE d.agent = ?1 \
+                 GROUP BY d.date, d.model, d.provider",
+            )?;
+            let rows = stmt.query_map(params![agent], |row| {
+                Ok((
+                    (row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?),
+                    row.get::<_, i64>(3)?,
+                ))
+            })?;
+            rows.collect::<std::result::Result<HashMap<_, _>, _>>()?
+        };
         let mut n = 0usize;
         for (date, model, provider, input, output, cache_read, cache_write, reasoning, calls, cost) in
-            candidates
+            hourly
         {
-            if skip_dates.contains(&date) {
+            // 逐桶判定:键与 Provider 上报的 ledger 键同形(见 ledger_owned_buckets)
+            if skip_buckets.contains(&format!("{}|{}:{}", date, provider, model)) {
                 continue;
             }
+            let hourly_total = input + output + cache_read + cache_write;
+            let daily_total = daily
+                .get(&(date.clone(), model.clone(), provider.clone()))
+                .copied()
+                .unwrap_or(0);
+            if hourly_total <= daily_total {
+                continue;
+            }
+            // 同一桶先删后写:按天表记的是这批增量的**同一份**,不是再加一遍
+            tx.execute(
+                "DELETE FROM usage_daily WHERE agent=?1 AND date=?2 AND model=?3 AND provider=?4",
+                params![agent, date, model, provider],
+            )?;
             tx.execute(
                 SQL_DAILY_UPSERT,
                 params![
@@ -558,6 +606,8 @@ impl Store {
         basis: &CostBasis,
         // None = 不过滤;Some = 仅计入这些 Agent(设置里停用的不进主页合计)
         enabled_agents: Option<&[String]>,
+        // 峰谷占比;None = 不做峰谷(平价计价,与加峰谷之前逐位一致)
+        peaks: Option<&crate::peak::PeakShares>,
     ) -> Result<RangeSummary> {
         let conn = self.conn();
         let base_sql = "SELECT COALESCE(NULLIF(model,''),'(未知模型)'), agent,
@@ -581,6 +631,7 @@ impl Store {
             stmt: &mut rusqlite::Statement,
             params: &[&dyn rusqlite::ToSql],
             basis: &CostBasis,
+            peaks: Option<&crate::peak::PeakShares>,
             mut sink: impl FnMut(&str, &str, Totals),
         ) -> Result<()> {
             let rows = stmt.query_map(params, |row| {
@@ -593,7 +644,9 @@ impl Store {
             for r in rows {
                 let (model, agent, mut t) = r?;
                 let raw_cost = t.cost;
-                t.cost = basis.row_cost(&model, &agent, &t, raw_cost);
+                // 这里是区间聚合(不逐日),所以取该模型的区间整体峰值占比
+                let peak = peaks.map(|p| p.model_share(&model)).unwrap_or_default();
+                t.cost = basis.row_cost(&model, &agent, &t, raw_cost, peak);
                 sink(&model, &agent, t);
             }
             Ok(())
@@ -615,6 +668,7 @@ impl Store {
                 &mut stmt,
                 &[&from, &to, &agent],
                 basis,
+                peaks,
                 |model, ag, t| {
                     if agent.is_none() && !enabled_ok(ag) {
                         return;
@@ -642,6 +696,7 @@ impl Store {
                 &mut stmt,
                 &[&from, &to],
                 basis,
+                peaks,
                 |_model, ag, t| {
                     if !enabled_ok(ag) {
                         return;
@@ -667,6 +722,62 @@ impl Store {
             by_agent,
             by_model,
         })
+    }
+
+    /// 从按小时表构建峰谷占比表(见 crate::peak)。
+    ///
+    /// 只读 usage_hourly:它记的是**真实发生的小时**,是判断峰谷的唯一依据。
+    /// 按天表没有小时信息,所以峰谷只能挂在这份占比上,而 token 数仍取按天表 ——
+    /// 两张表本机差 8%(按小时表缺近期日),拿按小时表出总额会让日总额跳变。
+    pub fn peak_shares(
+        &self,
+        agent: Option<&str>,
+        from: &str,
+        to: &str,
+    ) -> Result<crate::peak::PeakShares> {
+        let conn = self.conn();
+        let mut shares = crate::peak::PeakShares::default();
+        let mut stmt = conn.prepare(
+            "SELECT date, hour, model, provider,
+                    SUM(input_tokens), SUM(output_tokens),
+                    SUM(cache_read_tokens), SUM(cache_write_tokens)
+             FROM usage_hourly
+             WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)
+             GROUP BY date, hour, model, provider",
+        )?;
+        let rows = stmt.query_map(params![from, to, agent], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })?;
+        for row in rows {
+            let (date, hour, model, provider, input, output, cr, cw) = row?;
+            // 该小时整体落在高峰或整体落在平价 —— 一小时就是一个档,没有"部分高峰"
+            let on = crate::peak::is_peak_hour(&date, hour);
+            let share = if on {
+                crate::peak::PeakShare {
+                    input: 1.0,
+                    output: 1.0,
+                    cache_read: 1.0,
+                    cache_write: 1.0,
+                }
+            } else {
+                crate::peak::PeakShare::default()
+            };
+            let weight = (input + output + cr + cw) as f64;
+            if weight <= 0.0 {
+                continue;
+            }
+            shares.add_public(&date, &model, &provider, share, weight);
+        }
+        Ok(shares)
     }
 
     /// 出现过的全部模型名(设置页定价表用)
@@ -752,6 +863,8 @@ impl Store {
         basis: &CostBasis,
         // None = 不过滤;Some = 未指定单个 Agent 时仅返回这些 Agent 的会话
         enabled_agents: Option<&[String]>,
+        // 峰谷占比;None = 平价计价
+        peaks: Option<&crate::peak::PeakShares>,
     ) -> Result<Vec<SessionUsage>> {
         let conn = self.conn();
         let enabled_json = match enabled_agents {
@@ -805,7 +918,9 @@ impl Store {
         for row in rows {
             let (row_agent, sid, model, totals, last_ts, project, title, started_at) = row?;
             let raw_cost = totals.cost;
-            let cost = basis.row_cost(&model, &row_agent, &totals, raw_cost);
+            // 明细表按会话聚合、拿不到逐日桶,用模型级区间占比(同源同口径)
+            let peak = peaks.map(|p| p.model_share(&model)).unwrap_or_default();
+            let cost = basis.row_cost(&model, &row_agent, &totals, raw_cost, peak);
             let idx = match index.get(&(row_agent.clone(), sid.clone())) {
                 Some(existing) => *existing,
                 None => {
@@ -946,20 +1061,44 @@ fn totals_from_row(row: &rusqlite::Row, base: usize) -> Totals {
     }
 }
 
-/// 按定价估算费用:($/百万 tokens) × tokens ÷ 1e6 × 汇率
-fn estimate_cost(t: &Totals, p: &PriceEntry, rate: f64) -> f64 {
-    (t.input_tokens as f64 * p.input
-        + t.output_tokens as f64 * p.output
-        + t.cache_read_tokens as f64 * p.cache_read
-        + t.cache_write_tokens as f64 * p.cache_write)
+/// 按定价估算费用:($/百万 tokens) × tokens ÷ 1e6 × 汇率。
+///
+/// 峰谷:某类 token 有 p 的比例落在高峰,单价就是
+/// `(1-p) × 平价 + p × 高峰价`。没有 `peak` 档(p.peak == None)时退化成
+/// `p.peak 取平价`,与加峰谷之前**逐位相同**。
+fn estimate_cost(
+    t: &Totals,
+    p: &PriceEntry,
+    rate: f64,
+    peak: crate::peak::PeakShare,
+) -> f64 {
+    let blend = |off: f64, on: Option<f64>, share: f64| match on {
+        Some(on) => (1.0 - share) * off + share * on,
+        None => off,
+    };
+    let peak_tier = p.peak.clone().unwrap_or_default();
+    let on = p.peak.is_some().then_some(peak_tier);
+    let (pi, po, pr, pw) = match on {
+        Some(tier) => (
+            Some(tier.input),
+            Some(tier.output),
+            Some(tier.cache_read),
+            Some(tier.cache_write),
+        ),
+        None => (None, None, None, None),
+    };
+    (t.input_tokens as f64 * blend(p.input, pi, peak.input)
+        + t.output_tokens as f64 * blend(p.output, po, peak.output)
+        + t.cache_read_tokens as f64 * blend(p.cache_read, pr, peak.cache_read)
+        + t.cache_write_tokens as f64 * blend(p.cache_write, pw, peak.cache_write))
         / 1e6
         * rate
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CostBasis, Store};
-    use crate::model::UsageRecord;
+    use super::{estimate_cost, CostBasis, Store};
+    use crate::model::{Totals, UsageRecord};
     use crate::providers::FileCursor;
     use crate::settings::PriceEntry;
     use std::collections::HashMap;
@@ -1102,9 +1241,9 @@ mod tests {
         );
         let _ = std::fs::remove_file(path);
     }
-    /// 回填:只填 usage_daily 整天没有行的日期,已有行的日期原样不动(幂等、不双计)。
+    /// 校正:整天缺按天数据的桶被补上;按天已更高的日期原样不动(幂等、不双计)。
     #[test]
-    fn backfill_fills_only_days_with_no_daily_rows() {
+    fn reconcile_fills_buckets_whose_daily_rows_are_missing() {
         let path = temp_db();
         let store = Store::open(&path).unwrap();
 
@@ -1116,7 +1255,7 @@ mod tests {
         store.apply_records(&[hourly_only]).unwrap();
         assert_eq!(store.totals_for_date("2026-09-18").unwrap().input_tokens, 0);
 
-        // 09-19:按天/按小时都有 —— 台账写过的历史,回填绝不能碰
+        // 09-19:按天/按小时都有 —— 台账写过的历史,校正绝不能碰
         let mut both = record();
         both.bucket_date = Some("2026-09-19".into());
         both.bucket_hour = Some(1);
@@ -1124,38 +1263,92 @@ mod tests {
         let before = store.totals_for_date("2026-09-19").unwrap();
 
         let skip = std::collections::HashSet::new();
-        assert_eq!(store.backfill_daily_from_hourly("dsh", &skip).unwrap(), 1);
+        assert_eq!(store.reconcile_daily_from_hourly("dsh", &skip).unwrap(), 1);
         assert_eq!(
             store.totals_for_date("2026-09-18").unwrap().input_tokens,
             10,
-            "整天缺按天数据的日期必须被补上"
+            "整天缺按天数据的桶必须被补上"
         );
         assert_eq!(
             store.totals_for_date("2026-09-19").unwrap().input_tokens,
             before.input_tokens,
-            "已有按天行的日期不能被回填再加一遍"
+            "按天已经更高的桶不能被校正抹小"
         );
 
         // 幂等:再跑一次不该再写任何行
-        assert_eq!(store.backfill_daily_from_hourly("dsh", &skip).unwrap(), 0);
+        assert_eq!(store.reconcile_daily_from_hourly("dsh", &skip).unwrap(), 0);
         let _ = std::fs::remove_file(path);
     }
 
-    /// 台账负责的日期不参与回填(否则台账重写该日时会两边各记一次)。
+    /// 用户现场的真正形状:当天按天表**不是空的**,而是只有台账认领窗口里那一小段
+    /// 增量(今日只剩 511.3K / 单模型),而按小时表是完整的。整天判空的守卫看不见
+    /// 这种情况,必须逐桶按"按天 < 按小时"来校正。
     #[test]
-    fn backfill_skips_dates_owned_by_the_ledger() {
+    fn reconcile_fixes_partially_written_days() {
         let path = temp_db();
         let store = Store::open(&path).unwrap();
-        let mut hourly_only = record();
-        hourly_only.skip_daily = true;
-        hourly_only.bucket_date = Some("2026-09-18".into());
-        hourly_only.bucket_hour = Some(3);
-        store.apply_records(&[hourly_only]).unwrap();
+
+        // 按小时表:当天两个模型共 30(这批增量当时被判成"按天交给台账",只进了小时表)
+        let mut a = record();
+        a.model = Some("m".into());
+        a.bucket_date = Some("2026-09-21".into());
+        a.bucket_hour = Some(9);
+        a.input_tokens = 20;
+        a.skip_daily = true;
+        let mut b = record();
+        b.model = Some("g".into());
+        b.bucket_date = Some("2026-09-21".into());
+        b.bucket_hour = Some(10);
+        b.input_tokens = 10;
+        b.skip_daily = true;
+        store.apply_records(&[a, b]).unwrap();
+
+        // 按天表:只有一个模型的一小段(增量窗口里漏写的那部分)
+        let mut partial = record();
+        partial.model = Some("m".into());
+        partial.bucket_date = Some("2026-09-21".into());
+        partial.skip_hourly = true;
+        partial.input_tokens = 3;
+        store.apply_records(&[partial]).unwrap();
+        assert_eq!(store.totals_for_date("2026-09-21").unwrap().input_tokens, 3);
+
+        let skip = std::collections::HashSet::new();
+        assert_eq!(
+            store.reconcile_daily_from_hourly("dsh", &skip).unwrap(),
+            2,
+            "两个桶都要按按小时表校正"
+        );
+        let t = store.totals_for_date("2026-09-21").unwrap();
+        assert_eq!(t.input_tokens, 30, "按天必须等于按小时的合计,不是 3 也不是 33");
+        assert_eq!(store.reconcile_daily_from_hourly("dsh", &skip).unwrap(), 0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// 台账负责的桶不参与校正(否则台账重写该桶时会两边各记一次);
+    /// 逐桶判定:同一天里台账没认领的模型仍要校正。
+    #[test]
+    fn reconcile_skips_buckets_owned_by_the_ledger() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let mut hourly = record();
+        hourly.skip_daily = true;
+        hourly.bucket_date = Some("2026-09-18".into());
+        hourly.bucket_hour = Some(3);
+        store.apply_records(&[hourly]).unwrap();
 
         let skip: std::collections::HashSet<String> =
-            ["2026-09-18".to_string()].into_iter().collect();
-        assert_eq!(store.backfill_daily_from_hourly("dsh", &skip).unwrap(), 0);
+            ["2026-09-18|p:m".to_string()].into_iter().collect();
+        assert_eq!(store.reconcile_daily_from_hourly("dsh", &skip).unwrap(), 0);
         assert_eq!(store.totals_for_date("2026-09-18").unwrap().input_tokens, 0);
+
+        let other: std::collections::HashSet<String> =
+            ["2026-09-18|p:other".to_string()].into_iter().collect();
+        assert_eq!(
+            store.reconcile_daily_from_hourly("dsh", &other).unwrap(),
+            1,
+            "台账没认领的桶必须自己校正"
+        );
+        assert_eq!(store.totals_for_date("2026-09-18").unwrap().input_tokens, 10);
         let _ = std::fs::remove_file(path);
     }
     #[test]
@@ -1246,6 +1439,99 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// 峰谷:peak=None 时与旧公式**逐位相同**;有 peak 时按占比在平价/高峰之间加权。
+    #[test]
+    fn peak_pricing_is_bit_identical_without_a_peak_tier() {
+        let t = Totals {
+            input_tokens: 1_000_000,
+            output_tokens: 500_000,
+            cache_read_tokens: 2_000_000,
+            cache_write_tokens: 100_000,
+            calls: 1,
+            total_tokens: 3_600_000,
+            cost: 0.0,
+        };
+        let flat = PriceEntry {
+            input: 0.15,
+            output: 0.6,
+            cache_read: 0.003,
+            cache_write: 0.15,
+            peak: None,
+        };
+        let all_peak = crate::peak::PeakShare {
+            input: 1.0,
+            output: 1.0,
+            cache_read: 1.0,
+            cache_write: 1.0,
+        };
+        // 没有 peak 档:占比传什么都一样
+        let a = estimate_cost(&t, &flat, 7.2, crate::peak::PeakShare::default());
+        let b = estimate_cost(&t, &flat, 7.2, all_peak);
+        assert_eq!(a.to_bits(), b.to_bits(), "无峰谷档时必须逐位一致");
+
+        // 有 peak 档:全平价 == 平价公式;全高峰 == 2 倍
+        let tiered = PriceEntry {
+            peak: Some(crate::settings::PeakTier {
+                input: 0.3,
+                output: 1.2,
+                cache_read: 0.006,
+                cache_write: 0.3,
+            }),
+            ..flat.clone()
+        };
+        let off = estimate_cost(&t, &tiered, 7.2, crate::peak::PeakShare::default());
+        assert_eq!(off.to_bits(), a.to_bits(), "全平价必须等于平价公式");
+        let on = estimate_cost(&t, &tiered, 7.2, all_peak);
+        assert!((on - a * 2.0).abs() < 1e-9, "高峰价是平价的 2 倍: {on} vs {}", a * 2.0);
+
+        // 一半在高峰
+        let half = crate::peak::PeakShare {
+            input: 0.5,
+            output: 0.5,
+            cache_read: 0.5,
+            cache_write: 0.5,
+        };
+        let mixed = estimate_cost(&t, &tiered, 7.2, half);
+        assert!((mixed - a * 1.5).abs() < 1e-9, "一半高峰应当是 1.5 倍");
+    }
+
+    /// 按小时表 → 峰谷占比:高峰小时算 1、平价小时算 0,按 token 量加权。
+    #[test]
+    fn peak_shares_come_from_the_hourly_table() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let mut peak_hour = record();
+        peak_hour.bucket_date = Some("2026-09-21".into()); // 周一
+        peak_hour.bucket_hour = Some(10); // 高峰
+        peak_hour.skip_daily = true;
+        peak_hour.input_tokens = 30;
+        let mut off_hour = record();
+        off_hour.bucket_date = Some("2026-09-21".into());
+        off_hour.bucket_hour = Some(20); // 平价
+        off_hour.skip_daily = true;
+        off_hour.input_tokens = 10;
+        store.apply_records(&[peak_hour, off_hour]).unwrap();
+
+        let shares = store
+            .peak_shares(Some("dsh"), "2026-09-21", "2026-09-21")
+            .unwrap();
+        let got = shares.get("2026-09-21", "m", "p");
+        assert!((got.input - 0.75).abs() < 1e-9, "30/40 在高峰: {got:?}");
+
+        // 周末整天都是平价
+        let mut weekend = record();
+        weekend.bucket_date = Some("2026-09-19".into()); // 周六
+        weekend.bucket_hour = Some(10);
+        weekend.skip_daily = true;
+        weekend.input_tokens = 5;
+        store.apply_records(&[weekend]).unwrap();
+        let shares = store
+            .peak_shares(Some("dsh"), "2026-09-19", "2026-09-19")
+            .unwrap();
+        assert_eq!(shares.get("2026-09-19", "m", "p").input, 0.0);
+        let _ = std::fs::remove_file(path);
+    }
+
     /// 明细表(sessions)与顶部大卡(range_summary)必须共用同一套成本口径。
     /// 以前 sessions() 完全不查定价表、只按 agent='dsh' 特判换算,两边系统性对不上。
     #[test]
@@ -1262,14 +1548,14 @@ mod tests {
         let cny = HashMap::from([("dsh".to_string(), "CNY".to_string())]);
         let range_of = |basis: &CostBasis| {
             store
-                .range_summary(None, "2000-01-01", "2100-01-01", basis, None)
+                .range_summary(None, "2000-01-01", "2100-01-01", basis, None, None)
                 .unwrap()
                 .totals
                 .cost
         };
         let session_cost = |basis: &CostBasis| {
             store
-                .sessions(None, None, None, 10, basis, None)
+                .sessions(None, None, None, 10, basis, None, None)
                 .unwrap()
                 .first()
                 .unwrap()
@@ -1289,6 +1575,7 @@ mod tests {
                 output: 0.0,
                 cache_read: 0.0,
                 cache_write: 0.0,
+                peak: None,
             },
         )]);
         let expected = 1_000_000.0 / 1e6 * 2.0 * 7.2;

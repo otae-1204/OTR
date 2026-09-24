@@ -124,6 +124,14 @@ export const DownloadIcon = makeIcon(
   "DownloadIcon",
 );
 
+export const GaugeIcon = makeIcon(
+  <>
+    <path d="m12 14 4-4" />
+    <path d="M3.34 19a10 10 0 1 1 17.32 0" />
+  </>,
+  "GaugeIcon",
+);
+
 export const MoonIcon = makeIcon(
   <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />,
   "MoonIcon",
@@ -184,6 +192,11 @@ export const PlusIcon = makeIcon(
     <path d="M12 5v14" />
   </>,
   "PlusIcon",
+);
+
+export const ChevronDownIcon = makeIcon(
+  <path d="m6 9 6 6 6-6" />,
+  "ChevronDownIcon",
 );
 
 export const TrashIcon = makeIcon(

@@ -90,13 +90,103 @@ export interface CustomAgentConfig {
   dir: string;
 }
 
+/** 高峰档定价($ / 百万 tokens);缺省 = 该模型无峰谷,按平价计 */
+export interface PeakTier {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
 /** 模型定价($ / 百万 tokens);用于给无自带成本的数据估算费用 */
 export interface PriceEntry {
   input: number;
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** DeepSeek 等有峰谷分时计价的模型;缺省时行为与加峰谷之前完全一致 */
+  peak?: PeakTier | null;
 }
+
+// ---- 额度页 ----
+
+/** 一个额度窗口(5 小时 / 每周 / 每月 / 套餐…) */
+export interface QuotaWindow {
+  key: string;
+  label: string;
+  /** 已用百分比;null = 上游没给这个字段 → 显示 "--",**不是** 0 */
+  usedPercent?: number | null;
+  /** 重置时刻(unix ms) */
+  resetAt?: number | null;
+  windowSeconds?: number | null;
+}
+
+export interface Balance {
+  amount: number;
+  currency: string;
+  cash?: number | null;
+  voucher?: number | null;
+}
+
+/** 一个账号的额度快照 */
+export interface ProviderLimits {
+  accountId: string;
+  accountLabel: string;
+  provider: string;
+  /** false = 还没配凭据,显示引导文案而不是红色报错 */
+  configured: boolean;
+  error?: string | null;
+  planLabel?: string | null;
+  windows: QuotaWindow[];
+  balance?: Balance | null;
+  /** 本次抓取时刻;0 = 从未成功 */
+  fetchedAt: number;
+}
+
+export interface LimitAccount {
+  id: string;
+  provider: string;
+  label: string;
+  plan: string;
+  /** home 模式:该账号的 profile 目录 */
+  home?: string | null;
+  /** key 模式:系统凭据库里的 API Key 条目名。界面不展示。 */
+  secretRef?: string | null;
+  /** StepFun 控制台 Cookie 的条目名。界面不展示。 */
+  cookieRef?: string | null;
+  /** API Key 是否已写入。列表接口才有,保存时不要带。 */
+  keyPresent?: boolean;
+  /** 控制台 Cookie 是否已写入。 */
+  cookiePresent?: boolean;
+  /** 内置账号不可删 */
+  builtin: boolean;
+}
+
+export interface CredentialView {
+  name: string;
+  present: boolean;
+}
+
+/** 支持的额度来源及其 UI 文案 */
+export const LIMIT_PROVIDER_LABELS: Record<string, string> = {
+  cursor: "Cursor",
+  codex: "Codex CLI",
+  deepseek: "DeepSeek",
+  qwen: "Qwen",
+  stepfun: "StepFun",
+};
+
+/** home 模式(认证靠本地 CLI 会话)vs key 模式(额度 API 直接吃 key) */
+export const LIMIT_PROVIDER_MODE: Record<string, "home" | "key"> = {
+  cursor: "home",
+  codex: "home",
+  deepseek: "key",
+  qwen: "key",
+  stepfun: "key",
+};
+
+/** 已实测可用的来源;StepFun 是逆向接口,默认关闭 */
+export const DEFAULT_LIMIT_PROVIDERS = ["cursor", "codex", "deepseek", "qwen"];
 
 export interface Settings {
   enabledAgents: string[];
@@ -110,6 +200,12 @@ export interface Settings {
   exchangeRate: number;
   /** 全局成本显示币种:"CNY" | "USD" */
   currency: string;
+  /** 额度后台刷新间隔(秒) */
+  refreshSecs?: number;
+  /** 额度页的额外账号(内置账号由后端合成,不在这里) */
+  limitAccounts?: LimitAccount[];
+  /** 显式启用过的额度来源 */
+  limitProviders?: string[];
 }
 
 export const AGENT_LABELS: Record<string, string> = {
@@ -173,4 +269,30 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) =>
     invoke<void>("save_settings", { settings }),
+  // 额度页:getLimits 读内存缓存(不发网络),refreshLimits 才真的拉
+  getLimits: () => invoke<ProviderLimits[]>("get_limits"),
+  refreshLimits: (account?: string | null) =>
+    invoke<ProviderLimits[]>("refresh_limits", { account: account ?? null }),
+  listLimitAccounts: () => invoke<LimitAccount[]>("list_limit_accounts"),
+  saveLimitAccount: (
+    account: Omit<LimitAccount, "builtin" | "keyPresent" | "cookiePresent">,
+    secrets?: { apiKey?: string | null; consoleCookie?: string | null },
+  ) =>
+    invoke<void>("save_limit_account", {
+      account,
+      apiKey: secrets?.apiKey ?? null,
+      consoleCookie: secrets?.consoleCookie ?? null,
+    }),
+  deleteLimitAccount: (id: string) =>
+    invoke<void>("delete_limit_account", { id }),
+  setLimitProvider: (provider: string, enabled: boolean) =>
+    invoke<void>("set_limit_provider", { provider, enabled }),
+  listLimitCredentials: () => invoke<CredentialView[]>("list_limit_credentials"),
+  saveLimitCredential: (name: string, secret: string) =>
+    invoke<void>("save_limit_credential", { name, secret }),
+  deleteLimitCredential: (name: string) =>
+    invoke<void>("delete_limit_credential", { name }),
+  /** 打开 Cookie 教程窗口。只在用户点击时调用。 */
+  openCookieGuide: (provider: string) =>
+    invoke<void>("open_cookie_guide", { provider }),
 };

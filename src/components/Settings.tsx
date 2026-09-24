@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   AGENT_COLORS,
   AGENT_LABELS,
@@ -6,13 +7,18 @@ import {
   api,
   type AgentStatus,
   type CustomAgentConfig,
+  type LimitAccount,
   type PriceEntry,
   type Settings as AppSettings,
+  DEFAULT_LIMIT_PROVIDERS,
+  LIMIT_PROVIDER_LABELS,
 } from "../api/bindings";
 import { fmtTokens } from "../lib/format";
 import {
+  ChevronDownIcon,
   CoinsIcon,
   DatabaseIcon,
+  GaugeIcon,
   MoonIcon,
   PlusIcon,
   RefreshIcon,
@@ -33,22 +39,10 @@ const KNOWN_AGENTS = [
 ];
 const THEME_KEY = "token-show-theme";
 
-const KIND_OPTIONS: { value: string; label: string; hint: string }[] = [
-  {
-    value: "claude-code",
-    label: "Claude Code 布局",
-    hint: "projects/<路径编码>/<会话>.jsonl(CC 系 fork 通用,如 CodeBuddy)",
-  },
-  {
-    value: "codex",
-    label: "Codex 布局",
-    hint: "sessions/YYYY/MM/DD/rollout-*.jsonl",
-  },
-  {
-    value: "zcode",
-    label: "ZCode 布局",
-    hint: "rollout/*.jsonl(每次模型调用一行 usage)",
-  },
+const KIND_OPTIONS: { value: string; label: string }[] = [
+  { value: "claude-code", label: "Claude Code 布局" },
+  { value: "codex", label: "Codex 布局" },
+  { value: "zcode", label: "ZCode 布局" },
 ];
 
 function kindLabel(kind: string): string {
@@ -108,27 +102,626 @@ function Toggle({
   );
 }
 
+const PROVIDER_LABELS: Record<string, string> = {
+  cursor: "Cursor",
+  codex: "Codex CLI",
+  deepseek: "DeepSeek",
+  qwen: "Qwen",
+  stepfun: "StepFun",
+};
+
+/** home 模式靠本地 CLI 会话(要目录),key 模式靠 API key(表单里直接粘贴) */
+const PROVIDER_MODE: Record<string, "home" | "key"> = {
+  cursor: "home",
+  codex: "home",
+  deepseek: "key",
+  qwen: "key",
+  stepfun: "key",
+};
+
+const PROVIDER_ORDER = ["cursor", "codex", "deepseek", "qwen", "stepfun"] as const;
+
+const BUILTIN_API_KEY: Record<string, { name: string; placeholder: string }> = {
+  deepseek: { name: "DEEPSEEK_API_KEY", placeholder: "更新 API Key" },
+};
+
+const FIELD_CLASS =
+  "h-8 w-full rounded-lg border border-border bg-background px-2.5 text-xs outline-none focus:border-primary";
+
+function newLimitAccountId(provider: string, existing: string[]): string {
+  for (let i = 0; i < 8; i++) {
+    const id = `${provider}-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 6)}`;
+    if (!existing.includes(id)) return id;
+  }
+  return `${provider}-${Date.now().toString(36)}`;
+}
+
+function accountStatus(a: LimitAccount): string {
+  if (a.provider === "cursor" || a.provider === "codex") {
+    if (a.builtin) return "内置 · 本机会话";
+    return a.home?.trim() || "未选择目录";
+  }
+  if (a.provider === "qwen") {
+    const cookie = a.cookiePresent ? "Cookie 已配置" : "Cookie 未配置";
+    const key = a.keyPresent ? "Key 已配置" : "Key 未配置";
+    return a.builtin ? `内置 · ${cookie} · ${key}` : `${cookie} · ${key}`;
+  }
+  if (a.provider === "stepfun") {
+    const cookie = a.cookiePresent ? "订阅已配置" : "订阅未配置";
+    const key = a.keyPresent ? "余额已配置" : "余额未配置";
+    return a.builtin ? `内置 · ${cookie} · ${key}` : `${cookie} · ${key}`;
+  }
+  const key = a.keyPresent ? "API Key 已配置" : "API Key 未配置";
+  return a.builtin ? `内置 · ${key}` : key;
+}
+
+/**
+ * 额度来源:每个 Provider 一块。加同类账号只填显示名,再贴密钥或选目录。
+ * id 和凭据条目名由程序生成,不出现在界面上。
+ */
+function LimitSources({ onChanged }: { onChanged: () => void }) {
+  const [accounts, setAccounts] = useState<LimitAccount[] | null>(null);
+  const [providers, setProviders] = useState<string[]>([]);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [openProvider, setOpenProvider] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [draftLabel, setDraftLabel] = useState("");
+  const [draftHome, setDraftHome] = useState("");
+  const [draftKey, setDraftKey] = useState("");
+  const [draftCookie, setDraftCookie] = useState("");
+  const [builtinDraft, setBuiltinDraft] = useState<Record<string, string>>({});
+
+  const reload = () => {
+    void api
+      .listLimitAccounts()
+      .then(setAccounts)
+      .catch((e) => setErr(String(e)));
+    void api
+      .getSettings()
+      .then((s) => setProviders(s.limitProviders ?? DEFAULT_LIMIT_PROVIDERS))
+      .catch(() => undefined);
+  };
+
+  useEffect(reload, []);
+
+  const refreshLimits = () => {
+    void api.refreshLimits().catch(() => undefined);
+  };
+
+  const toggleProvider = async (p: string, on: boolean) => {
+    setErr(null);
+    try {
+      await api.setLimitProvider(p, on);
+      setProviders((prev) => (on ? [...prev, p] : prev.filter((x) => x !== p)));
+      if (!on) setOpenProvider((cur) => (cur === p ? null : cur));
+      onChanged();
+      reload();
+      if (on) refreshLimits();
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  const openAdd = (provider: string) => {
+    setOpenProvider(provider);
+    setDraftLabel("");
+    setDraftHome("");
+    setDraftKey("");
+    setDraftCookie("");
+    setErr(null);
+    setMsg(null);
+  };
+
+  const canAdd = (provider: string) => {
+    if (!draftLabel.trim() || adding) return false;
+    if (PROVIDER_MODE[provider] === "home") return draftHome.trim().length > 0;
+    if (provider === "stepfun" || provider === "qwen") {
+      return draftCookie.trim().length > 0 || draftKey.trim().length > 0;
+    }
+    return draftKey.trim().length > 0;
+  };
+
+  const addAccount = async (provider: string) => {
+    if (!canAdd(provider)) return;
+    setErr(null);
+    setMsg(null);
+    setAdding(true);
+    const label = draftLabel.trim();
+    const mode = PROVIDER_MODE[provider];
+    try {
+      await api.saveLimitAccount(
+        {
+          id: newLimitAccountId(
+            provider,
+            (accounts ?? []).map((a) => a.id),
+          ),
+          provider,
+          label,
+          plan: "",
+          home: mode === "home" ? draftHome.trim() : null,
+          secretRef: null,
+          cookieRef: null,
+        },
+        {
+          apiKey: mode === "key" ? draftKey.trim() : null,
+          consoleCookie:
+            provider === "stepfun" || provider === "qwen" ? draftCookie.trim() : null,
+        },
+      );
+      setMsg(`已添加 ${label}`);
+      setOpenProvider(null);
+      setDraftLabel("");
+      setDraftHome("");
+      setDraftKey("");
+      setDraftCookie("");
+      onChanged();
+      reload();
+      refreshLimits();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const removeAccount = async (account: LimitAccount) => {
+    if (
+      !window.confirm(
+        `删除「${account.label}」?已保存的密钥会一起清掉。`,
+      )
+    ) {
+      return;
+    }
+    setErr(null);
+    try {
+      await api.deleteLimitAccount(account.id);
+      setMsg(`已删除 ${account.label}`);
+      onChanged();
+      reload();
+      refreshLimits();
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  const saveBuiltin = async (name: string) => {
+    setErr(null);
+    setMsg(null);
+    const value = (builtinDraft[name] ?? "").trim();
+    if (!value) return;
+    try {
+      await api.saveLimitCredential(name, value);
+      setBuiltinDraft((d) => ({ ...d, [name]: "" }));
+      setMsg("已保存");
+      reload();
+      refreshLimits();
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  const clearBuiltin = async (name: string) => {
+    setErr(null);
+    try {
+      await api.deleteLimitCredential(name);
+      setMsg("已清除");
+      reload();
+      refreshLimits();
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  const browseHome = async () => {
+    setErr(null);
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "选择 profile 目录",
+      });
+      if (typeof selected === "string") setDraftHome(selected);
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  const openGuide = (provider: string) => {
+    setErr(null);
+    void api.openCookieGuide(provider).catch((e) => setErr(String(e)));
+  };
+
+  return (
+    <div>
+      <div className="divide-y divide-border/40">
+        {PROVIDER_ORDER.map((p) => {
+          const on = providers.includes(p);
+          const rows = (accounts ?? []).filter((a) => a.provider === p);
+          return (
+            <div key={p}>
+              <div className="flex items-center justify-between gap-3 px-4 py-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <div className="truncate text-sm font-medium">
+                    {PROVIDER_LABELS[p]}
+                  </div>
+                  {p === "qwen" || p === "stepfun" ? (
+                    <button
+                      type="button"
+                      onClick={() => openGuide(p)}
+                      className="inline-flex h-6 shrink-0 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium transition-colors hover:border-primary/60 hover:text-primary"
+                    >
+                      教程
+                    </button>
+                  ) : null}
+                </div>
+                <Toggle
+                  checked={on}
+                  onChange={() => void toggleProvider(p, !on)}
+                  ariaLabel={`${on ? "关闭" : "开启"} ${PROVIDER_LABELS[p]}`}
+                />
+              </div>
+              {on ? (
+                <div className="border-t border-border/40 bg-background/40">
+                  {accounts == null ? (
+                    <p className="px-4 py-3 text-xs text-muted-foreground">
+                      正在读取账号…
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-border/40">
+                      {rows.map((a) => (
+                        <div key={a.id} className="px-4 py-2.5">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium">
+                                {a.label}
+                              </div>
+                              <div
+                                className="mt-0.5 max-w-[420px] truncate text-xs text-muted-foreground"
+                                title={accountStatus(a)}
+                              >
+                                {accountStatus(a)}
+                              </div>
+                            </div>
+                            {a.builtin ? null : (
+                              <button
+                                type="button"
+                                title="删除该账号"
+                                onClick={() => void removeAccount(a)}
+                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                              >
+                                <TrashIcon className="h-4 w-4" />
+                              </button>
+                            )}
+                          </div>
+                          {a.builtin && BUILTIN_API_KEY[a.provider] ? (
+                            <BuiltinSecret
+                              placeholder={BUILTIN_API_KEY[a.provider].placeholder}
+                              value={builtinDraft[BUILTIN_API_KEY[a.provider].name] ?? ""}
+                              present={!!a.keyPresent}
+                              onChange={(value) =>
+                                setBuiltinDraft((d) => ({
+                                  ...d,
+                                  [BUILTIN_API_KEY[a.provider].name]: value,
+                                }))
+                              }
+                              onSave={() =>
+                                void saveBuiltin(BUILTIN_API_KEY[a.provider].name)
+                              }
+                              onClear={() =>
+                                void clearBuiltin(BUILTIN_API_KEY[a.provider].name)
+                              }
+                            />
+                          ) : null}
+                          {a.builtin && a.provider === "qwen" ? (
+                            <div className="space-y-2">
+                              <BuiltinSecret
+                                placeholder="百炼控制台 Cookie"
+                                value={builtinDraft.QWEN_CONSOLE_COOKIE ?? ""}
+                                present={!!a.cookiePresent}
+                                onChange={(value) =>
+                                  setBuiltinDraft((d) => ({
+                                    ...d,
+                                    QWEN_CONSOLE_COOKIE: value,
+                                  }))
+                                }
+                                onSave={() => void saveBuiltin("QWEN_CONSOLE_COOKIE")}
+                                onClear={() => void clearBuiltin("QWEN_CONSOLE_COOKIE")}
+                              />
+                              <BuiltinSecret
+                                placeholder="Coding Plan API Key(可选)"
+                                value={builtinDraft.QWEN_CODING_PLAN_API_KEY ?? ""}
+                                present={!!a.keyPresent}
+                                onChange={(value) =>
+                                  setBuiltinDraft((d) => ({
+                                    ...d,
+                                    QWEN_CODING_PLAN_API_KEY: value,
+                                  }))
+                                }
+                                onSave={() =>
+                                  void saveBuiltin("QWEN_CODING_PLAN_API_KEY")
+                                }
+                                onClear={() =>
+                                  void clearBuiltin("QWEN_CODING_PLAN_API_KEY")
+                                }
+                              />
+                            </div>
+                          ) : null}
+                          {a.builtin && a.provider === "stepfun" ? (
+                            <div className="space-y-2">
+                              <BuiltinSecret
+                                placeholder="更新控制台 Cookie"
+                                value={builtinDraft.STEPFUN_CONSOLE_COOKIE ?? ""}
+                                present={!!a.cookiePresent}
+                                onChange={(value) =>
+                                  setBuiltinDraft((d) => ({
+                                    ...d,
+                                    STEPFUN_CONSOLE_COOKIE: value,
+                                  }))
+                                }
+                                onSave={() =>
+                                  void saveBuiltin("STEPFUN_CONSOLE_COOKIE")
+                                }
+                                onClear={() =>
+                                  void clearBuiltin("STEPFUN_CONSOLE_COOKIE")
+                                }
+                              />
+                              <BuiltinSecret
+                                placeholder="更新 API Key(按量余额,可选)"
+                                value={builtinDraft.STEPFUN_API_KEY ?? ""}
+                                present={!!a.keyPresent}
+                                onChange={(value) =>
+                                  setBuiltinDraft((d) => ({
+                                    ...d,
+                                    STEPFUN_API_KEY: value,
+                                  }))
+                                }
+                                onSave={() => void saveBuiltin("STEPFUN_API_KEY")}
+                                onClear={() => void clearBuiltin("STEPFUN_API_KEY")}
+                              />
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {openProvider === p ? (
+                    <div className="space-y-2 border-t border-border/40 px-4 py-3">
+                      <input
+                        value={draftLabel}
+                        onChange={(e) => setDraftLabel(e.target.value)}
+                        placeholder="显示名,如 工作"
+                        className={FIELD_CLASS}
+                      />
+                      {PROVIDER_MODE[p] === "home" ? (
+                        <div className="flex gap-2">
+                          <input
+                            value={draftHome}
+                            onChange={(e) => setDraftHome(e.target.value)}
+                            placeholder="profile 目录"
+                            className="h-8 min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 font-mono text-xs outline-none focus:border-primary"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void browseHome()}
+                            className="inline-flex h-8 shrink-0 items-center rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                          >
+                            浏览
+                          </button>
+                        </div>
+                      ) : p === "qwen" ? (
+                        <>
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            value={draftCookie}
+                            onChange={(e) => setDraftCookie(e.target.value)}
+                            placeholder="百炼控制台 Cookie"
+                            className={FIELD_CLASS}
+                          />
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            value={draftKey}
+                            onChange={(e) => setDraftKey(e.target.value)}
+                            placeholder="Coding Plan API Key(可选)"
+                            className={FIELD_CLASS}
+                          />
+                        </>
+                      ) : p === "stepfun" ? (
+                        <>
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            value={draftCookie}
+                            onChange={(e) => setDraftCookie(e.target.value)}
+                            placeholder="控制台 Cookie(订阅额度)"
+                            className={FIELD_CLASS}
+                          />
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            value={draftKey}
+                            onChange={(e) => setDraftKey(e.target.value)}
+                            placeholder="API Key(按量余额,可选)"
+                            className={FIELD_CLASS}
+                          />
+                        </>
+                      ) : (
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          value={draftKey}
+                          onChange={(e) => setDraftKey(e.target.value)}
+                          placeholder="API Key"
+                          className={FIELD_CLASS}
+                        />
+                      )}
+                      <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setOpenProvider(null)}
+                            className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                          >
+                            取消
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!canAdd(p)}
+                            onClick={() => void addAccount(p)}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
+                          >
+                            <PlusIcon className="h-3.5 w-3.5" />
+                            添加
+                          </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="border-t border-border/40 px-4 py-2.5">
+                      <button
+                        type="button"
+                        onClick={() => openAdd(p)}
+                        className="inline-flex h-8 items-center gap-1.5 text-xs font-medium text-primary"
+                      >
+                        <PlusIcon className="h-3.5 w-3.5" />
+                        添加账号
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      {msg ? <p className="px-4 py-2 text-xs text-emerald-500">{msg}</p> : null}
+      {err ? <p className="px-4 py-2 text-xs text-red-500">{err}</p> : null}
+    </div>
+  );
+}
+
+function BuiltinSecret({
+  placeholder,
+  value,
+  present,
+  onChange,
+  onSave,
+  onClear,
+}: {
+  placeholder: string;
+  value: string;
+  present: boolean;
+  onChange: (value: string) => void;
+  onSave: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <input
+        type="password"
+        autoComplete="off"
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-8 min-w-[180px] flex-1 rounded-lg border border-border bg-background px-2.5 text-xs outline-none focus:border-primary"
+      />
+      <button
+        type="button"
+        onClick={onSave}
+        disabled={!value.trim()}
+        className="inline-flex h-8 items-center rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
+      >
+        保存
+      </button>
+      <button
+        type="button"
+        onClick={onClear}
+        disabled={!present}
+        className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-30"
+      >
+        清除
+      </button>
+    </div>
+  );
+}
+
 function SectionCard({
   icon,
   title,
-  description,
   children,
+  collapsible = false,
+  summary,
 }: {
   icon: ReactNode;
   title: string;
-  description: string;
   children: ReactNode;
+  /** 可折叠。默认收起,展开与否记在本机,下次打开设置还是这个状态 */
+  collapsible?: boolean;
+  /** 收起时的一行摘要,比如「3 个来源已开启」 */
+  summary?: string;
 }) {
+  const [open, setOpen] = useState(() => {
+    if (!collapsible) return true;
+    try {
+      return localStorage.getItem(`token-show-fold:${title}`) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggle = () => {
+    setOpen((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem(`token-show-fold:${title}`, next ? "1" : "0");
+      } catch {
+        // 写不进去就只在这次打开里生效
+      }
+      return next;
+    });
+  };
+
+  const head = (
+    <>
+      <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+        {icon}
+        {title}
+      </h3>
+      {collapsible && !open && summary ? (
+        <p className="mt-0.5 text-xs text-muted-foreground">{summary}</p>
+      ) : null}
+    </>
+  );
+
   return (
     <section className="overflow-hidden rounded-xl border border-border bg-card transition-all duration-300 hover:border-primary/60 hover:shadow-sm">
-      <div className="border-b border-border/40 px-4 py-3">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold">
-          {icon}
-          {title}
-        </h3>
-        <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+      {collapsible ? (
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+        >
+          <div className="min-w-0 flex-1">{head}</div>
+          <ChevronDownIcon
+            className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
+              open ? "" : "-rotate-90"
+            }`}
+          />
+        </button>
+      ) : (
+        <div className="border-b border-border/40 px-4 py-3">{head}</div>
+      )}
+      {/* 收起时藏起来但不卸载:定价表和账号表单的未保存输入还在 */}
+      <div
+        className={
+          collapsible ? (open ? "border-t border-border/40" : "hidden") : undefined
+        }
+      >
+        {children}
       </div>
-      {children}
     </section>
   );
 }
@@ -382,6 +975,36 @@ export function Settings({
     });
   };
 
+  /**
+   * 高峰单价:填一个数就按"平价 × 2"补出整套高峰档(DeepSeek 官方就是 2 倍),
+   * 留空则清掉峰谷、退回纯平价。这样用户只需要动一个格子。
+   */
+  const updatePeak = (model: string, raw: string) => {
+    if (!settings) return;
+    const cur = settings.pricing[model] ?? {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    };
+    const v = parseFloat(raw);
+    const peak =
+      Number.isFinite(v) && v >= 0
+        ? {
+            input: v,
+            output: cur.output * 2,
+            cacheRead: cur.cacheRead * 2,
+            cacheWrite: cur.cacheWrite * 2,
+          }
+        : null;
+    const next: PriceEntry = { ...cur, peak };
+    setSettings({
+      ...settings,
+      pricing: { ...settings.pricing, [model]: next },
+      pricingSource: { ...settings.pricingSource, [model]: "manual" },
+    });
+  };
+
   const persistNow = () => {
     if (!settings) return;
     void api.saveSettings(settings).catch(() => undefined);
@@ -550,17 +1173,11 @@ export function Settings({
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold">设置</h2>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          管理数据源、扫描与外观,改动即时保存
-        </p>
-      </div>
+      <h2 className="text-lg font-semibold">设置</h2>
 
       <SectionCard
         icon={<DatabaseIcon className="h-4 w-4 text-primary" />}
         title="数据源"
-        description="停用后主页不再展示该 Agent 的卡片与用量"
       >
         <div>
           {rows.map((row) => {
@@ -637,7 +1254,6 @@ export function Settings({
       <SectionCard
         icon={<PlusIcon className="h-4 w-4 text-primary" />}
         title="自定义 Agent"
-        description="复用内置解析器统计其它 Agent:选一个与其数据格式相同的布局,指向对应目录即可(比如某个 Claude Code fork 的 projects 目录)"
       >
         <div className="divide-y divide-border/40">
           {(settings?.customAgents ?? []).length === 0 ? (
@@ -702,10 +1318,7 @@ export function Settings({
               className="h-8 rounded-lg border border-border bg-background px-2.5 text-xs outline-none focus:border-primary"
             />
           </div>
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs text-muted-foreground">
-              {KIND_OPTIONS.find((k) => k.value === cKind)?.hint}
-            </p>
+          <div className="flex justify-end">
             <button
               type="button"
               onClick={addCustom}
@@ -722,7 +1335,6 @@ export function Settings({
       <SectionCard
         icon={<RefreshIcon className="h-4 w-4 text-primary" />}
         title="版本"
-        description="从 GitHub Releases 检测最新版本(需要能访问 GitHub)"
       >
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="min-w-0">
@@ -761,7 +1373,12 @@ export function Settings({
       <SectionCard
         icon={<CoinsIcon className="h-4 w-4 text-primary" />}
         title="成本定价"
-        description="定价表是成本的唯一权威:填了定价的模型一律按你的价格重算(覆盖自带成本),没填的才用数据自带成本。单位 $/百万 tokens,按汇率折算展示。每行下方标出该价格的来源"
+        collapsible
+        summary={
+          settings
+            ? `${models.length} 个模型 · ${Object.keys(settings.pricing).length} 个已定价`
+            : undefined
+        }
       >
         <div className="space-y-3 p-4">
           <div className="flex flex-wrap items-center gap-3">
@@ -837,13 +1454,19 @@ export function Settings({
                   <th className="py-1.5 pr-2 text-right font-medium">输出 $/M</th>
                   <th className="py-1.5 pr-2 text-right font-medium">缓存读 $/M</th>
                   <th className="py-1.5 pr-2 text-right font-medium">缓存写 $/M</th>
+                  <th
+                    className="py-1.5 pr-2 text-right font-medium"
+                    title="DeepSeek 等有峰谷分时计价的模型:高峰时段(北京时间工作日 9-12、14-18 点)的单价。留空表示按平价计"
+                  >
+                    高峰 $/M
+                  </th>
                   <th className="py-1.5 text-right font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {models.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-3 text-muted-foreground">
+                    <td colSpan={7} className="py-3 text-muted-foreground">
                       暂无模型数据,先用 Agent 跑几轮再回来配置
                     </td>
                   </tr>
@@ -856,9 +1479,11 @@ export function Settings({
                       ? "无定价 · 用自带成本或 0"
                       : src === "manual"
                         ? "手动填写"
-                        : src?.startsWith("models.dev:")
-                          ? `官方 · ${src.slice("models.dev:".length)}`
-                          : "来源未知";
+                        : src?.startsWith("curated:")
+                          ? `内置修正价 · ${src.slice("curated:".length)}`
+                          : src?.startsWith("models.dev:")
+                            ? `官方 · ${src.slice("models.dev:".length)}`
+                            : "来源未知";
                     const cell = (field: keyof PriceEntry) => (
                       <input
                         type="number"
@@ -891,6 +1516,19 @@ export function Settings({
                         <td className="py-1.5 pr-2 text-right">{cell("output")}</td>
                         <td className="py-1.5 pr-2 text-right">{cell("cacheRead")}</td>
                         <td className="py-1.5 pr-2 text-right">{cell("cacheWrite")}</td>
+                        <td className="py-1.5 pr-2 text-right">
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={p?.peak ? String(p.peak.input) : ""}
+                            placeholder={p?.peak ? "" : "—"}
+                            title="高峰单价(输入);留空 = 无峰谷"
+                            onChange={(e) => updatePeak(model, e.target.value)}
+                            onBlur={persistNow}
+                            className="h-7 w-20 rounded-lg border border-border bg-background px-2 text-right tabular-nums outline-none focus:border-primary"
+                          />
+                        </td>
                         <td className="py-1.5 text-right">
                           <button
                             type="button"
@@ -913,9 +1551,23 @@ export function Settings({
       </SectionCard>
 
       <SectionCard
+        icon={<GaugeIcon className="h-4 w-4 text-primary" />}
+        title="额度来源"
+        collapsible
+        summary={
+          settings
+            ? (settings.limitProviders ?? DEFAULT_LIMIT_PROVIDERS)
+                .map((p) => LIMIT_PROVIDER_LABELS[p] ?? p)
+                .join("、") || "全部关闭"
+            : undefined
+        }
+      >
+        <LimitSources onChanged={onDataChanged} />
+      </SectionCard>
+
+      <SectionCard
         icon={<RefreshIcon className="h-4 w-4 text-primary" />}
         title="操作"
-        description="手动触发扫描,完成后仪表盘数据自动更新"
       >
         <div className="flex flex-wrap items-center gap-3 p-4">
           <button
@@ -949,7 +1601,6 @@ export function Settings({
       <SectionCard
         icon={<SunIcon className="h-4 w-4 text-primary" />}
         title="外观与启动"
-        description="主题切换即时生效,并保存在本机"
       >
         <div className="flex items-center justify-between px-4 py-3">
           <div>
@@ -987,12 +1638,7 @@ export function Settings({
         </div>
 
         <div className="flex items-center justify-between border-t border-border/40 px-4 py-3">
-          <div>
-            <div className="text-sm font-medium">启动时最小化到托盘</div>
-            <div className="mt-0.5 text-xs text-muted-foreground">
-              开启后启动只常驻托盘、不弹主窗口(以前这个开关只有字段没有入口)
-            </div>
-          </div>
+          <div className="text-sm font-medium">启动时最小化到托盘</div>
           <button
             type="button"
             role="switch"

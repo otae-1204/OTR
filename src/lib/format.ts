@@ -36,6 +36,18 @@ export function fmtTime(ms: number | null | undefined): string {
   return dayjs(ms).format("MM-DD HH:mm");
 }
 
+/** 日期:YYYY-MM-DD */
+export function fmtDate(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return "--";
+  return dayjs(ms).format("YYYY-MM-DD");
+}
+
+/** 当天时刻:HH:mm:ss */
+export function fmtClock(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return "--";
+  return dayjs(ms).format("HH:mm:ss");
+}
+
 /** 绝对时间(完整,用于 title 提示) */
 export function fmtDateTime(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return "--";

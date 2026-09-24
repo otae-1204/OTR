@@ -55,6 +55,11 @@ fn range_summary_combos() {
 
     let basis = CostBasis::new(&settings.pricing, settings.exchange_rate, &currencies);
     let enabled = settings.enabled_agents.clone();
+    // 峰谷占比:与 commands.rs 一致地从按小时表算,让这里跑的就是真实计价路径
+    let peaks = store
+        .peak_shares(None, "2000-01-01", "2100-01-01")
+        .expect("peak_shares ok");
+    let basis = basis.with_peaks(&peaks);
 
     let today = today_str();
     let combos: Vec<(Option<&str>, String, String)> = vec![
@@ -68,7 +73,7 @@ fn range_summary_combos() {
     ];
     for (agent, from, to) in combos {
         let s = store
-            .range_summary(agent, &from, &to, &basis, Some(&enabled))
+            .range_summary(agent, &from, &to, &basis, Some(&enabled), Some(&peaks))
             .expect("range_summary ok");
         println!(
             "range agent={:<12} {} ~ {} -> total={} in={} out={} cr={} calls={} cost={:.4}",
@@ -94,11 +99,11 @@ fn range_summary_combos() {
         .and_then(|t| t.and_local_timezone(chrono::Local).single())
         .map(|dt| dt.timestamp_millis());
     let summary = store
-        .range_summary(None, &from, &today, &basis, Some(&enabled))
+        .range_summary(None, &from, &today, &basis, Some(&enabled), Some(&peaks))
         .expect("range_summary ok");
     // 上限给足,避免"最近 N 条"截断导致两边不可比
     let sessions = store
-        .sessions(None, from_ms, None, 100_000, &basis, Some(&enabled))
+        .sessions(None, from_ms, None, 100_000, &basis, Some(&enabled), Some(&peaks))
         .expect("sessions ok");
     let mut by_agent: HashMap<String, f64> = HashMap::new();
     for row in &sessions {

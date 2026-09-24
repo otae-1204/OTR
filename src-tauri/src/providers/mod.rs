@@ -65,12 +65,13 @@ pub trait AgentProvider: Send + Sync {
     fn health(&self, _state: &serde_json::Value) -> Option<String> {
         None
     }
-    /// 该 Provider 的**按天数据由外部台账负责**的日期集合。
+    /// 该 Provider 的**按天数据由外部台账负责**的桶集合,键 "日期|provider:model"。
     ///
-    /// 这些日期不参与"按小时表回填按天表"(见 Store::backfill_daily_from_hourly),
-    /// 否则台账重写该日时会与回填的数据各记一次。
-    /// None = 该 Provider 不做按小时→按天回填。
-    fn ledger_owned_dates(
+    /// 这些桶不参与"按小时表校正按天表"(见 Store::reconcile_daily_from_hourly):
+    /// 台账重写该桶时会自己写按天表,日志这边再补一次就是双计。
+    /// 逐桶而不是逐日:台账只记了部分 provider 时,同一天里别的模型仍要由日志补齐。
+    /// None = 该 Provider 不做按小时→按天校正。
+    fn ledger_owned_buckets(
         &self,
         _state: &serde_json::Value,
     ) -> Option<std::collections::HashSet<String>> {

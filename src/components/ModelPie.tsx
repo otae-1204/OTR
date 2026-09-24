@@ -153,7 +153,7 @@ export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps)
         <PieChartIcon className="h-4 w-4 text-primary" />
         <span>模型占比</span>
         <span className="ml-1 text-xs font-normal text-muted-foreground">
-          {rangeLabel} · 按模型 Token 分布{selected ? " · 点击扇区查看明细" : ""}
+          {rangeLabel} · 按模型 Token 分布
         </span>
       </div>
 

@@ -1,7 +1,10 @@
 pub mod commands;
 pub mod error;
+pub mod limits;
 pub mod model;
 pub mod paths;
+pub mod peak;
+pub mod pricing;
 pub mod providers;
 pub mod settings;
 pub mod store;
@@ -76,6 +79,8 @@ pub struct AppState {
     pub watcher: Mutex<Option<watcher::WatcherHandle>>,
     /// rescan 去重:连点托盘不该排队一串全量扫描
     pub rescan: RescanGate,
+    /// 额度页的内存缓存;后台线程按 refresh_secs 刷新
+    pub limits: limits::LimitsCache,
 }
 
 #[derive(Default)]
@@ -110,6 +115,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main(app);
         }))
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -155,6 +161,7 @@ pub fn run() {
                 scan_lock: Mutex::new(()),
                 watcher: Mutex::new(None),
                 rescan: RescanGate::default(),
+                limits: limits::LimitsCache::default(),
             });
             tray::setup(app.handle())?;
             if start_minimized {
@@ -177,6 +184,10 @@ pub fn run() {
                 std::thread::sleep(std::time::Duration::from_millis(400));
                 run_scan(&handle, false, None);
             });
+            // 额度轮询:**独立线程**,不挂在 watcher 的 2 秒 tick 上 ——
+            // 网络 I/O 进热路径会让文件监听被拖慢,而且额度本来也不需要秒级新鲜度。
+            let handle = app.handle().clone();
+            std::thread::spawn(move || limits_loop(handle));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -189,9 +200,49 @@ pub fn run() {
             commands::get_settings,
             commands::list_models,
             commands::save_settings,
+            commands::get_limits,
+            commands::refresh_limits,
+            commands::list_limit_accounts,
+            commands::save_limit_account,
+            commands::delete_limit_account,
+            commands::set_limit_provider,
+            commands::list_limit_credentials,
+            commands::save_limit_credential,
+            commands::delete_limit_credential,
+            commands::open_cookie_guide,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OTR");
+}
+
+/// 额度刷新循环:每 `refresh_secs` 秒拉一轮。
+///
+/// 线程体整体包 `catch_unwind`:额度查询是最容易出意外的一段(逆向接口、网络、
+/// 别人的凭据文件),它 panic 不该把整个后台刷新带停。
+fn limits_loop(app: AppHandle) {
+    // 先拉一轮再睡:否则启动后 60 秒内额度页是空的,用户会以为坏了
+    let mut first = true;
+    loop {
+        if !first {
+            let secs = {
+                let state = app.state::<AppState>();
+                let s = lock(&state.settings).clone();
+                s.refresh_secs.clamp(10, 3600)
+            };
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+        }
+        first = false;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let state = app.state::<AppState>();
+            let settings = lock(&state.settings).clone();
+            let plans = limits::resolve_accounts(&settings);
+            let fresh: Vec<_> = plans.iter().map(limits::fetch_account).collect();
+            state.limits.merge(fresh);
+        }));
+        if let Err(payload) = result {
+            eprintln!("[otr] 额度刷新 panic 已隔离: {}", panic_message(&*payload));
+        }
+    }
 }
 
 /// 串行执行扫描(需要重建时走 replace_agent 原子替换),成功后刷新托盘并通知前端。
@@ -294,17 +345,17 @@ fn run_scan_inner(app: &AppHandle, full: bool, only: Option<&str>) {
                         let _ = state.store.set_kv(&format!("state:{}", p.id()), &s);
                     }
                 }
-                // 修历史:某些日期曾因"按天交给台账"而只写进了按小时表(轴表有数据、
-                // 当天卡片恒为 0),而记录是增量语义、不会重放,只能在库里补回来。
-                // 只填 usage_daily 整天没有行的日期,幂等,可安全每次重跑。
-                if let Some(skip) = p.ledger_owned_dates(&st) {
-                    match state.store.backfill_daily_from_hourly(p.id(), &skip) {
+                // 修历史:某些桶曾因"按天交给台账"或台账读不出来的那个窗口而只写进了
+                // 按小时表(轴表有数据、当天卡片几乎为 0),而记录是增量语义、不会重放,
+                // 只能在库里按小时表校正回来。逐桶只增不减,幂等,可安全每次重跑。
+                if let Some(skip) = p.ledger_owned_buckets(&st) {
+                    match state.store.reconcile_daily_from_hourly(p.id(), &skip) {
                         Ok(n) if n > 0 => {
-                            eprintln!("[{}] 按小时表回填按天表 {} 行", p.id(), n);
+                            eprintln!("[{}] 按小时表校正按天表 {} 行", p.id(), n);
                             changed = true;
                         }
                         Ok(_) => {}
-                        Err(e) => eprintln!("[{}] 回填按天表: {}", p.id(), e),
+                        Err(e) => eprintln!("[{}] 校正按天表: {}", p.id(), e),
                     }
                 }
                 let _ = state.store.set_kv(&pv_key, &pv.to_string());

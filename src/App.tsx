@@ -20,6 +20,7 @@ import {
 } from "./lib/range";
 import { AgentCard } from "./components/AgentCard";
 import { ModelPie } from "./components/ModelPie";
+import { Limits } from "./components/Limits";
 import { SessionTable } from "./components/SessionTable";
 import { Settings } from "./components/Settings";
 import { EmptyState, Skeleton } from "./components/Skeleton";
@@ -28,11 +29,12 @@ import { TrendChart } from "./components/TrendChart";
 import {
   ActivityIcon,
   CalendarIcon,
+  GaugeIcon,
   RefreshIcon,
   SettingsIcon,
 } from "./components/icons";
 
-type View = "dashboard" | "settings";
+type View = "dashboard" | "limits" | "settings";
 
 const THEME_KEY = "token-show-theme";
 const SPIN_DURATION_MS = 1000;
@@ -50,6 +52,7 @@ const CHIP =
 export default function App() {
   const [view, setView] = useState<View>("dashboard");
   const [spinning, setSpinning] = useState(false);
+  const [limitsEpoch, setLimitsEpoch] = useState(0);
   const spinTimerRef = useRef<number | null>(null);
   const { summary, agents, settings, loading, refresh } = useUsageData();
 
@@ -92,16 +95,28 @@ export default function App() {
     if (spinTimerRef.current != null) {
       window.clearTimeout(spinTimerRef.current);
     }
-    spinTimerRef.current = window.setTimeout(() => {
-      setSpinning(false);
-      spinTimerRef.current = null;
-    }, SPIN_DURATION_MS);
+    const started = Date.now();
     try {
-      await api.rescan(false);
-    } catch (err) {
-      console.error("[App] rescan 失败", err);
+      // 用量重扫不包含额度。套餐窗口要单独拉,额度页靠 limitsEpoch 读缓存。
+      await Promise.all([
+        api.rescan(false).catch((err) => {
+          console.error("[App] rescan 失败", err);
+        }),
+        api
+          .refreshLimits()
+          .then(() => setLimitsEpoch((n) => n + 1))
+          .catch((err) => {
+            console.error("[App] 额度刷新失败", err);
+          }),
+        refresh(),
+      ]);
+    } finally {
+      const remain = Math.max(0, SPIN_DURATION_MS - (Date.now() - started));
+      spinTimerRef.current = window.setTimeout(() => {
+        setSpinning(false);
+        spinTimerRef.current = null;
+      }, remain);
     }
-    await refresh();
   }, [refresh]);
 
   /**
@@ -268,6 +283,18 @@ export default function App() {
               <RefreshIcon
                 className={`h-4 w-4 ${spinning ? "animate-spin" : ""}`}
               />
+            </button>
+            <button
+              type="button"
+              title={view === "limits" ? "返回仪表盘" : "额度"}
+              onClick={() =>
+                setView((v) => (v === "limits" ? "dashboard" : "limits"))
+              }
+              className={`${TOOLBAR_BTN} ${
+                view === "limits" ? TOOLBAR_BTN_ACTIVE : TOOLBAR_BTN_IDLE
+              }`}
+            >
+              <GaugeIcon className="h-4 w-4" />
             </button>
             <button
               type="button"
@@ -450,6 +477,13 @@ export default function App() {
                 <EmptyState message="数据加载失败,请确认后端服务正在运行后点击顶栏刷新重试" />
               </div>
             )}
+          </div>
+        ) : view === "limits" ? (
+          <div
+            key="limits"
+            className="mx-auto max-w-6xl animate-fade-in space-y-4 px-6 pb-10 pt-20"
+          >
+            <Limits refreshEpoch={limitsEpoch} />
           </div>
         ) : (
           <div
