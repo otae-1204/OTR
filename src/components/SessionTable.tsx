@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   agentColor,
   AGENT_LABELS,
@@ -15,6 +15,25 @@ function agentLabel(id: string): string {
 
 function tokenDetail(s: SessionUsage): string {
   return `输入 ${fmtTokens(s.inputTokens)} · 输出 ${fmtTokens(s.outputTokens)} · 缓存读 ${fmtTokens(s.cacheReadTokens)} · 缓存写 ${fmtTokens(s.cacheWriteTokens)} · ${s.calls} 次请求`;
+}
+
+function nonempty(value: string | null | undefined): string | null {
+  const text = value?.trim();
+  return text ? text : null;
+}
+
+/** 会话名优先:Cursor 的 title 会被换成 composer 的 name,DSH/OpenCode 的 title 本来就是会话名。
+ *  没有名字时才退回项目路径,不再截一段 session_id 来充数。 */
+function sessionName(s: SessionUsage): string {
+  return nonempty(s.title) || nonempty(s.project) || "—";
+}
+
+function sessionTooltip(s: SessionUsage): string | undefined {
+  const parts = [nonempty(s.title), nonempty(s.project)].filter(
+    (part, index, all): part is string =>
+      !!part && all.indexOf(part) === index,
+  );
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 interface SessionTableProps {
@@ -39,18 +58,28 @@ export function SessionTable({
   rate,
 }: SessionTableProps) {
   const [sessions, setSessions] = useState<SessionUsage[] | null>(null);
+  const requestId = useRef(0);
+  const filterKey = `${agentId ?? ""}|${from ?? ""}|${to ?? ""}`;
+  const filterRef = useRef(filterKey);
 
   useEffect(() => {
+    const current = ++requestId.current;
     let active = true;
-    setSessions(null);
+    const filterChanged = filterRef.current !== filterKey;
+    filterRef.current = filterKey;
+    // 同一筛选下的数据更新留在原地替换,不要先换成骨架屏。
+    // 每次清空再重绘会让整张表闪一下,行高和数字都会跳。
+    if (filterChanged) setSessions(null);
     api
       .getSessions(agentId, from, to, 50)
       .then((rows) => {
-        if (active) setSessions(rows);
+        if (active && requestId.current === current) setSessions(rows);
       })
       .catch((err) => {
         console.error("[SessionTable] getSessions 失败", err);
-        if (active) setSessions([]);
+        if (active && requestId.current === current) {
+          setSessions((prev) => prev ?? []);
+        }
       });
     return () => {
       active = false;
@@ -79,7 +108,7 @@ export function SessionTable({
                 <tr className="border-b border-border/60 text-left text-xs text-muted-foreground">
                   <th className="py-2 pr-3 font-medium">最后活跃</th>
                   <th className="py-2 pr-3 font-medium">Agent</th>
-                  <th className="py-2 pr-3 font-medium">项目 / 标题</th>
+                  <th className="py-2 pr-3 font-medium">会话</th>
                   <th className="py-2 pr-3 font-medium">模型</th>
                   <th className="py-2 pr-3 text-right font-medium">Tokens</th>
                   <th className="py-2 text-right font-medium">成本</th>
@@ -87,21 +116,16 @@ export function SessionTable({
               </thead>
               <tbody>
                 {sessions.map((s, i) => {
-                  const title =
-                    s.project ||
-                    s.title ||
-                    (s.sessionId ? s.sessionId.slice(0, 8) : "--");
+                  const name = sessionName(s);
                   const models = (s.models ?? "")
                     .split(",")
                     .map((m) => m.trim())
                     .filter(Boolean)
                     .join(", ");
-                  const tooltipTitle =
-                    [s.project, s.title].filter(Boolean).join(" · ") ||
-                    undefined;
+                  const tooltipTitle = sessionTooltip(s);
                   return (
                     <tr
-                      key={`${s.sessionId ?? "row"}-${i}`}
+                      key={s.sessionId ? `${s.agent}:${s.sessionId}` : `row-${i}`}
                       className="border-b border-border/40 transition-colors last:border-0 hover:bg-muted/30"
                     >
                       <td
@@ -127,7 +151,7 @@ export function SessionTable({
                         className="max-w-[220px] truncate py-2.5 pr-3"
                         title={tooltipTitle}
                       >
-                        {title}
+                        {name}
                       </td>
                       <td
                         className="max-w-[180px] truncate py-2.5 pr-3 text-xs text-muted-foreground"

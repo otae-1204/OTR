@@ -171,7 +171,7 @@ pub fn get_sessions(
         .peak_shares(agent.as_deref(), &from_s, &to_s)
         .unwrap_or_default();
     let basis = basis.with_peaks(&peaks);
-    state
+    let mut rows = state
         .store
         .sessions(
             agent.as_deref(),
@@ -182,7 +182,34 @@ pub fn get_sessions(
             Some(&settings.enabled_agents),
             Some(&peaks),
         )
-        .map_err(err_str)
+        .map_err(err_str)?;
+    attach_cursor_names(&mut rows);
+    Ok(rows)
+}
+
+/// Cursor 明细行的 title 原先是模型名。能对上本机 composer 时换成会话的 `name`。
+fn attach_cursor_names(rows: &mut [SessionUsage]) {
+    if !rows.iter().any(|row| row.agent == "cursor") {
+        return;
+    }
+    let names = providers::cursor::conversation_names();
+    if names.is_empty() {
+        return;
+    }
+    for row in rows {
+        if row.agent != "cursor" {
+            continue;
+        }
+        let Some(session_id) = row.session_id.as_deref() else {
+            continue;
+        };
+        let Some(conversation) = providers::cursor::conversation_id(session_id) else {
+            continue;
+        };
+        if let Some(name) = names.get(conversation) {
+            row.title = Some(name.clone());
+        }
+    }
 }
 
 /// 触发一次后台增量扫描;full=true 时清空该 Agent 本地数据重扫。

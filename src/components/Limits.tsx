@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import {
   api,
   LIMIT_PROVIDER_LABELS,
@@ -7,8 +15,22 @@ import {
   type QuotaWindow,
 } from "../api/bindings";
 import { fmtClock, fmtDate, fmtDateTime } from "../lib/format";
-import { RefreshIcon } from "./icons";
+import {
+  applyLayout,
+  hitTestBands,
+  parseRowKey,
+  parseStoredLayout,
+  reconcileLayout,
+  rowKey,
+  sameLayout,
+  type LayoutDrop,
+  type RowBand,
+} from "../lib/limitsLayout";
+import { GripVerticalIcon, RefreshIcon } from "./icons";
 import { EmptyState, Skeleton } from "./Skeleton";
+
+/** 这台机器上的行序,不是账号配置,所以不进 settings.json */
+const LAYOUT_KEY = "token-show-limits-layout";
 
 const POLL_INTERVAL_MS = 60_000;
 
@@ -207,13 +229,58 @@ function orderedCards(items: ProviderLimits[]): ProviderLimits[] {
 }
 
 /**
- * 一个账号占一整行:左边是账号信息,右边是固定三列的额度格子。
- *
- * 不用卡片网格:各家窗口数差得多(Cursor 3 条、DeepSeek 只有余额),
- * 网格按最高的那张拉齐行高,矮卡片里就是大片空白;列数固定则同类窗口
- * (5 小时 / 每周)在上下行里落在同一列,扫一眼就能横向比较。
+ * 格子列数。到期日写在账号名下面,不占格子;余额占一列。
+ * 只有一列时才允许跟另一条单列行并成一行,多列行要留出整行才能横向比较。
  */
-function LimitRow({ data, now }: { data: ProviderLimits; now: number }) {
+function columnCount(data: ProviderLimits): number {
+  let n = 0;
+  for (const w of data.windows) if (!isDateOnly(w)) n += 1;
+  if (data.balance != null) n += 1;
+  return n;
+}
+
+function isSingleColumn(data: ProviderLimits): boolean {
+  return columnCount(data) === 1;
+}
+
+function readLayout(): string[][] | null {
+  try {
+    return parseStoredLayout(localStorage.getItem(LAYOUT_KEY));
+  } catch {
+    return null;
+  }
+}
+
+/** 没拖过用默认顺序;拖过的按存储套上来,并丢掉已经不存在的账号 */
+function resolveRows(items: ProviderLimits[], saved: string[][] | null): string[][] {
+  const order: string[] = [];
+  const seen = new Set<string>();
+  for (const it of orderedCards(items)) {
+    if (seen.has(it.accountId)) continue;
+    seen.add(it.accountId);
+    order.push(it.accountId);
+  }
+  if (!saved) return order.map((id) => [id]);
+  const single = new Set<string>();
+  for (const it of items) {
+    if (isSingleColumn(it)) single.add(it.accountId);
+  }
+  return reconcileLayout(order, saved, single);
+}
+
+/**
+ * 一个账号的左名右格。full 是独占一行的三列网格;half 是合并行里的一半,
+ * 只有一列,不再套三列网格,否则半行里会空出两大块。
+ */
+function AccountFace({
+  data,
+  now,
+  variant,
+}: {
+  data: ProviderLimits;
+  now: number;
+  variant: "full" | "half";
+}) {
   const providerLabel = LIMIT_PROVIDER_LABELS[data.provider] ?? data.provider;
   const name = data.accountLabel || providerLabel;
   const quota = sortWindows(data.windows.filter((w) => !isDateOnly(w)));
@@ -233,10 +300,18 @@ function LimitRow({ data, now }: { data: ProviderLimits; now: number }) {
     );
   }
 
+  const cells = (
+    <>
+      {quota.map((w) => (
+        <QuotaCell key={w.key} w={w} now={now} />
+      ))}
+      {data.balance ? <BalanceCell b={data.balance} /> : null}
+    </>
+  );
+
   return (
-    // 最小高度 = 一行额度格子的高度:未配置 / 报错的行只有一句话,不能缩成一条缝
-    <section
-      className={`flex flex-col gap-3 rounded-xl border border-border bg-card px-4 py-3.5 transition-all duration-300 hover:border-primary/60 hover:shadow-sm md:min-h-[84px] md:flex-row md:gap-6 ${
+    <div
+      className={`flex min-w-0 flex-1 flex-col gap-3 md:flex-row md:gap-6 ${
         hasData ? "" : "md:items-center"
       }`}
     >
@@ -275,12 +350,15 @@ function LimitRow({ data, now }: { data: ProviderLimits; now: number }) {
       </div>
 
       {hasData ? (
-        <div className="grid min-w-0 flex-1 grid-cols-3 gap-x-6 gap-y-3">
-          {quota.map((w) => (
-            <QuotaCell key={w.key} w={w} now={now} />
-          ))}
-          {data.balance ? <BalanceCell b={data.balance} /> : null}
-        </div>
+        variant === "full" ? (
+          <div className="grid min-w-0 flex-1 grid-cols-3 gap-x-6 gap-y-3">{cells}</div>
+        ) : (
+          // 单列格子在整行里只占三列网格的第一列。合并后如果跟着半行拉宽,
+          // 进度条会变成原来的两倍多。宽度按「整行去掉手柄和账号名,再三等分」。
+          <div className="grid w-full min-w-0 gap-y-3 md:w-[calc((100cqi-18.25rem)/3)] md:max-w-full md:flex-none">
+            {cells}
+          </div>
+        )
       ) : (
         <p
           className={`min-w-0 flex-1 text-xs leading-relaxed ${
@@ -290,8 +368,102 @@ function LimitRow({ data, now }: { data: ProviderLimits; now: number }) {
           {data.error ?? "暂无数据"}
         </p>
       )}
-    </section>
+    </div>
   );
+}
+
+function AccountHalf({
+  data,
+  now,
+  dimmed,
+  onGripDown,
+}: {
+  data: ProviderLimits;
+  now: number;
+  dimmed: boolean;
+  onGripDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+}) {
+  // gap-2 与整行的手柄间距相同,进度条左缘才和整行第一列对齐。
+  return (
+    <div className={`flex min-w-0 flex-1 items-start gap-2 ${dimmed ? "opacity-40" : ""}`}>
+      <DragGrip
+        label="拖出此账号"
+        className="mt-0.5 md:mt-0 md:self-center"
+        onPointerDown={onGripDown}
+      />
+      <AccountFace data={data} now={now} variant="half" />
+    </div>
+  );
+}
+
+function DragGrip({
+  label,
+  className,
+  onPointerDown,
+}: {
+  label: string;
+  className?: string;
+  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <button
+      type="button"
+      draggable={false}
+      aria-label={label}
+      title={label}
+      onPointerDown={onPointerDown}
+      className={`flex h-8 w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-muted-foreground/45 hover:bg-black/5 hover:text-foreground active:cursor-grabbing group-hover/row:text-muted-foreground/80 dark:hover:bg-white/5 ${
+        className ?? ""
+      }`}
+    >
+      <GripVerticalIcon className="h-4 w-4" />
+    </button>
+  );
+}
+
+/** 合并行中间的分隔线。平时只是一条线,悬停才露出手柄,避免左边叠两个拖动条。 */
+function SplitHandle({
+  onPointerDown,
+}: {
+  onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <button
+      type="button"
+      draggable={false}
+      aria-label="拖动整行"
+      title="拖动整行"
+      onPointerDown={onPointerDown}
+      className="group/split relative flex h-6 w-full shrink-0 cursor-grab touch-none items-center justify-center self-center md:mx-2 md:h-8 md:w-5"
+    >
+      <span
+        aria-hidden
+        className="absolute left-0 right-0 top-1/2 h-px -translate-y-1/2 bg-border md:bottom-0 md:left-1/2 md:right-auto md:top-0 md:h-auto md:w-px md:-translate-x-1/2 md:translate-y-0"
+      />
+      <GripVerticalIcon className="relative z-10 h-4 w-4 text-transparent group-hover/split:text-muted-foreground/80" />
+    </button>
+  );
+}
+
+interface DragSession {
+  ids: string[];
+  rowKey: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  /** 最近一次指针的视口 Y,松手时用它算落点 */
+  endY: number;
+  active: boolean;
+  move: (event: PointerEvent) => void;
+  up: (event: PointerEvent) => void;
+  key: (event: KeyboardEvent) => void;
+}
+
+function stopSession(session: DragSession) {
+  window.removeEventListener("pointermove", session.move);
+  window.removeEventListener("pointerup", session.up);
+  window.removeEventListener("pointercancel", session.up);
+  window.removeEventListener("keydown", session.key);
 }
 
 export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
@@ -299,10 +471,19 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  /** null = 用户还没拖过,走 provider 默认顺序 */
+  const [layout, setLayout] = useState<string[][] | null>(readLayout);
+  const [drag, setDrag] = useState<{ ids: string[]; rowKey: string } | null>(null);
+  const [drop, setDrop] = useState<LayoutDrop | null>(null);
   const inFlightRef = useRef(false);
   const pendingRef = useRef<"none" | "cache" | "force">("none");
   const seenEpoch = useRef(refreshEpoch);
   const loadRef = useRef<(force: boolean) => Promise<void>>(async () => {});
+  const listRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<DragSession | null>(null);
+  const rowsRef = useRef<string[][]>([]);
+  const itemsRef = useRef<ProviderLimits[] | null>(null);
+  const singleRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(async (force: boolean) => {
     if (inFlightRef.current) {
@@ -358,6 +539,156 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
   // 各行刷新时刻基本相同,统一放页头;刷新失败的行在自己那一行标出缓存时刻
   const lastFetched = items?.reduce((m, it) => Math.max(m, it.fetchedAt), 0) ?? 0;
 
+  const rows = useMemo(
+    () => (items ? resolveRows(items, layout) : null),
+    [items, layout],
+  );
+  const byId = useMemo(() => {
+    const map = new Map<string, ProviderLimits>();
+    for (const it of items ?? []) map.set(it.accountId, it);
+    return map;
+  }, [items]);
+  const singleIds = useMemo(() => {
+    const single = new Set<string>();
+    for (const it of items ?? []) {
+      if (isSingleColumn(it)) single.add(it.accountId);
+    }
+    return single;
+  }, [items]);
+
+  itemsRef.current = items;
+  rowsRef.current = rows ?? [];
+  singleRef.current = singleIds;
+
+  useEffect(() => {
+    return () => {
+      const session = dragRef.current;
+      if (session) stopSession(session);
+      dragRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!drag) return;
+    const body = document.body;
+    const prevCursor = body.style.cursor;
+    const prevSelect = body.style.userSelect;
+    const prevTouch = body.style.touchAction;
+    body.style.cursor = "grabbing";
+    body.style.userSelect = "none";
+    body.style.touchAction = "none";
+    return () => {
+      body.style.cursor = prevCursor;
+      body.style.userSelect = prevSelect;
+      body.style.touchAction = prevTouch;
+    };
+  }, [drag]);
+
+  const locate = (y: number, movingIds: readonly string[]): LayoutDrop | null => {
+    const root = listRef.current;
+    if (!root) return null;
+    const bands: RowBand[] = [];
+    for (const el of root.querySelectorAll<HTMLElement>("[data-limit-row]")) {
+      const rect = el.getBoundingClientRect();
+      const ids = parseRowKey(el.dataset.limitRow ?? "");
+      if (ids.length === 0) continue;
+      bands.push({ top: rect.top, bottom: rect.bottom, ids });
+    }
+    return hitTestBands(bands, y, movingIds, singleRef.current);
+  };
+
+  const persist = (next: string[][]) => {
+    const itemsNow = itemsRef.current;
+    const resolved = itemsNow ? resolveRows(itemsNow, next) : next;
+    if (sameLayout(rowsRef.current, resolved)) return;
+    setLayout(resolved);
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(resolved));
+    } catch (err) {
+      console.error("[Limits] 无法保存行顺序", err);
+    }
+  };
+
+  const begin = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    payload: { ids: string[]; rowKey: string },
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const previous = dragRef.current;
+    if (previous) stopSession(previous);
+
+    const session: DragSession = {
+      ids: payload.ids.slice(),
+      rowKey: payload.rowKey,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      endY: event.clientY,
+      active: false,
+      move: () => {},
+      up: () => {},
+      key: () => {},
+    };
+
+    const finish = (commit: boolean) => {
+      stopSession(session);
+      if (dragRef.current !== session) return;
+      dragRef.current = null;
+      if (commit && session.active) {
+        const target = locate(session.endY, session.ids);
+        if (target) persist(applyLayout(rowsRef.current, session.ids, target));
+      }
+      setDrag(null);
+      setDrop(null);
+    };
+
+    session.move = (ev: PointerEvent) => {
+      if (ev.pointerId !== session.pointerId) return;
+      session.endY = ev.clientY;
+      if (!session.active) {
+        if (Math.hypot(ev.clientX - session.startX, ev.clientY - session.startY) < 4) {
+          return;
+        }
+        session.active = true;
+        setDrag({ ids: session.ids, rowKey: session.rowKey });
+      }
+      ev.preventDefault();
+      const target = locate(ev.clientY, session.ids);
+      const next =
+        target && !sameLayout(rowsRef.current, applyLayout(rowsRef.current, session.ids, target))
+          ? target
+          : null;
+      setDrop((prev) => {
+        if (next === null) return prev === null ? prev : null;
+        if (
+          prev &&
+          prev.mode === next.mode &&
+          rowKey(prev.rowIds) === rowKey(next.rowIds)
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    };
+    session.up = (ev: PointerEvent) => {
+      if (ev.pointerId !== session.pointerId) return;
+      session.endY = ev.clientY;
+      finish(ev.type !== "pointercancel");
+    };
+    session.key = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      finish(false);
+    };
+
+    dragRef.current = session;
+    window.addEventListener("pointermove", session.move);
+    window.addEventListener("pointerup", session.up);
+    window.addEventListener("pointercancel", session.up);
+    window.addEventListener("keydown", session.key);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
@@ -392,10 +723,94 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
       ) : items.length === 0 ? (
         <EmptyState message="还没有启用任何额度来源。到设置 → 额度来源里勾选需要显示的 Provider。" />
       ) : (
-        <div className="space-y-2">
-          {orderedCards(items).map((it) => (
-            <LimitRow key={it.accountId} data={it} now={now} />
-          ))}
+        <div ref={listRef} className={`space-y-2 ${drag ? "select-none" : ""}`}>
+          {rows?.map((ids) => {
+            const key = rowKey(ids);
+            const records: ProviderLimits[] = [];
+            for (const id of ids) {
+              const data = byId.get(id);
+              if (data) records.push(data);
+            }
+            if (records.length !== ids.length) return null;
+            const paired = records.length === 2;
+            const wholeDragged =
+              drag != null &&
+              drag.rowKey === key &&
+              drag.ids.length === ids.length &&
+              drag.ids.every((id, index) => id === ids[index]);
+            const gripLabel = singleIds.has(ids[0])
+              ? "拖动排序，拖到另一条单列行中间可合并"
+              : "拖动排序";
+            const merging = drop?.mode === "merge" && rowKey(drop.rowIds) === key;
+            const insertBefore = drop?.mode === "before" && rowKey(drop.rowIds) === key;
+            const insertAfter = drop?.mode === "after" && rowKey(drop.rowIds) === key;
+            const [left, right] = records;
+            return (
+              <div key={key} className="relative" data-limit-row={key}>
+                {insertBefore ? (
+                  <div className="pointer-events-none absolute -top-1 left-4 right-4 z-10 h-0.5 rounded-full bg-primary" />
+                ) : null}
+                {insertAfter ? (
+                  <div className="pointer-events-none absolute -bottom-1 left-4 right-4 z-10 h-0.5 rounded-full bg-primary" />
+                ) : null}
+                <section
+                  className={`group/row relative flex items-stretch gap-2 rounded-xl border bg-card px-4 py-3.5 [container-type:inline-size] transition-[border-color,box-shadow,background-color] duration-300 md:min-h-[84px] ${
+                    merging
+                      ? "border-primary bg-primary/5 shadow-sm"
+                      : "border-border hover:border-primary/60 hover:shadow-sm"
+                  } ${wholeDragged ? "border-dashed opacity-40" : ""}`}
+                >
+                  {paired && left && right ? (
+                    <div className="flex min-w-0 flex-1 flex-col gap-3 md:flex-row md:items-start">
+                      <AccountHalf
+                        data={left}
+                        now={now}
+                        dimmed={
+                          drag != null &&
+                          drag.rowKey === key &&
+                          drag.ids.length === 1 &&
+                          drag.ids[0] === left.accountId
+                        }
+                        onGripDown={(event) =>
+                          begin(event, { ids: [left.accountId], rowKey: key })
+                        }
+                      />
+                      <SplitHandle
+                        onPointerDown={(event) => begin(event, { ids, rowKey: key })}
+                      />
+                      <AccountHalf
+                        data={right}
+                        now={now}
+                        dimmed={
+                          drag != null &&
+                          drag.rowKey === key &&
+                          drag.ids.length === 1 &&
+                          drag.ids[0] === right.accountId
+                        }
+                        onGripDown={(event) =>
+                          begin(event, { ids: [right.accountId], rowKey: key })
+                        }
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <DragGrip
+                        label={gripLabel}
+                        className="mt-0.5 self-start md:mt-0 md:self-center"
+                        onPointerDown={(event) => begin(event, { ids, rowKey: key })}
+                      />
+                      <AccountFace data={records[0]} now={now} variant="full" />
+                    </>
+                  )}
+                  {merging ? (
+                    <span className="pointer-events-none absolute right-3 top-3.5 z-10 rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
+                      松开合并
+                    </span>
+                  ) : null}
+                </section>
+              </div>
+            );
+          })}
         </div>
       )}
 
