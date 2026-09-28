@@ -115,7 +115,7 @@ function QuotaCell({ w, now }: { w: QuotaWindow; now: number }) {
       {left == null || used == null ? (
         <div className="h-1.5" />
       ) : (
-        <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div className="h-1.5 overflow-hidden rounded-full bg-foreground/25">
           <div
             className={`h-full rounded-full transition-all ${remainingTone(used)}`}
             style={{ width: `${Math.min(100, left)}%` }}
