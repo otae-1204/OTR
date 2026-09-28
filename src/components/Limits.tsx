@@ -269,25 +269,29 @@ function resolveRows(items: ProviderLimits[], saved: string[][] | null): string[
 }
 
 /**
- * 一个账号的左名右格。full 是独占一行的三列网格;half 是合并行里的一半,
- * 只有一列,不再套三列网格,否则半行里会空出两大块。
+ * 整行、单列行、合并行共用这一套列,进度条才能左右缘都重合。
+ *
+ * 手柄 | 0.5rem | 账号名 | 1.5rem | 条 | 1.5rem | 条 | 1.5rem | 条
+ * 合并行左边的条占第一列,右边的名字占第二列,右边的条占第三列。
+ * 单列行只有一条时,它就是第一列,长度和三列行的每一条相同。
  */
-function AccountFace({
-  data,
-  now,
-  variant,
-}: {
-  data: ProviderLimits;
-  now: number;
-  variant: "full" | "half";
-}) {
+const LIMIT_ROW_GRID =
+  "group/row relative flex flex-col gap-3 rounded-xl border bg-card px-4 py-3.5 transition-[border-color,box-shadow,background-color] duration-300 md:grid md:min-h-[84px] md:items-center md:gap-x-0 md:gap-y-3 md:grid-cols-[1.25rem_0.5rem_12rem_1.5rem_minmax(0,1fr)_1.5rem_minmax(0,1fr)_1.5rem_minmax(0,1fr)]";
+
+const METRIC_COL = ["md:col-start-5", "md:col-start-7", "md:col-start-9"] as const;
+const METRIC_ROW = ["md:row-start-1", "md:row-start-2", "md:row-start-3"] as const;
+
+function metricPlace(index: number): string {
+  const col = METRIC_COL[index % 3];
+  const row = METRIC_ROW[Math.min(METRIC_ROW.length - 1, Math.floor(index / 3))];
+  return `${col} ${row}`;
+}
+
+function AccountTitle({ data, now }: { data: ProviderLimits; now: number }) {
   const providerLabel = LIMIT_PROVIDER_LABELS[data.provider] ?? data.provider;
   const name = data.accountLabel || providerLabel;
-  const quota = sortWindows(data.windows.filter((w) => !isDateOnly(w)));
   const expiries = data.windows.filter(isDateOnly);
   const hasData = data.windows.length > 0 || data.balance != null;
-
-  // 内置账号的名字就是 provider 名,再标一次就成了「Cursor / Cursor」
   const meta: ReactNode[] = [];
   if (!name.toLowerCase().includes(providerLabel.toLowerCase())) {
     meta.push(providerLabel);
@@ -299,101 +303,48 @@ function AccountFace({
       </span>,
     );
   }
-
-  const cells = (
-    <>
-      {quota.map((w) => (
-        <QuotaCell key={w.key} w={w} now={now} />
-      ))}
-      {data.balance ? <BalanceCell b={data.balance} /> : null}
-    </>
-  );
-
   return (
-    <div
-      className={`flex min-w-0 flex-1 flex-col gap-3 md:flex-row md:gap-6 ${
-        hasData ? "" : "md:items-center"
-      }`}
-    >
-      <div className="min-w-0 md:w-48 md:shrink-0">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold">
-          <span className="truncate">{name}</span>
-          {data.planLabel ? (
-            <span className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-              {data.planLabel}
-            </span>
-          ) : null}
-          {!data.configured ? (
-            <span className="shrink-0 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-              待配置
-            </span>
-          ) : null}
-        </h3>
-        {meta.length > 0 ? (
-          <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
-            {meta.map((m, i) => (
-              <span key={i} className="flex items-center gap-x-1.5">
-                {i > 0 ? <span aria-hidden>·</span> : null}
-                {m}
-              </span>
-            ))}
-          </p>
+    <div className="min-w-0">
+      <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+        <span className="truncate">{name}</span>
+        {data.planLabel ? (
+          <span className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+            {data.planLabel}
+          </span>
         ) : null}
-        {hasData && data.error ? (
-          <p
-            className="mt-1 text-[11px] text-amber-600 dark:text-amber-400"
-            title={data.error}
-          >
-            刷新失败,显示 {fmtClock(data.fetchedAt)} 的缓存
-          </p>
+        {!data.configured ? (
+          <span className="shrink-0 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+            待配置
+          </span>
         ) : null}
-      </div>
-
-      {hasData ? (
-        variant === "full" ? (
-          <div className="grid min-w-0 flex-1 grid-cols-3 gap-x-6 gap-y-3">{cells}</div>
-        ) : (
-          // 单列格子在整行里只占三列网格的第一列。合并后如果跟着半行拉宽,
-          // 进度条会变成原来的两倍多。宽度按「整行去掉手柄和账号名,再三等分」。
-          <div className="grid w-full min-w-0 gap-y-3 md:w-[calc((100cqi-18.25rem)/3)] md:max-w-full md:flex-none">
-            {cells}
-          </div>
-        )
-      ) : (
-        <p
-          className={`min-w-0 flex-1 text-xs leading-relaxed ${
-            data.configured ? "text-red-500" : "text-muted-foreground"
-          }`}
-        >
-          {data.error ?? "暂无数据"}
+      </h3>
+      {meta.length > 0 ? (
+        <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
+          {meta.map((m, i) => (
+            <span key={i} className="flex items-center gap-x-1.5">
+              {i > 0 ? <span aria-hidden>·</span> : null}
+              {m}
+            </span>
+          ))}
         </p>
-      )}
+      ) : null}
+      {hasData && data.error ? (
+        <p
+          className="mt-1 text-[11px] text-amber-600 dark:text-amber-400"
+          title={data.error}
+        >
+          刷新失败,显示 {fmtClock(data.fetchedAt)} 的缓存
+        </p>
+      ) : null}
     </div>
   );
 }
 
-function AccountHalf({
-  data,
-  now,
-  dimmed,
-  onGripDown,
-}: {
-  data: ProviderLimits;
-  now: number;
-  dimmed: boolean;
-  onGripDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
-}) {
-  // gap-2 与整行的手柄间距相同,进度条左缘才和整行第一列对齐。
-  return (
-    <div className={`flex min-w-0 flex-1 items-start gap-2 ${dimmed ? "opacity-40" : ""}`}>
-      <DragGrip
-        label="拖出此账号"
-        className="mt-0.5 md:mt-0 md:self-center"
-        onPointerDown={onGripDown}
-      />
-      <AccountFace data={data} now={now} variant="half" />
-    </div>
-  );
+function accountCells(data: ProviderLimits, now: number): ReactNode[] {
+  const quota = sortWindows(data.windows.filter((w) => !isDateOnly(w)));
+  const cells: ReactNode[] = quota.map((w) => <QuotaCell key={w.key} w={w} now={now} />);
+  if (data.balance) cells.push(<BalanceCell key="balance" b={data.balance} />);
+  return cells;
 }
 
 function DragGrip({
@@ -423,8 +374,10 @@ function DragGrip({
 
 /** 合并行中间的分隔线。平时只是一条线,悬停才露出手柄,避免左边叠两个拖动条。 */
 function SplitHandle({
+  className,
   onPointerDown,
 }: {
+  className?: string;
   onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
   return (
@@ -434,7 +387,9 @@ function SplitHandle({
       aria-label="拖动整行"
       title="拖动整行"
       onPointerDown={onPointerDown}
-      className="group/split relative flex h-6 w-full shrink-0 cursor-grab touch-none items-center justify-center self-center md:mx-2 md:h-8 md:w-5"
+      className={`group/split relative flex h-6 w-full shrink-0 cursor-grab touch-none items-center justify-center self-center md:col-start-6 md:h-8 md:w-5 md:justify-self-center ${
+        className ?? ""
+      }`}
     >
       <span
         aria-hidden
@@ -745,6 +700,7 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
             const insertBefore = drop?.mode === "before" && rowKey(drop.rowIds) === key;
             const insertAfter = drop?.mode === "after" && rowKey(drop.rowIds) === key;
             const [left, right] = records;
+            const primaryCells = accountCells(records[0], now);
             return (
               <div key={key} className="relative" data-limit-row={key}>
                 {insertBefore ? (
@@ -754,52 +710,112 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
                   <div className="pointer-events-none absolute -bottom-1 left-4 right-4 z-10 h-0.5 rounded-full bg-primary" />
                 ) : null}
                 <section
-                  className={`group/row relative flex items-stretch gap-2 rounded-xl border bg-card px-4 py-3.5 [container-type:inline-size] transition-[border-color,box-shadow,background-color] duration-300 md:min-h-[84px] ${
+                  className={`${LIMIT_ROW_GRID} ${
                     merging
                       ? "border-primary bg-primary/5 shadow-sm"
                       : "border-border hover:border-primary/60 hover:shadow-sm"
                   } ${wholeDragged ? "border-dashed opacity-40" : ""}`}
                 >
                   {paired && left && right ? (
-                    <div className="flex min-w-0 flex-1 flex-col gap-3 md:flex-row md:items-start">
-                      <AccountHalf
-                        data={left}
-                        now={now}
-                        dimmed={
+                    <>
+                      <DragGrip
+                        label="拖出此账号"
+                        className={`mt-0.5 md:col-start-1 md:mt-0 md:self-center ${
                           drag != null &&
                           drag.rowKey === key &&
                           drag.ids.length === 1 &&
                           drag.ids[0] === left.accountId
-                        }
-                        onGripDown={(event) =>
+                            ? "opacity-40"
+                            : ""
+                        }`}
+                        onPointerDown={(event) =>
                           begin(event, { ids: [left.accountId], rowKey: key })
                         }
                       />
+                      <div
+                        className={`min-w-0 md:col-start-3 ${
+                          drag != null &&
+                          drag.rowKey === key &&
+                          drag.ids.length === 1 &&
+                          drag.ids[0] === left.accountId
+                            ? "opacity-40"
+                            : ""
+                        }`}
+                      >
+                        <AccountTitle data={left} now={now} />
+                      </div>
+                      <div
+                        className={`min-w-0 md:col-start-5 ${
+                          drag != null &&
+                          drag.rowKey === key &&
+                          drag.ids.length === 1 &&
+                          drag.ids[0] === left.accountId
+                            ? "opacity-40"
+                            : ""
+                        }`}
+                      >
+                        {accountCells(left, now)}
+                      </div>
                       <SplitHandle
                         onPointerDown={(event) => begin(event, { ids, rowKey: key })}
                       />
-                      <AccountHalf
-                        data={right}
-                        now={now}
-                        dimmed={
+                      <div
+                        className={`flex min-w-0 items-center gap-2 md:col-start-7 ${
                           drag != null &&
                           drag.rowKey === key &&
                           drag.ids.length === 1 &&
                           drag.ids[0] === right.accountId
-                        }
-                        onGripDown={(event) =>
-                          begin(event, { ids: [right.accountId], rowKey: key })
-                        }
-                      />
-                    </div>
+                            ? "opacity-40"
+                            : ""
+                        }`}
+                      >
+                        <DragGrip
+                          label="拖出此账号"
+                          className="mt-0.5 md:mt-0"
+                          onPointerDown={(event) =>
+                            begin(event, { ids: [right.accountId], rowKey: key })
+                          }
+                        />
+                        <AccountTitle data={right} now={now} />
+                      </div>
+                      <div
+                        className={`min-w-0 md:col-start-9 ${
+                          drag != null &&
+                          drag.rowKey === key &&
+                          drag.ids.length === 1 &&
+                          drag.ids[0] === right.accountId
+                            ? "opacity-40"
+                            : ""
+                        }`}
+                      >
+                        {accountCells(right, now)}
+                      </div>
+                    </>
                   ) : (
                     <>
                       <DragGrip
                         label={gripLabel}
-                        className="mt-0.5 self-start md:mt-0 md:self-center"
+                        className="mt-0.5 md:col-start-1 md:mt-0 md:self-center"
                         onPointerDown={(event) => begin(event, { ids, rowKey: key })}
                       />
-                      <AccountFace data={records[0]} now={now} variant="full" />
+                      <div className="min-w-0 md:col-start-3">
+                        <AccountTitle data={records[0]} now={now} />
+                      </div>
+                      {primaryCells.length > 0 ? (
+                        primaryCells.map((cell, index) => (
+                          <div key={index} className={`min-w-0 ${metricPlace(index)}`}>
+                            {cell}
+                          </div>
+                        ))
+                      ) : (
+                        <p
+                          className={`min-w-0 text-xs leading-relaxed md:col-span-5 md:col-start-5 ${
+                            records[0].configured ? "text-red-500" : "text-muted-foreground"
+                          }`}
+                        >
+                          {records[0].error ?? "暂无数据"}
+                        </p>
+                      )}
                     </>
                   )}
                   {merging ? (
