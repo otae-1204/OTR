@@ -22,7 +22,7 @@ export async function loadThemeModule(tag) {
     platform: "node",
     outfile,
     logLevel: "error",
-    external: ["react", "react/jsx-runtime", "@tauri-apps/api/core"],
+    external: ["react", "react/jsx-runtime", "@tauri-apps/api/core", "@tauri-apps/api/event"],
   });
   try {
     return await import(pathToFileURL(outfile).href);

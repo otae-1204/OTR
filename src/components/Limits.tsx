@@ -44,9 +44,9 @@ function remainingTone(usedPercent: number): string {
 
 function remainingText(usedPercent: number): string {
   const left = 100 - usedPercent;
-  if (left >= 50) return "text-success";
-  if (left >= 25) return "text-warning";
-  return "text-danger-text";
+  if (left >= 50) return "text-success-label";
+  if (left >= 25) return "text-warning-label";
+  return "text-danger-label";
 }
 
 /** 重置倒计时:只说到"天/小时/分钟"这一档,秒级跳动没有信息量 */
@@ -108,7 +108,7 @@ function QuotaCell({ w, now }: { w: QuotaWindow; now: number }) {
             >
               {left.toFixed(left < 10 ? 1 : 0)}%
             </span>
-            <span className="text-[10px] text-muted-foreground">剩余</span>
+            <span className="text-10px text-muted-foreground">剩余</span>
           </span>
         )}
       </div>
@@ -123,7 +123,7 @@ function QuotaCell({ w, now }: { w: QuotaWindow; now: number }) {
           />
         </div>
       )}
-      <p className="h-4 text-[10px] leading-4 text-muted-foreground">{cd}</p>
+      <p className="h-4 text-10px leading-4 text-muted-foreground">{cd}</p>
     </div>
   );
 }
@@ -141,11 +141,11 @@ function BalanceCell({ b }: { b: Balance }) {
           <span className="font-mono text-sm font-semibold tabular-nums">
             {b.amount.toFixed(2)}
           </span>
-          <span className="text-[10px] text-muted-foreground">{b.currency}</span>
+          <span className="text-10px text-muted-foreground">{b.currency}</span>
         </span>
       </div>
       <div className="h-1.5" />
-      <p className="h-4 text-[10px] leading-4 text-muted-foreground">
+      <p className="h-4 text-10px leading-4 text-muted-foreground">
         {parts.join(" · ")}
       </p>
     </div>
@@ -309,18 +309,18 @@ function AccountTitle({ data, now }: { data: ProviderLimits; now: number }) {
       <h3 data-theme-part="card-title" className="flex items-center gap-1.5 text-sm font-semibold">
         <span className="truncate">{name}</span>
         {data.planLabel ? (
-          <span data-theme-part="badge" className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+          <span data-theme-part="badge" className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-10px font-medium text-primary">
             {data.planLabel}
           </span>
         ) : null}
         {!data.configured ? (
-          <span data-theme-part="badge" className="shrink-0 rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning-text">
+          <span data-theme-part="badge" className="shrink-0 rounded-md bg-warning/15 px-1.5 py-0.5 text-10px font-medium text-warning-text">
             待配置
           </span>
         ) : null}
       </h3>
       {meta.length > 0 ? (
-        <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
+        <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-11px text-muted-foreground">
           {meta.map((m, i) => (
             <span key={i} className="flex items-center gap-x-1.5">
               {i > 0 ? <span aria-hidden>·</span> : null}
@@ -331,7 +331,7 @@ function AccountTitle({ data, now }: { data: ProviderLimits; now: number }) {
       ) : null}
       {hasData && data.error ? (
         <p
-          className="mt-1 text-[11px] text-warning-text"
+          className="mt-1 text-11px text-warning-text"
           title={data.error}
         >
           刷新失败,显示 {fmtClock(data.fetchedAt)} 的缓存
@@ -822,7 +822,7 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
                     </>
                   )}
                   {merging ? (
-                    <span data-theme-part="badge" className="pointer-events-none absolute right-3 top-3.5 z-10 rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
+                    <span data-theme-part="badge" className="pointer-events-none absolute right-3 top-3.5 z-10 rounded-md bg-primary px-1.5 py-0.5 text-10px font-medium text-primary-foreground">
                       松开合并
                     </span>
                   ) : null}

@@ -501,6 +501,8 @@ pub fn list_models(app: AppHandle) -> Vec<String> {
 #[tauri::command]
 pub fn save_settings(app: AppHandle, mut settings: Settings) -> std::result::Result<(), String> {
     let state = app.state::<AppState>();
+    // 前端总会带上 preferredMode;万一缺了(旧快照),按 theme 补齐,别存个空串
+    settings.normalize_preferred_mode();
     {
         let mut guard = crate::lock(&state.settings);
         settings.keep_limit_config_from(&guard);

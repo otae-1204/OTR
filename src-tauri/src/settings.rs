@@ -106,6 +106,15 @@ fn default_theme_id() -> String {
     DEFAULT_THEME_ID.to_string()
 }
 
+/// 深浅模式只认这两个值
+fn valid_mode(v: &str) -> Option<&'static str> {
+    match v {
+        "dark" => Some("dark"),
+        "light" => Some("light"),
+        _ => None,
+    }
+}
+
 /// 额度默认刷新间隔:60 秒。额度是慢变量,再密也没有信息增量,只会白烧请求。
 fn default_refresh_secs() -> u64 {
     60
@@ -209,8 +218,14 @@ impl CustomAgentConfig {
 pub struct Settings {
     pub enabled_agents: Vec<String>,
     pub start_minimized: bool,
-    /// 深浅模式:"dark" | "light"。历史字段名,含义是**模式**;主题见 `theme_id`。
+    /// **生效的**深浅模式:"dark" | "light"。历史字段名,含义是模式;主题见 `theme_id`。
+    /// 选中只有一种模式的主题时它跟着变;用户自己的选择在 `preferred_mode`。
     pub theme: String,
+    /// 用户**偏好的**深浅模式:"dark" | "light"。只由设置页的深浅按钮修改,单模式主题不改它,
+    /// 换回支持该模式的主题时按它恢复。旧设置文件没有这个字段:字段级 `default` 给空串,
+    /// 读取时由 `normalize_preferred_mode` 从 `theme` 推导(不能用容器级默认值,那会一律变成 "dark")。
+    #[serde(default)]
+    pub preferred_mode: String,
     /// 当前主题 id:内置 "otr",或 `<数据目录>/themes/` 里某个清单的 id。
     /// 后端只负责存取;找不到 / 校验失败时由前端回退到默认主题(不改这个值)。
     #[serde(default = "default_theme_id")]
@@ -267,6 +282,7 @@ impl Default for Settings {
             enabled_agents: BUILTIN_AGENTS.iter().map(|s| s.to_string()).collect(),
             start_minimized: false,
             theme: "dark".into(),
+            preferred_mode: "dark".into(),
             theme_id: default_theme_id(),
             custom_agents: vec![],
             pricing: std::collections::HashMap::new(),
@@ -293,6 +309,8 @@ impl Settings {
             .ok()
             .and_then(|x| serde_json::from_str(&x).ok())
             .unwrap_or_default();
+        // 只在内存里补齐;下次任何保存都会把它写进文件,不为此单独写盘
+        s.normalize_preferred_mode();
         if !s.migrated_v2 {
             // 旧版设置文件补录新增内置 Agent(用户手动停用的会在升级后重新出现,可接受)
             for b in BUILTIN_AGENTS {
@@ -337,6 +355,22 @@ impl Settings {
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(path, json)?;
         Ok(())
+    }
+
+    /// 偏好模式缺失或不合法时,用 `theme`(上次生效的模式)推导;两者都不合法时用暗色。
+    /// 升级前选过单模式主题的用户,`theme` 已被改写过,真正的偏好无从得知 —— 这里只能取它。
+    pub fn normalize_preferred_mode(&mut self) {
+        if valid_mode(&self.preferred_mode).is_none() {
+            self.preferred_mode = valid_mode(&self.theme).unwrap_or("dark").to_string();
+        }
+    }
+
+    /// 托盘「恢复默认主题」:主题回到内置默认。默认主题两种模式都有,所以生效模式 = 偏好模式;
+    /// 其余设置(Agent、定价、额度账号……)原样保留。
+    pub fn reset_theme(&mut self) {
+        self.normalize_preferred_mode();
+        self.theme_id = DEFAULT_THEME_ID.to_string();
+        self.theme = self.preferred_mode.clone();
     }
 
     pub fn is_enabled(&self, id: &str) -> bool {
@@ -452,6 +486,121 @@ mod tests {
         let back: Settings = serde_json::from_str(&text).unwrap();
         assert_eq!(back.theme_id, "nord");
         assert_eq!(back.theme, "light");
+    }
+
+    /// 旧设置文件没有 preferredMode:从 theme(上次生效的模式)推导,而不是一律变成暗色
+    #[test]
+    fn preferred_mode_is_derived_from_theme_for_old_files() {
+        let mut s: Settings =
+            serde_json::from_str(r#"{"theme":"light","themeId":"warm-paper"}"#).unwrap();
+        assert_eq!(s.preferred_mode, "", "字段级 default 必须给空串,才分得清「缺字段」");
+        s.normalize_preferred_mode();
+        assert_eq!(s.preferred_mode, "light");
+        assert_eq!(s.theme, "light");
+        assert_eq!(s.theme_id, "warm-paper");
+
+        let mut dark: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        dark.normalize_preferred_mode();
+        assert_eq!(dark.preferred_mode, "dark");
+    }
+
+    /// 已有 preferredMode 时原样保留,哪怕它与生效模式不同(单模式主题正在生效)
+    #[test]
+    fn preferred_mode_survives_a_single_mode_theme() {
+        let mut s: Settings = serde_json::from_str(
+            r#"{"theme":"light","preferredMode":"dark","themeId":"warm-paper"}"#,
+        )
+        .unwrap();
+        s.normalize_preferred_mode();
+        assert_eq!(s.preferred_mode, "dark");
+        assert_eq!(s.theme, "light");
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(text.contains("\"preferredMode\":\"dark\""), "{text}");
+        assert!(text.contains("\"theme\":\"light\""), "{text}");
+    }
+
+    /// 两个字段都不合法(手改坏了)→ 暗色
+    #[test]
+    fn invalid_modes_fall_back_to_dark() {
+        let mut s: Settings =
+            serde_json::from_str(r#"{"theme":"purple","preferredMode":"blue"}"#).unwrap();
+        s.normalize_preferred_mode();
+        assert_eq!(s.preferred_mode, "dark");
+        let mut from_theme: Settings =
+            serde_json::from_str(r#"{"theme":"light","preferredMode":""}"#).unwrap();
+        from_theme.normalize_preferred_mode();
+        assert_eq!(from_theme.preferred_mode, "light");
+    }
+
+    /// load() 负责补齐偏好模式(前端 get_settings 拿到的就是补齐后的值)
+    #[test]
+    fn load_fills_in_the_preferred_mode() {
+        let dir = std::env::temp_dir().join(format!("otr-pref-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"theme":"light","themeId":"warm-paper","migratedV2":true}"#)
+            .unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(s.preferred_mode, "light");
+        assert_eq!(s.theme_id, "warm-paper");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 托盘「恢复默认主题」:只动主题相关字段,生效模式回到偏好模式,其余设置原样保留
+    #[test]
+    fn reset_theme_only_touches_the_theme() {
+        let mut s = Settings::default();
+        s.theme_id = "neon-night".into();
+        s.theme = "dark".into();
+        s.preferred_mode = "light".into();
+        s.enabled_agents = vec!["dsh".into()];
+        s.start_minimized = true;
+        s.currency = "USD".into();
+        s.pricing.insert("m".into(), PriceEntry { input: 1.0, ..Default::default() });
+        s.limit_accounts.push(account("deepseek"));
+        let before = s.clone();
+
+        s.reset_theme();
+        assert_eq!(s.theme_id, DEFAULT_THEME_ID);
+        assert_eq!(s.theme, "light", "默认主题两种模式都有,生效模式 = 偏好模式");
+        assert_eq!(s.preferred_mode, "light");
+        assert_eq!(s.enabled_agents, before.enabled_agents);
+        assert_eq!(s.start_minimized, before.start_minimized);
+        assert_eq!(s.currency, before.currency);
+        assert_eq!(s.pricing, before.pricing);
+        assert_eq!(s.limit_accounts, before.limit_accounts);
+
+        // 旧文件没有偏好模式:按 theme 推导后再重置
+        let mut old: Settings =
+            serde_json::from_str(r#"{"theme":"light","themeId":"warm-paper"}"#).unwrap();
+        old.reset_theme();
+        assert_eq!(old.theme_id, DEFAULT_THEME_ID);
+        assert_eq!(old.theme, "light");
+    }
+
+    /// 重置后落盘再读回:themeId 是 otr,文件里其它字段(含未知的旧字段之外的所有设置)不丢
+    #[test]
+    fn reset_theme_round_trips_through_the_settings_file() {
+        let dir = std::env::temp_dir().join(format!("otr-reset-theme-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"enabledAgents":["dsh","codex"],"theme":"light","preferredMode":"dark","themeId":"broken-theme","currency":"USD","exchangeRate":6.9,"startMinimized":true,"migratedV2":true}"#,
+        )
+        .unwrap();
+        let mut s = Settings::load(&path);
+        s.reset_theme();
+        s.save(&path).unwrap();
+        let back = Settings::load(&path);
+        assert_eq!(back.theme_id, DEFAULT_THEME_ID);
+        assert_eq!(back.theme, "dark");
+        assert_eq!(back.preferred_mode, "dark");
+        assert!(back.enabled_agents.iter().any(|a| a == "codex"));
+        assert_eq!(back.currency, "USD");
+        assert_eq!(back.exchange_rate, 6.9);
+        assert!(back.start_minimized);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 往返:账号配置存下来再读回来必须一致

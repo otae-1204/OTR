@@ -123,7 +123,9 @@
         "backdrop-filter": { "$ref": "#/definitions/cssValue", "description": "none,或最多 3 个 blur(≤ 40px) / saturate() / brightness() / contrast()(0–3 或 0–300%);同时写出 -webkit- 前缀" },
         "font-family": { "$ref": "#/definitions/cssValue", "description": "与 font token 同样的字体族语法,或 var(--font-sans|--font-mono)" },
         "box-shadow": { "$ref": "#/definitions/cssValue", "description": "与 shadow token 同样的语法(颜色须是字面量),或 var(--shadow|--shadow-sm|md|lg)" },
-        "text-shadow": { "$ref": "#/definitions/cssValue", "description": "逗号分隔的若干层:2–3 个长度 [颜色];不允许 inset" }
+        "text-shadow": { "$ref": "#/definitions/cssValue", "description": "逗号分隔的若干层:2–3 个长度 [颜色];不允许 inset" },
+        "font-size": { "type": "string", "maxLength": 256, "pattern": "^\\s*\\+?(0?\\.[89]\\d*|1(\\.[01]\\d*|\\.2(0*))?)(em|EM|Em|eM)\\s*$|^\\s*\\+?(8\\d(\\.\\d+)?|9\\d(\\.\\d+)?|1[01]\\d(\\.\\d+)?|120(\\.0+)?)%\\s*$", "description": "相对组件原字号的倍率:0.8em–1.2em 或 80%–120%(±20%)。不接受 px / rem / calc() / var() / 关键字。应用把它写成钩子上的倍率变量,每个元素按自己原来的字号缩放,嵌套钩子不累乘" },
+        "line-height": { "type": "string", "maxLength": 256, "pattern": "^\\s*\\+?(0?\\.[89]\\d*|1(\\.[01]\\d*|\\.2(0*))?)\\s*$|^\\s*\\+?(8\\d(\\.\\d+)?|9\\d(\\.\\d+)?|1[01]\\d(\\.\\d+)?|120(\\.0+)?)%\\s*$", "description": "相对组件原行高的倍率:无单位 0.8–1.2 或 80%–120%(±20%;注意不是 CSS 里「字号的几倍」)。不接受 em / px / normal / calc() / var()" }
       }
     },
     "tokens": {
@@ -154,14 +156,19 @@
             "input": { "$ref": "#/definitions/color" },
             "ring": { "$ref": "#/definitions/color" },
             "overlay": { "$ref": "#/definitions/color" },
-            "success": { "$ref": "#/definitions/color" },
-            "warning": { "$ref": "#/definitions/color" },
-            "danger": { "$ref": "#/definitions/color" },
+            "success": { "$ref": "#/definitions/color", "description": "状态填充色:进度条、开关「开」轨道(不再直接当文字用,文字见 successLabel)" },
+            "warning": { "$ref": "#/definitions/color", "description": "状态填充色:进度条(文字见 warningLabel)" },
+            "danger": { "$ref": "#/definitions/color", "description": "状态填充色:进度条(文字见 dangerLabel / dangerText)" },
             "info": { "$ref": "#/definitions/color" },
             "notice": { "$ref": "#/definitions/color" },
             "successText": { "$ref": "#/definitions/color" },
             "warningText": { "$ref": "#/definitions/color" },
-            "dangerText": { "$ref": "#/definitions/color" }
+            "dangerText": { "$ref": "#/definitions/color" },
+            "successLabel": { "$ref": "#/definitions/color", "description": "卡片上的独立状态文字(额度剩余 ≥50%、「缓存命中率」标题、保存成功提示)。可选,缺省回退到本主题写了的 success,再回退默认主题" },
+            "warningLabel": { "$ref": "#/definitions/color", "description": "卡片上的独立状态文字(额度剩余 25–50%、定价「手动」标签、Agent 卡 ⚠)。可选,缺省回退到本主题写了的 warning,再回退默认主题" },
+            "dangerLabel": { "$ref": "#/definitions/color", "description": "卡片上的独立状态文字(额度剩余 <25%)。可选,缺省回退到本主题写了的 dangerText,再回退默认主题" },
+            "switchThumb": { "$ref": "#/definitions/color", "description": "设置页开关「开」态的滑块(轨道是 success)。可选,缺省回退到本主题写了的 primaryForeground,再回退默认主题(白)" },
+            "switchThumbOff": { "$ref": "#/definitions/color", "description": "设置页开关「关」态的滑块(轨道是 mutedForeground 30% 叠在卡片上)。可选,缺省回退到本主题写了的 switchThumb,再回退默认主题(暗色白、亮色 zinc-500;不再沿用 primaryForeground)" }
           }
         },
         "stat": {

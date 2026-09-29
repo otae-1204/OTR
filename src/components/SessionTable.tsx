@@ -123,11 +123,13 @@ export function SessionTable({
                     .filter(Boolean)
                     .join(", ");
                   const tooltipTitle = sessionTooltip(s);
+                  // 行上重复写 text-sm(与 table 相同):单元格字号是继承来的,钩子元素自己带字号类,
+                  // 主题 css 的 font-size 倍率(docs §14.3)才作用得到
                   return (
                     <tr
                       key={s.sessionId ? `${s.agent}:${s.sessionId}` : `row-${i}`}
                       data-theme-part="table-row"
-                      className="border-b border-border/40 transition-colors last:border-0 hover:bg-muted/30"
+                      className="border-b border-border/40 text-sm transition-colors last:border-0 hover:bg-muted/30"
                     >
                       <td
                         className="whitespace-nowrap py-2.5 pr-3 text-muted-foreground"

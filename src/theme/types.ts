@@ -56,8 +56,34 @@ export const COLOR_TOKENS = [
   "successText",
   "warningText",
   "dangerText",
+  /**
+   * 状态色:直接放在卡片上的独立状态文字(额度剩余百分比、「缓存命中率」标题、
+   * 保存成功提示、定价「手动」标签、Agent 卡 ⚠)。apiVersion 1 内新增,可选,缺省见 COLOR_FALLBACKS
+   */
+  "successLabel",
+  "warningLabel",
+  "dangerLabel",
+  /** 设置页开关的滑块:开 / 关两态(轨道分别是 success 与 mutedForeground 30%)。新增,可选 */
+  "switchThumb",
+  "switchThumbOff",
 ] as const;
 export type ColorToken = (typeof COLOR_TOKENS)[number];
+
+/**
+ * 后加的可选颜色 token 在主题**自己没写**时的回退链:依次找主题自己(公共 `tokens` 或该模式)
+ * 写了的那个 token,用它解析后的值;链上一个都没写才用默认主题的值(与其它 token 一样)。
+ * 链首多是该位置在 token 出现之前用的 token,老主题这些位置的外观因此不变;
+ * 没碰这些颜色的主题则拿到默认主题为它们调好的可读值。
+ * 例外是 `switchThumbOff`:「关」态滑块以前用 primaryForeground,暗色主题常常因此看不见
+ * (Q11 要修的就是它),所以不回退到 primaryForeground,而是用默认主题该模式的「关」态滑块色。
+ */
+export const COLOR_FALLBACKS: Readonly<Partial<Record<ColorToken, readonly ColorToken[]>>> = {
+  successLabel: ["success"],
+  warningLabel: ["warning"],
+  dangerLabel: ["dangerText"],
+  switchThumb: ["primaryForeground"],
+  switchThumbOff: ["switchThumb"],
+};
 
 /** 统计卡各项指标的强调色(输入/输出/缓存读/缓存写/请求/成本) */
 export const STAT_TOKENS = [

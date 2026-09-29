@@ -17,6 +17,9 @@
  *   引号、反斜杠、尖括号、`@`、`*`、`:` 根本进不了分词器,`url()` / `@import` /
  *   `expression()` / `image-set()` / `!important` / 注释无从构造。
  * - `var()` 只能引用本主题体系导出的变量(`--primary` 等,见 `varKind`)。
+ * - `font-size` / `line-height` 只接受 0.8–1.2 的**倍率**(`1.1em` / `110%`;行高另可写 `1.1`),
+ *   序列化成钩子元素上的 `--otr-font-scale` / `--otr-line-scale`,由 Tailwind 的字号 / 行高类相乘:
+ *   每个元素都是「自己原来的字号 × 倍率」,嵌套钩子覆盖而不相乘(见 `SCALE_PROPS`)。
  * - 不合法的键 / 属性 / 值各自丢弃并报 warning(带 JSON 路径),不影响其余部分。
  *
  * 输出:`ThemeCss`(键 → 属性 → 归一化后的值);`serializeThemeCss` 把它变成
@@ -536,6 +539,45 @@ const backgroundImage: Grammar = (toks) => {
 
 const opacity: Grammar = single(alphaTok);
 
+/** 字号 / 行高倍率的上下限:组件原值的 ±20% */
+export const MIN_TEXT_SCALE = 0.8;
+export const MAX_TEXT_SCALE = 1.2;
+
+/**
+ * 倍率:`em`(字号)或无单位数(行高)0.8–1.2,或百分比 80%–120%。其它一律拒绝:
+ * px / rem / vw、calc() / var() / clamp()、`larger` / `inherit` 之类关键字、多个值。
+ * 归一化后保留原单位(`1.1em`、`110%`、`1.1`),序列化时再换成纯倍率。
+ */
+function scaleGrammar(unit: "em" | ""): Grammar {
+  return single((tok) => {
+    if (tok.t !== "num") return null;
+    if (tok.unit === "%") {
+      if (tok.v < MIN_TEXT_SCALE * 100 || tok.v > MAX_TEXT_SCALE * 100) return null;
+      return `${fmtNum(tok.v)}%`;
+    }
+    if (tok.unit !== unit || tok.v < MIN_TEXT_SCALE || tok.v > MAX_TEXT_SCALE) return null;
+    return `${fmtNum(tok.v)}${unit}`;
+  });
+}
+
+/** 归一化后的倍率值(`1.1em` / `110%` / `1.1`)→ 纯数字字符串 */
+function scaleFactor(value: string): string | null {
+  const m = /^(\d+(?:\.\d+)?)(em|%)?$/.exec(value);
+  if (!m) return null;
+  const v = Number(m[1]) / (m[2] === "%" ? 100 : 1);
+  return v >= MIN_TEXT_SCALE && v <= MAX_TEXT_SCALE ? fmtNum(v) : null;
+}
+
+/**
+ * 这两个属性不按字面写出:`font-size: 1.1em` 会相对**父元素**计算,钩子元素自己的字号类
+ * (`text-xs`)被覆盖后可能一下变成父元素的 1.1 倍(12px → 17.6px),±20% 根本守不住。
+ * 所以只在钩子元素上设置倍率变量,由 tailwind.config.js 里每个字号 / 行高类乘上它。
+ */
+const SCALE_PROPS: Record<string, string> = {
+  "font-size": "--otr-font-scale",
+  "line-height": "--otr-line-scale",
+};
+
 const fontWeight: Grammar = single((tok) => {
   if (tok.t === "ident") return ["normal", "bold", "lighter", "bolder"].includes(tok.v) ? tok.v : null;
   if (tok.t === "num" && tok.unit === "" && Number.isInteger(tok.v) && tok.v >= 1 && tok.v <= 1000) {
@@ -631,6 +673,8 @@ const GRAMMARS: Record<string, Grammar> = {
   "text-decoration-style": keyword("solid", "double", "dotted", "dashed", "wavy"),
   "text-decoration-color": single(colorTok),
   "backdrop-filter": backdropFilter,
+  "font-size": scaleGrammar("em"),
+  "line-height": scaleGrammar(""),
 };
 
 /** 走字符串语法的属性 */
@@ -643,13 +687,17 @@ const PROPERTY_SET: ReadonlySet<string> = new Set(CSS_PROPERTIES);
 /** 常见但被拒绝的属性 → 给作者的提示 */
 const PROPERTY_HINTS: Record<string, string> = {
   background: "请改用 background-color / background-image",
-  "font-size": "字号影响布局,不开放",
-  "line-height": "行高影响布局,不开放",
   transition: "过渡由界面自己控制,不开放",
   animation: "动画不开放",
   transform: "变换会破坏布局,不开放",
   filter: "只开放 backdrop-filter",
   outline: "只开放 outline-color",
+};
+
+/** 语法较窄、容易写错的属性 → 拒绝时给作者的提示 */
+const VALUE_HINTS: Record<string, string> = {
+  "font-size": "只接受相对组件原字号的倍率 0.8em–1.2em 或 80%–120%",
+  "line-height": "只接受相对组件原行高的倍率 0.8–1.2 或 80%–120%",
 };
 
 /**
@@ -689,7 +737,9 @@ export function normalizeDeclaration(
   }
   const grammar = GRAMMARS[prop];
   const value = grammar ? grammar(toks) : null;
-  return value != null ? { ok: true, value } : { ok: false, reason: "值不符合该属性的语法,已忽略" };
+  if (value != null) return { ok: true, value };
+  const hint = VALUE_HINTS[prop];
+  return { ok: false, reason: hint ? `值不符合该属性的语法(${hint}),已忽略` : "值不符合该属性的语法,已忽略" };
 }
 
 // ---------------------------------------------------------------------------
@@ -813,7 +863,8 @@ const VENDOR_PREFIXED: Record<string, string> = {
 };
 
 /**
- * 把归一化后的表变成样式文本。选择器由钩子名生成、属性只出白名单,每个值在这里**再跑一遍**
+ * 把归一化后的表变成样式文本。选择器由钩子名生成、属性只出白名单(`font-size` / `line-height`
+ * 写成倍率变量,见 `SCALE_PROPS`),每个值在这里**再跑一遍**
  * `normalizeDeclaration`(归一化是幂等的,对合法表零开销;对被篡改的表则把非法值丢掉),
  * 最后再过一次字符集检查。因此输出里不可能出现 `;` `{` `}` `<` `!` 之类的结构字符。
  */
@@ -832,6 +883,12 @@ export function serializeThemeCss(css: ThemeCss | undefined): string {
       if (!r.ok) continue;
       const value = r.value;
       if (!SAFE_OUTPUT_RE.test(value) || value.length > MAX_CSS_VALUE_LEN) continue;
+      const scaleVar = SCALE_PROPS[prop];
+      if (scaleVar) {
+        const factor = scaleFactor(value);
+        if (factor != null) decls.push(`${scaleVar}: ${factor}`);
+        continue;
+      }
       const prefixed = VENDOR_PREFIXED[prop];
       if (prefixed) decls.push(`${prefixed}: ${value}`);
       decls.push(`${prop}: ${value}`);

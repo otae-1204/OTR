@@ -33,7 +33,7 @@ function UrlLine({ url }: { url: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="mt-1.5 flex items-center gap-2">
-      <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-2 py-1 font-mono text-[11px]">
+      <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-2 py-1 font-mono text-11px">
         {url}
       </code>
       <button
@@ -47,7 +47,7 @@ function UrlLine({ url }: { url: string }) {
             () => undefined,
           );
         }}
-        className="shrink-0 text-[11px] font-medium text-primary"
+        className="shrink-0 text-11px font-medium text-primary"
       >
         {copied ? "已复制" : "复制"}
       </button>
@@ -64,7 +64,7 @@ function Steps({
     <ol className="mt-4 space-y-3">
       {steps.map((step, i) => (
         <li key={step.text} className="flex gap-3">
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[11px] font-semibold text-primary">
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-11px font-semibold text-primary">
             {i + 1}
           </span>
           <div className="min-w-0 pt-0.5 text-sm leading-relaxed">

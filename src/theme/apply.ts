@@ -8,13 +8,19 @@
  * 保证在同权重下覆盖 Tailwind 的工具类。
  * 同时把上次应用的变量与 css 缓存进 localStorage,下次启动在 React 挂载前先同步刷一遍,
  * 避免自定义主题的用户每次启动都先闪一下默认配色。
+ *
+ * 深浅模式有两个:**生效模式**(`token-show-theme`,上次真正画出来的模式,首帧用它)与
+ * **偏好模式**(`otr-preferred-mode`,用户在设置页选的;单模式主题不会改它)。设置文件
+ * (`preferredMode` / `theme`)是真相,这两个键只是首帧与读不到设置时的兜底。
  */
 
 import { sanitizeCss, serializeThemeCss } from "./css";
 import type { ResolvedTheme, ThemeCss, ThemeMode } from "./types";
 
-/** 深浅模式的本机记忆键(历史键名,保持兼容) */
+/** 生效模式的本机记忆键(历史键名,保持兼容);首帧按它切 `.dark` */
 export const MODE_STORAGE_KEY = "token-show-theme";
+/** 偏好模式的本机记忆键;只在读不到设置文件时兜底 */
+export const PREFERRED_MODE_STORAGE_KEY = "otr-preferred-mode";
 /** 上次应用的主题变量缓存 */
 export const THEME_CACHE_KEY = "otr-theme-cache";
 /** 受限自定义 CSS 的唯一注入点 */
@@ -52,6 +58,23 @@ export function storeMode(mode: ThemeMode): void {
   }
 }
 
+/** 本机记忆的偏好模式;没有时用生效模式(升级前只记了这一个) */
+export function readPreferredMode(): ThemeMode {
+  try {
+    return normalizeMode(localStorage.getItem(PREFERRED_MODE_STORAGE_KEY)) ?? readStoredMode();
+  } catch {
+    return readStoredMode();
+  }
+}
+
+export function storePreferredMode(mode: ThemeMode): void {
+  try {
+    localStorage.setItem(PREFERRED_MODE_STORAGE_KEY, mode);
+  } catch {
+    // 忽略
+  }
+}
+
 function readCache(): ThemeCache | null {
   try {
     const raw = localStorage.getItem(THEME_CACHE_KEY);
@@ -67,7 +90,8 @@ function readCache(): ThemeCache | null {
     }
     const vars: Record<string, string> = {};
     for (const [k, v] of Object.entries(c.vars)) {
-      if (/^--[a-z0-9-]+$/.test(k) && typeof v === "string") vars[k] = v;
+      // `--otr-*` 是应用自己的变量(字号 / 行高倍率只能由 css 表在钩子上设置),不从缓存恢复
+      if (/^--[a-z0-9-]+$/.test(k) && !k.startsWith("--otr-") && typeof v === "string") vars[k] = v;
     }
     // 缓存里的 css 表不信任,整张过一遍与清单相同的校验
     const css = c.css === undefined ? undefined : sanitizeCss(c.css);
@@ -141,6 +165,24 @@ export function applyResolvedTheme(theme: ResolvedTheme): void {
   document.documentElement.dataset.theme = theme.id;
   storeMode(theme.mode);
   writeCache(theme);
+}
+
+/**
+ * 托盘「恢复默认主题」时先把 DOM 恢复成 index.css 的兜底(= 默认主题):移除受控 <style>、
+ * `<html>` 上的主题变量与首帧缓存。随后 ThemeProvider 按新设置重新应用。
+ * Rust 侧也会对每个窗口执行一段等价的固定脚本(themes.rs `RESET_SCRIPT`),前端脚本坏了也能生效。
+ */
+export function resetThemeDom(): void {
+  document.getElementById(THEME_STYLE_ID)?.remove();
+  const style = document.documentElement.style;
+  for (const name of applied) style.removeProperty(name);
+  applied.clear();
+  delete document.documentElement.dataset.theme;
+  try {
+    localStorage.removeItem(THEME_CACHE_KEY);
+  } catch {
+    // 忽略
+  }
 }
 
 /**

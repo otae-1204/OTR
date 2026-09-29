@@ -192,8 +192,16 @@ export const DEFAULT_LIMIT_PROVIDERS = ["cursor", "codex", "deepseek", "qwen"];
 export interface Settings {
   enabledAgents: string[];
   startMinimized: boolean;
-  /** 深浅模式:"dark" | "light"(历史字段名,含义是模式而不是主题) */
+  /**
+   * 生效的深浅模式:"dark" | "light"(历史字段名,含义是模式而不是主题)。
+   * 选中单模式主题时它跟着变;用户的选择记在 preferredMode。
+   */
   theme: string;
+  /**
+   * 用户偏好的深浅模式:"dark" | "light"。只由设置页的深浅按钮修改,单模式主题不会改它;
+   * 换回支持该模式的主题时按它恢复。旧设置文件缺这个字段时由 theme 推导。
+   */
+  preferredMode?: string;
   /** 当前主题 id(内置 "otr" 或用户主题目录里的主题);缺省 = "otr" */
   themeId?: string;
   customAgents: CustomAgentConfig[];

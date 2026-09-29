@@ -97,6 +97,14 @@ const OTR_LIGHT: ThemeTokens = {
     successText: "#059669", // emerald-600
     warningText: "#d97706", // amber-600
     dangerText: "#ef4444", // red-500
+    // 独立状态文字:改造前这几处用的是填充色(emerald/amber-500,白底上只有 2.2–2.5:1),
+    // 现在各深一到两档,白色卡片上 ≥ 4.5:1
+    successLabel: "#047857", // emerald-700
+    warningLabel: "#b45309", // amber-700
+    dangerLabel: "#dc2626", // red-600
+    // 开关滑块:开 = 白(与改造前相同);关 = zinc-500,浅灰轨道上 3.3:1(改造前白色只有 1.5:1)
+    switchThumb: "#ffffff",
+    switchThumbOff: "#71717a", // zinc-500
   },
 };
 
@@ -130,6 +138,12 @@ const OTR_DARK: ThemeTokens = {
     successText: "#34d399", // emerald-400
     warningText: "#fbbf24", // amber-400
     dangerText: "#ef4444",
+    // 暗色卡片上 emerald/amber-500 本来就够(5.9 / 7.0:1),保持不变;红色改浅一档(3.97 → 5.4:1)
+    successLabel: "#10b981", // emerald-500
+    warningLabel: "#f59e0b", // amber-500
+    dangerLabel: "#f87171", // red-400
+    switchThumb: "#ffffff",
+    switchThumbOff: "#ffffff",
   },
 };
 

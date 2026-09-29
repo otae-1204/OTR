@@ -31,7 +31,7 @@ function MiniStat({
       title={title}
     >
       <div
-        className={`flex items-center gap-1.5 text-[11px] font-medium ${accent}`}
+        className={`flex items-center gap-1.5 text-11px font-medium ${accent}`}
       >
         {icon}
         <span className="tracking-wide">{label}</span>
@@ -132,8 +132,8 @@ export function StatCard({
 
       {/* 缓存命中率进度条 */}
       <div className="mt-3" title={HIT_RATE_TIP}>
-        <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-          <span className="flex items-center gap-1.5 font-medium text-success">
+        <div className="flex items-center justify-between text-11px text-muted-foreground">
+          <span className="flex items-center gap-1.5 font-medium text-success-label">
             <DatabaseIcon className="h-3 w-3" />
             缓存命中率
           </span>

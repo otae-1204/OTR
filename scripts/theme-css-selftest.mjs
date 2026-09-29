@@ -1,16 +1,21 @@
 #!/usr/bin/env node
 /**
- * 受限自定义 CSS(`css` 字段)校验器的自检用例。
+ * 主题接口的自检用例(以受限自定义 CSS 校验器为主)。
  *
  *   node scripts/theme-css-selftest.mjs        (或 npm run test:theme)
  *
- * 仓库没有前端测试框架,这里用最朴素的断言跑一遍 src/theme/css.ts 的关键行为:
- * 分词器的字符集、属性白名单、值语法、var() 越权、钩子/状态键、限额、序列化输出的形状,
- * 以及各种注入尝试(分号 / 花括号 / url() / @import / expression() / !important / 注释 / 引号 …)
- * 全部被丢弃。跑的是应用里同一份代码(通过 esbuild 打包导入)。退出码:有失败为 1。
+ * 仓库没有前端测试框架,这里用最朴素的断言跑一遍 src/theme/ 的关键行为:
+ * - css.ts:分词器的字符集、属性白名单、值语法、var() 越权、钩子/状态键、限额、序列化输出的形状,
+ *   以及各种注入尝试(分号 / 花括号 / url() / @import / expression() / !important / 注释 / 引号 …)
+ *   全部被丢弃;font-size / line-height 只接受 ±20% 的倍率并写成倍率变量;
+ * - 后加 token 的回退链(successLabel / switchThumb …)、单模式主题不改偏好模式(decide);
+ * - 与代码之外的几处保持同步:docs/theme.schema.json、src/index.css 的兜底变量、
+ *   tailwind.config.js 的字号 / 行高倍率、组件里没有绕开倍率的任意字号、Rust 侧的复位脚本常量。
+ * 跑的是应用里同一份代码(通过 esbuild 打包导入)。退出码:有失败为 1。
  */
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { loadThemeModule, repoRoot } from "./lib/load-theme.mjs";
 
 const T = await loadThemeModule("theme-selftest");
@@ -27,6 +32,14 @@ const {
   sanitizeCss,
   validateManifest,
   resolveTheme,
+  decide,
+  parseColor,
+  COLOR_TOKENS,
+  COLOR_FALLBACKS,
+  OTR_THEME,
+  THEME_CACHE_KEY,
+  THEME_STYLE_ID,
+  THEME_RESET_EVENT,
 } = T;
 
 let pass = 0;
@@ -329,6 +342,44 @@ accepts("background-clip", "text", "text");
 rejects("background-clip", "url(x)");
 accepts("outline-color", "hsl(var(--ring))");
 
+// 字号 / 行高:只接受 ±20% 的倍率(Q15)
+accepts("font-size", "1.1em", "1.1em");
+accepts("font-size", "0.8em", "0.8em");
+accepts("font-size", "1.2em", "1.2em");
+accepts("font-size", "1em", "1em");
+accepts("font-size", ".9em", "0.9em");
+accepts("font-size", "1.15EM", "1.15em");
+accepts("font-size", "+1.1em", "1.1em");
+accepts("font-size", "80%", "80%");
+accepts("font-size", "120%", "120%");
+accepts("font-size", "105.5%", "105.5%");
+for (const bad of [
+  "1.21em", "0.79em", "1.2001em", "121%", "79%", "0", "0em", "-1em", "-1.1em", "1.1", "14px", "1rem", "1.1rem",
+  "1.1vw", "1.1ex", "1.1ch", "1.1lh", "1.1rlh", "1.1cap", "calc(1em * 1.1)", "calc(1.1em)", "min(1.1em, 20px)",
+  "max(1em, 1.1em)", "clamp(1em, 1.1em, 1.2em)", "var(--font-size)", "var(--otr-font-scale)", "larger", "smaller",
+  "medium", "x-large", "inherit", "initial", "unset", "revert", "1.1em 1.1em", "1.1em, 1em", "1.1em/1.5", "1.1 em",
+  "1.1em !important", "1.1em;", "1.1em; font-size: 5em", "1.1em } body { font-size: 5em", "10em", "1e1em", "1.1e0em",
+  "attr(data-size em)", "env(x)",
+]) {
+  rejects("font-size", bad);
+}
+accepts("line-height", "1", "1");
+accepts("line-height", "0.8", "0.8");
+accepts("line-height", "1.2", "1.2");
+accepts("line-height", "1.15", "1.15");
+accepts("line-height", "90%", "90%");
+accepts("line-height", "120%", "120%");
+for (const bad of [
+  "1.5", "0.5", "2", "1.21", "0.79", "121%", "0", "-1", "20px", "1rem", "1.1em", "normal", "calc(1.1)", "var(--x)",
+  "1 1", "1.1;", "1.1 !important", "inherit", "1.1px",
+]) {
+  rejects("line-height", bad);
+}
+{
+  const r = normalizeDeclaration("font-size", "14px");
+  check("font-size rejection explains the rule", !r.ok && r.reason.includes("0.8em–1.2em"), r.ok ? "" : r.reason);
+}
+
 // 通用注入尝试:对每个白名单属性都试一遍
 const INJECTIONS = [
   "#fff; position: fixed",
@@ -498,6 +549,27 @@ function run(raw, path = "tokens.css") {
   check("serialize lines are well-formed", lines.every((l) => /^(\[data-theme-part~="[a-z0-9-]+"\](:[a-z-]+|\[data-theme-state~="selected"\])? \{|  [a-z-]+: [^;{}<>!@\\]*;|\})$/.test(l)));
 }
 {
+  // font-size / line-height 不按字面输出,写成钩子上的倍率变量(Q15)
+  const text = serializeThemeCss({
+    "card-title": { "font-size": "1.1em", "line-height": "90%", "letter-spacing": "0.02em" },
+    "page-title": { "font-size": "115%" },
+  });
+  const expected = [
+    '[data-theme-part~="card-title"] {',
+    "  --otr-font-scale: 1.1;",
+    "  --otr-line-scale: 0.9;",
+    "  letter-spacing: 0.02em;",
+    "}",
+    '[data-theme-part~="page-title"] {',
+    "  --otr-font-scale: 1.15;",
+    "}",
+  ].join("\n");
+  check("serialize scale props as multiplier variables", text === expected, JSON.stringify(text));
+  check("serialize never writes font-size / line-height literally", !/(^|\s)(font-size|line-height):/m.test(text));
+  const tampered = serializeThemeCss({ card: { "font-size": "3em", "line-height": "2", opacity: "0.5" }, badge: { "font-size": "14px" } });
+  check("serialize drops out-of-range scale", tampered === '[data-theme-part~="card"] {\n  opacity: 0.5;\n}', JSON.stringify(tampered));
+}
+{
   const cleaned = sanitizeCss({
     card: { color: "#ffffff", position: "fixed" },
     body: { color: "#fff" },
@@ -543,6 +615,173 @@ function run(raw, path = "tokens.css") {
 }
 
 // ---------------------------------------------------------------------------
+// 10b. 后加 token 的回退链(Q10 / Q11):先回退主题自己写了的「原先那个 token」,再回退默认主题
+// ---------------------------------------------------------------------------
+{
+  const vars = (raw, mode) => {
+    const { manifest, diagnostics } = validateManifest({ apiVersion: 1, id: "t", name: "T", ...raw });
+    check(`fallback fixture valid ${JSON.stringify(raw).slice(0, 60)}`, manifest && diagnostics.length === 0, JSON.stringify(diagnostics));
+    return resolveTheme(manifest, mode, "user").cssVars;
+  };
+  const builtin = (mode) => resolveTheme(OTR_THEME, mode, "builtin").cssVars;
+  check("new tokens are in the catalog", ["successLabel", "warningLabel", "dangerLabel", "switchThumb", "switchThumbOff"].every((k) => COLOR_TOKENS.includes(k)));
+  check("every fallback chain points at catalog tokens", Object.entries(COLOR_FALLBACKS).every(([k, chain]) => COLOR_TOKENS.includes(k) && chain.every((c) => COLOR_TOKENS.includes(c))));
+  // 1) 老主题:写了 success / warning / dangerText / primaryForeground,没写新 token → 与之前逐位相同
+  const old = vars({ modes: { light: { colors: { success: "#2e7d32", warning: "#8a5a00", dangerText: "#a01010", primaryForeground: "#111111" } } } }, "light");
+  check("old theme: successLabel ← success", old["--success-label"] === old["--success"]);
+  check("old theme: warningLabel ← warning", old["--warning-label"] === old["--warning"]);
+  check("old theme: dangerLabel ← dangerText", old["--danger-label"] === old["--danger-text"]);
+  check("old theme: switchThumb ← primaryForeground", old["--switch-thumb"] === old["--primary-foreground"]);
+  check("old theme: switchThumbOff does NOT follow primaryForeground (Q11 fix) → default", old["--switch-thumb-off"] === builtin("light")["--switch-thumb-off"], old["--switch-thumb-off"]);
+  // 旧版霓虹夜那样的暗色主题(深色 primaryForeground):「开」态沿用它,「关」态自动变成默认的白色
+  const neonOld = vars({ modes: { dark: { colors: { primaryForeground: "#041017", success: "#2ef08a" } } } }, "dark");
+  check("old dark theme: switchThumb ← dark primaryForeground", neonOld["--switch-thumb"] === neonOld["--primary-foreground"]);
+  check("old dark theme: switchThumbOff = default white", neonOld["--switch-thumb-off"] === "0 0% 100%", neonOld["--switch-thumb-off"]);
+  // 2) 没碰这些颜色的主题 → 默认主题为新 token 调的值
+  for (const mode of ["dark", "light"]) {
+    const plain = vars({ modes: { [mode]: { colors: { background: mode === "dark" ? "#101418" : "#fafafa" } } } }, mode);
+    const b = builtin(mode);
+    for (const k of ["--success-label", "--warning-label", "--danger-label", "--switch-thumb", "--switch-thumb-off"]) {
+      check(`untouched theme (${mode}) ${k} = default`, plain[k] === b[k], `${plain[k]} vs ${b[k]}`);
+    }
+  }
+  // 3) 公共 tokens 里写的也算「主题自己写了」;模式里写的新 token 优先
+  const common = vars({ tokens: { colors: { success: "#2e7d32" } }, modes: { dark: {} } }, "dark");
+  check("common success feeds successLabel", common["--success-label"] === common["--success"]);
+  const own = vars({ tokens: { colors: { success: "#2e7d32" } }, modes: { dark: { colors: { successLabel: "#7dffb6" } } } }, "dark");
+  check("own successLabel wins", own["--success-label"] === "146.3 100% 74.5%" && own["--success-label"] !== own["--success"], own["--success-label"]);
+  // 4) switchThumbOff:只写了一个滑块色(switchThumb)时两态同色
+  const thumbOnly = vars({ modes: { dark: { colors: { switchThumb: "#eeeeee", primaryForeground: "#000000" } } } }, "dark");
+  check("switchThumbOff ← switchThumb", thumbOnly["--switch-thumb-off"] === thumbOnly["--switch-thumb"]);
+  const both = vars({ modes: { dark: { colors: { switchThumb: "#000000", switchThumbOff: "#ffffff" } } } }, "dark");
+  check("switchThumbOff explicit", both["--switch-thumb-off"] === "0 0% 100%" && both["--switch-thumb"] === "0 0% 0%");
+  // 5) 默认主题的新文字 token 在两种模式下对卡片 ≥ 4.5:1(Q10 要求)
+  const lum = ({ r, g, b }) => {
+    const f = (v) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const contrast = (a, b) => {
+    const [x, y] = [lum(parseColor(a)), lum(parseColor(b))];
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  };
+  for (const mode of ["dark", "light"]) {
+    const b = builtin(mode);
+    for (const k of ["--success-label", "--warning-label", "--danger-label"]) {
+      const v = contrast(b[k], b["--card"]);
+      check(`builtin ${mode} ${k} ≥ 4.5:1 on card`, v >= 4.5, v.toFixed(2));
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 10c. 偏好模式(Q14):单模式主题只改变生效模式,偏好原样带回
+// ---------------------------------------------------------------------------
+{
+  const entry = (m, modes, source = "user") => ({ id: m.id, name: m.name, source, path: null, manifest: m, diagnostics: [], modes });
+  const { manifest: lightOnly } = validateManifest({ apiVersion: 1, id: "paper", name: "Paper", modes: { light: {} } });
+  const entries = [entry(OTR_THEME, ["dark", "light"], "builtin"), entry(lightOnly, ["light"])];
+  const a = decide(entries, "paper", "dark").outcome;
+  check("single-mode theme: effective mode switches", a.mode === "light" && a.id === "paper");
+  check("single-mode theme: preference kept", a.preferredMode === "dark");
+  check("single-mode theme: reason mentions it", typeof a.fallbackReason === "string" && a.fallbackReason.includes("没有暗色"));
+  const back = decide(entries, "otr", a.preferredMode).outcome;
+  check("back to dual-mode theme: preference restored", back.mode === "dark" && back.preferredMode === "dark" && back.fallbackReason === null);
+  const missing = decide(entries, "gone", "light").outcome;
+  check("missing theme falls back with preference", missing.id === "otr" && missing.mode === "light" && missing.preferredMode === "light");
+}
+
+// ---------------------------------------------------------------------------
+// 10d. 字号 / 行高倍率的落地(Q15):tailwind 的每一档都乘倍率变量;组件里没有绕开它的任意字号
+// ---------------------------------------------------------------------------
+{
+  const tw = (await import(pathToFileURL(path.join(repoRoot, "tailwind.config.js")).href)).default;
+  const fsz = tw.theme?.extend?.fontSize ?? {};
+  const lhs = tw.theme?.extend?.lineHeight ?? {};
+  const sizeOf = (v) => (Array.isArray(v) ? v[0] : v);
+  check("tailwind fontSize overrides the default scale", ["xs", "sm", "base", "lg", "xl", "2xl", "3xl", "10px", "11px"].every((k) => k in fsz));
+  for (const [k, v] of Object.entries(fsz)) {
+    check(`tailwind text-${k} multiplies --otr-font-scale`, /^calc\([0-9.]+rem \* var\(--otr-font-scale, 1\)\)$/.test(sizeOf(v)), sizeOf(v));
+    if (Array.isArray(v)) check(`tailwind text-${k} line-height multiplies --otr-line-scale`, /var\(--otr-line-scale, 1\)/.test(v[1]), v[1]);
+  }
+  for (const [k, v] of Object.entries(lhs)) {
+    check(`tailwind leading-${k} multiplies --otr-line-scale`, /^calc\([0-9.]+(rem)? \* var\(--otr-line-scale, 1\)\)$/.test(v), v);
+  }
+  check("tailwind lineHeight covers the default keys", ["none", "tight", "snug", "normal", "relaxed", "loose", "3", "4", "5", "6", "7", "8", "9", "10"].every((k) => k in lhs));
+  // 组件里的任意字号 / 行高(text-[12px]、leading-[1.1])不会乘倍率,±20% 的保证就漏了
+  const offenders = [];
+  const walk = (dir) => {
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) walk(p);
+      else if (/\.(tsx?|css|html)$/.test(ent.name)) {
+        const src = fs.readFileSync(p, "utf8");
+        for (const m of src.matchAll(/\b(text-\[(?:length:)?[0-9.]+[a-z%]*\]|leading-\[[^\]]*\])/g)) offenders.push(`${path.relative(repoRoot, p)}: ${m[1]}`);
+        if (/font-size\s*:/.test(src) && !p.endsWith(path.join("theme", "css.ts"))) offenders.push(`${path.relative(repoRoot, p)}: font-size`);
+      }
+    }
+  };
+  walk(path.join(repoRoot, "src"));
+  check("no arbitrary font-size / line-height outside the scaled scale", offenders.length === 0, offenders.join(" | "));
+  // 端到端:清单 → 解析 → 文本里只出现倍率变量
+  const { manifest, diagnostics } = validateManifest({
+    apiVersion: 1, id: "fs", name: "FS", modes: { dark: { css: { "card-title": { "font-size": "1.1em" }, badge: { "font-size": "20px", "line-height": "1.1" }, table: { "line-height": "1.5" } } } },
+  });
+  const r = resolveTheme(manifest, "dark", "user");
+  const cssText = serializeThemeCss(r.css);
+  check("e2e font-size scale", cssText.includes("--otr-font-scale: 1.1;") && cssText.includes("--otr-line-scale: 1.1;") && !cssText.includes("20px"), cssText);
+  check("e2e font-size diagnostics", diagnostics.map((d) => d.path).sort().join("|") === "modes.dark.css.badge.font-size|modes.dark.css.table.line-height", JSON.stringify(diagnostics));
+}
+
+// ---------------------------------------------------------------------------
+// 10e. index.css 的兜底变量与内置默认主题逐位一致(改一处必须改另一处)
+// ---------------------------------------------------------------------------
+{
+  const css = fs.readFileSync(path.join(repoRoot, "src", "index.css"), "utf8");
+  const block = (sel) => {
+    const m = new RegExp(`(^|\\n)${sel.replace(".", "\\.")}\\s*\\{([^}]*)\\}`).exec(css);
+    const out = {};
+    for (const decl of (m?.[2] ?? "").split(";")) {
+      const i = decl.indexOf(":");
+      if (i < 0) continue;
+      const name = decl.slice(0, i).trim();
+      if (name.startsWith("--")) out[name] = decl.slice(i + 1).replace(/\s+/g, " ").trim();
+    }
+    return out;
+  };
+  const root = block(":root");
+  const dark = { ...root, ...block(".dark") };
+  for (const [mode, fallback] of [["light", root], ["dark", dark]]) {
+    const vars = resolveTheme(OTR_THEME, mode, "builtin").cssVars;
+    const diffs = [];
+    for (const [k, v] of Object.entries(vars)) {
+      if (k.startsWith("--chart-") || k.startsWith("--agent-")) continue;
+      if (fallback[k] !== v) diffs.push(`${k}: index.css=${fallback[k]} builtin=${v}`);
+    }
+    check(`index.css ${mode} fallback matches builtin theme`, diffs.length === 0, diffs.join(" | "));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 10f. 托盘「恢复默认主题」(Q16):Rust 的复位脚本与事件名和前端常量一致
+// ---------------------------------------------------------------------------
+{
+  const rs = fs.readFileSync(path.join(repoRoot, "src-tauri", "src", "themes.rs"), "utf8");
+  const script = /pub const RESET_SCRIPT: &str = r#"([\s\S]*?)"#;/.exec(rs)?.[1] ?? "";
+  const event = /pub const RESET_EVENT: &str = "([^"]*)";/.exec(rs)?.[1];
+  check("rust RESET_EVENT matches THEME_RESET_EVENT", event === THEME_RESET_EVENT, `${event} vs ${THEME_RESET_EVENT}`);
+  check("rust RESET_SCRIPT clears the frontend cache key", script.includes(`localStorage.removeItem("${THEME_CACHE_KEY}")`));
+  check("rust RESET_SCRIPT removes the managed style element", script.includes(`getElementById("${THEME_STYLE_ID}")`));
+  check("rust RESET_SCRIPT is plain JS", (() => {
+    try {
+      new Function(script);
+      return true;
+    } catch {
+      return false;
+    }
+  })());
+}
+
+// ---------------------------------------------------------------------------
 // 11. docs/theme.schema.json 与代码保持同步(钩子目录、状态、属性白名单)
 // ---------------------------------------------------------------------------
 {
@@ -556,6 +795,15 @@ function run(raw, path = "tokens.css") {
   check("schema: parts list identical", partsInPattern.join("|") === THEME_PARTS.join("|"), `schema=${partsInPattern.length} code=${THEME_PARTS.length}`);
   const blockProps = Object.keys(schema.definitions?.cssBlock?.properties ?? {});
   check("schema: property whitelist identical", blockProps.slice().sort().join("|") === CSS_PROPERTIES.slice().sort().join("|"), `schema=${blockProps.length} code=${CSS_PROPERTIES.length}`);
+  const colorProps = Object.keys(schema.definitions?.tokens?.properties?.colors?.properties ?? {});
+  check("schema: color token list identical", colorProps.join("|") === COLOR_TOKENS.join("|"), `schema=${colorProps.length} code=${COLOR_TOKENS.length}`);
+  // font-size / line-height 的 schema 正则与代码的判定一致(编辑器提示不能比应用更松或更严)
+  for (const prop of ["font-size", "line-height"]) {
+    const re = new RegExp(schema.definitions.cssBlock.properties[prop].pattern);
+    const samples = ["1", "1.1", "0.8", "1.2", "1.21", "0.79", "1.1em", "0.8em", "1.2em", "1.25em", "0.75em", ".9em", "1.2EM", "+1.1em", "80%", "120%", "121%", "79%", "100.5%", "14px", "1rem", "normal", "calc(1em)", "1.5", "2", "0", "-1em"];
+    const mismatch = samples.filter((v) => re.test(v) !== normalizeDeclaration(prop, v).ok);
+    check(`schema: ${prop} pattern agrees with code`, mismatch.length === 0, mismatch.join(" "));
+  }
 }
 
 // ---------------------------------------------------------------------------

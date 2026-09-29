@@ -14,7 +14,14 @@ export {
   sanitizeCss,
 } from "./css";
 export { resolveTheme, pickAgentColor, defaultTokens } from "./resolve";
-export { applyResolvedTheme, bootTheme, readStoredMode } from "./apply";
+export {
+  applyResolvedTheme,
+  bootTheme,
+  readStoredMode,
+  resetThemeDom,
+  THEME_CACHE_KEY,
+  THEME_STYLE_ID,
+} from "./apply";
 export { BUILTIN_THEMES, OTR_THEME } from "./builtin";
 export { loadThemeListing } from "./registry";
-export { ThemeProvider, useTheme, decide } from "./ThemeProvider";
+export { ThemeProvider, useTheme, decide, THEME_RESET_EVENT } from "./ThemeProvider";

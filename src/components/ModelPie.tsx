@@ -198,7 +198,7 @@ export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps)
               </PieChart>
             </ResponsiveContainer>
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-10px text-muted-foreground">
                 {selected ?? rangeLabel}
               </span>
               <span className="text-lg font-bold tabular-nums tracking-tight">
@@ -283,7 +283,7 @@ export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps)
                   key={label}
                   className="rounded-lg border border-border/40 bg-background/60 px-3 py-2.5"
                 >
-                  <div className="text-[11px] text-muted-foreground">
+                  <div className="text-11px text-muted-foreground">
                     {label}
                   </div>
                   <div className="mt-0.5 text-base font-semibold tabular-nums">

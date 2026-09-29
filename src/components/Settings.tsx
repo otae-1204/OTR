@@ -68,7 +68,10 @@ function Badge({
   );
 }
 
-/** 自制开关:w-11 h-6 轨道,选中 bg-success,thumb 平移动画 */
+/**
+ * 自制开关:w-11 h-6 轨道,开 = bg-success、关 = mutedForeground 30%;
+ * 滑块颜色是主题的 switchThumb / switchThumbOff,平移动画。设置页所有开关都用它。
+ */
 function Toggle({
   checked,
   disabled,
@@ -96,8 +99,8 @@ function Toggle({
     >
       <span
         data-theme-part="switch-thumb"
-        className={`inline-block h-5 w-5 rounded-full bg-primary-foreground shadow transition-transform duration-200 ${
-          checked ? "translate-x-5" : "translate-x-0.5"
+        className={`inline-block h-5 w-5 rounded-full shadow transition-[transform,background-color] duration-200 ${
+          checked ? "translate-x-5 bg-switch-thumb" : "translate-x-0.5 bg-switch-thumb-off"
         }`}
       />
     </button>
@@ -354,7 +357,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                       type="button"
                       onClick={() => openGuide(p)}
                       data-theme-part="button"
-                      className="inline-flex h-6 shrink-0 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium transition-colors hover:border-primary/60 hover:text-primary"
+                      className="inline-flex h-6 shrink-0 items-center rounded-md border border-border bg-background px-2 text-11px font-medium transition-colors hover:border-primary/60 hover:text-primary"
                     >
                       教程
                     </button>
@@ -609,7 +612,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
           );
         })}
       </div>
-      {msg ? <p className="px-4 py-2 text-xs text-success">{msg}</p> : null}
+      {msg ? <p className="px-4 py-2 text-xs text-success-label">{msg}</p> : null}
       {err ? <p className="px-4 py-2 text-xs text-danger-text">{err}</p> : null}
     </div>
   );
@@ -837,10 +840,11 @@ export function Settings({
     void persist({ ...settings, enabledAgents: [...enabled] });
   };
 
+  /** 深浅按钮改的是**偏好**模式;theme 字段同步记下生效模式(旧版本应用只认它) */
   const applyTheme = (mode: ThemeMode) => {
     const outcome = themeCtx.setMode(mode);
     if (settings) {
-      const next = { ...settings, theme: outcome.mode };
+      const next = { ...settings, preferredMode: outcome.preferredMode, theme: outcome.mode };
       setSettings(next);
       void api.saveSettings(next).catch(() => undefined);
     }
@@ -849,12 +853,44 @@ export function Settings({
   const applyThemeId = (id: string) => {
     const outcome = themeCtx.selectTheme(id);
     if (settings) {
-      // 主题不支持当前模式时会自动切模式,一并记下来
-      const next = { ...settings, themeId: id, theme: outcome.mode };
+      // 单模式主题只改变生效模式,偏好模式原样保留,换回双模式主题时恢复
+      const next = {
+        ...settings,
+        themeId: id,
+        preferredMode: outcome.preferredMode,
+        theme: outcome.mode,
+      };
       setSettings(next);
       void api.saveSettings(next).catch(() => undefined);
     }
   };
+
+  // 托盘「恢复默认主题」由 Rust 直接改写设置文件;把本页快照里的外观字段同步过来,
+  // 否则之后在本页保存别的设置时会把旧的 themeId 写回去
+  const resetSeq = themeCtx.resetSeq;
+  useEffect(() => {
+    if (resetSeq === 0) return;
+    let active = true;
+    api
+      .getSettings()
+      .then((fresh) => {
+        if (!active) return;
+        setSettings((cur) =>
+          cur
+            ? {
+                ...cur,
+                themeId: fresh.themeId,
+                theme: fresh.theme,
+                preferredMode: fresh.preferredMode,
+              }
+            : fresh,
+        );
+      })
+      .catch((err) => console.error("[Settings] getSettings 失败", err));
+    return () => {
+      active = false;
+    };
+  }, [resetSeq]);
 
   const [themeReloading, setThemeReloading] = useState(false);
   const reloadThemes = async () => {
@@ -869,8 +905,13 @@ export function Settings({
   const activeEntry: ThemeEntry | undefined = themeCtx.entries.find(
     (e) => e.id === themeCtx.theme.id && e.manifest,
   );
-  const modeSupported = (mode: ThemeMode) =>
-    !activeEntry || activeEntry.modes.includes(mode);
+  /** 当前主题只提供一种模式时是那个模式;此时深浅按钮整体禁用(偏好保留,换回双模式主题时恢复) */
+  const singleMode: ThemeMode | null =
+    activeEntry && activeEntry.modes.length === 1 ? activeEntry.modes[0] : null;
+  const modeLabel = (m: ThemeMode) => (m === "dark" ? "暗色" : "亮色");
+  const modeLockedTip = singleMode
+    ? `当前主题只提供${modeLabel(singleMode)};换回双模式主题后可修改深浅偏好`
+    : undefined;
   const selectedExists = themeCtx.entries.some(
     (e) => e.id === themeCtx.selectedId && e.manifest,
   );
@@ -1506,7 +1547,9 @@ export function Settings({
 
           <div className="overflow-x-auto">
             <table data-theme-part="table" className="w-full min-w-[640px] text-xs">
-              <thead data-theme-part="table-head">
+              {/* 表头 / 行上重复写 text-xs:单元格的字号是继承来的,钩子元素自己带字号类,
+                  主题 css 的 font-size 倍率(docs §14.3)才作用得到 */}
+              <thead data-theme-part="table-head" className="text-xs">
                 <tr className="border-b border-border/60 text-left text-muted-foreground">
                   <th className="py-1.5 pr-2 font-medium">模型</th>
                   <th className="py-1.5 pr-2 text-right font-medium">输入 $/M</th>
@@ -1560,16 +1603,16 @@ export function Settings({
                       <tr
                         key={model}
                         data-theme-part="table-row"
-                        className="border-b border-border/30"
+                        className="border-b border-border/30 text-xs"
                       >
                         <td className="max-w-[220px] py-1.5 pr-2" title={model}>
                           <div className="truncate">{model}</div>
                           <div
-                            className={`mt-0.5 text-[10px] ${
+                            className={`mt-0.5 text-10px ${
                               !p
                                 ? "text-muted-foreground/50"
                                 : src === "manual"
-                                  ? "text-warning"
+                                  ? "text-warning-label"
                                   : "text-muted-foreground/70"
                             }`}
                           >
@@ -1716,18 +1759,18 @@ export function Settings({
               </button>
             </div>
           </div>
-          <p className="mt-2 break-all text-[11px] text-muted-foreground">
+          <p className="mt-2 break-all text-11px text-muted-foreground">
             第三方主题:把 <code className="font-mono">theme.json</code> 放进{" "}
             <code className="font-mono">{themeCtx.themesDir ?? "(应用数据目录)/themes"}</code>
             {" "}后重新扫描;格式见 docs/theme_interface.md
           </p>
           {themeCtx.listingError ? (
-            <p className="mt-1 text-[11px] text-danger-text">
+            <p className="mt-1 text-11px text-danger-text">
               主题目录读取失败:{themeCtx.listingError}
             </p>
           ) : null}
           {themeIssues.length > 0 ? (
-            <ul className="mt-2 space-y-1 text-[11px]">
+            <ul className="mt-2 space-y-1 text-11px">
               {themeIssues.map((e) => (
                 <li key={e.path ?? e.id}>
                   <span className="font-medium">{e.name}</span>
@@ -1760,9 +1803,11 @@ export function Settings({
           <div>
             <div className="text-sm font-medium">深浅模式</div>
             <div className="mt-0.5 text-xs text-muted-foreground">
-              当前:{theme === "dark" ? "暗色" : "亮色"}
-              {activeEntry && activeEntry.modes.length === 1
-                ? `(该主题只提供${activeEntry.modes[0] === "dark" ? "暗色" : "亮色"})`
+              当前:{modeLabel(theme)}
+              {singleMode
+                ? themeCtx.preferredMode !== singleMode
+                  ? `(该主题只提供${modeLabel(singleMode)};你偏好的${modeLabel(themeCtx.preferredMode)}会在换回双模式主题时恢复)`
+                  : `(该主题只提供${modeLabel(singleMode)})`
                 : ""}
             </div>
           </div>
@@ -1770,8 +1815,8 @@ export function Settings({
             <button
               type="button"
               onClick={() => applyTheme("dark")}
-              disabled={!modeSupported("dark")}
-              title={modeSupported("dark") ? undefined : "当前主题没有暗色模式"}
+              disabled={singleMode !== null}
+              title={modeLockedTip}
               data-theme-part="segmented-button"
               data-theme-state={theme === "dark" ? "selected" : undefined}
               className={`flex h-7 items-center gap-1 rounded-lg px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -1786,8 +1831,8 @@ export function Settings({
             <button
               type="button"
               onClick={() => applyTheme("light")}
-              disabled={!modeSupported("light")}
-              title={modeSupported("light") ? undefined : "当前主题没有亮色模式"}
+              disabled={singleMode !== null}
+              title={modeLockedTip}
               data-theme-part="segmented-button"
               data-theme-state={theme === "light" ? "selected" : undefined}
               className={`flex h-7 items-center gap-1 rounded-lg px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -1804,30 +1849,18 @@ export function Settings({
 
         <div className="flex items-center justify-between border-t border-border/40 px-4 py-3">
           <div className="text-sm font-medium">启动时最小化到托盘</div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={settings?.startMinimized ?? false}
-            onClick={() =>
+          {/* 与其它开关同一个组件(以前是一套 primary 轨道 + background 滑块的小号实现) */}
+          <Toggle
+            checked={settings?.startMinimized ?? false}
+            onChange={() =>
               settings &&
               void persist({
                 ...settings,
                 startMinimized: !settings.startMinimized,
               })
             }
-            data-theme-part="switch"
-            data-theme-state={settings?.startMinimized ? "selected" : undefined}
-            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
-              settings?.startMinimized ? "bg-primary" : "bg-muted"
-            }`}
-          >
-            <span
-              data-theme-part="switch-thumb"
-              className={`absolute top-0.5 h-4 w-4 rounded-full bg-background shadow transition-all ${
-                settings?.startMinimized ? "left-[18px]" : "left-0.5"
-              }`}
-            />
-          </button>
+            ariaLabel="启动时最小化到托盘"
+          />
         </div>
       </SectionCard>
     </div>

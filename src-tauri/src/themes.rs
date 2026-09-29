@@ -21,6 +21,23 @@ pub const MAX_THEMES: usize = 64;
 pub const THEME_DIR_NAME: &str = "themes";
 pub const THEME_FILE_NAME: &str = "theme.json";
 
+/// 托盘「恢复默认主题」之后发给前端的事件;与前端 `THEME_RESET_EVENT`(ThemeProvider.tsx)一致。
+pub const RESET_EVENT: &str = "theme://reset";
+
+/// 「恢复默认主题」时对每个窗口执行的固定脚本:清掉首帧缓存、移除受控的主题 `<style>` 与
+/// `<html>` 上的主题变量,页面立刻回到 index.css 的兜底外观(= 默认主题)。
+/// 与前端 `resetThemeDom()`(apply.ts)等价,但不依赖前端脚本还活着 —— 主题把界面弄得
+/// 不可见、甚至前端的事件监听没挂上时也生效。编译期常量,不拼接任何输入;
+/// 键名与前端 `THEME_CACHE_KEY` / `THEME_STYLE_ID` 一致(`npm run test:theme` 会对照)。
+pub const RESET_SCRIPT: &str = r#"(function () {
+  try { localStorage.removeItem("otr-theme-cache"); } catch (e) {}
+  var s = document.getElementById("otr-theme-css");
+  if (s) s.remove();
+  var r = document.documentElement;
+  r.removeAttribute("style");
+  r.removeAttribute("data-theme");
+})();"#;
+
 /// 一个候选主题文件。`contents` 与 `error` 二选一。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -161,6 +178,24 @@ pub fn discover(dir: &Path) -> Vec<ThemeFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 复位脚本只碰主题自己的三样东西(首帧缓存、受控 <style>、<html> 内联变量),
+    /// 而且是个自执行的固定函数:没有格式化占位符、没有网络 / 存储的其它键
+    #[test]
+    fn reset_script_only_touches_theme_state() {
+        assert!(RESET_SCRIPT.starts_with("(function () {") && RESET_SCRIPT.ends_with("})();"));
+        assert!(RESET_SCRIPT.contains(r#"localStorage.removeItem("otr-theme-cache")"#));
+        assert!(RESET_SCRIPT.contains(r#"getElementById("otr-theme-css")"#));
+        assert!(RESET_SCRIPT.contains(r#"removeAttribute("style")"#));
+        for banned in ["${", "fetch", "XMLHttpRequest", "clear()", "innerHTML", "eval"] {
+            assert!(!RESET_SCRIPT.contains(banned), "复位脚本不该含 {banned}");
+        }
+        assert_eq!(
+            RESET_SCRIPT.matches('{').count(),
+            RESET_SCRIPT.matches('}').count()
+        );
+        assert_eq!(RESET_EVENT, "theme://reset");
+    }
 
     fn temp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

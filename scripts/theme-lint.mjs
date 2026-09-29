@@ -7,7 +7,8 @@
  *
  * 用的是应用里同一份校验/解析代码(src/theme/),所以这里通过 = 应用里能加载。
  * 输出:错误/警告列表(含 `css` 字段的逐条诊断)、每个模式解析后的关键 token、
- * 受限自定义 CSS 的规则数。退出码:有 error 为 1,否则 0。
+ * 后加的可选 token(状态文字 / 开关滑块)实际取到的值与来源、受限自定义 CSS 的规则数。
+ * 退出码:有 error 为 1,否则 0。
  * 依赖 esbuild(vite 自带),先 `npm install`。
  *
  * css 校验器本身的自检用例在 scripts/theme-css-selftest.mjs(`npm run test:theme`)。
@@ -24,7 +25,27 @@ if (files.length === 0) {
 }
 
 const theme = await loadThemeModule("theme-lint");
-const { parseThemeFile, resolveTheme, serializeThemeCss, BUILTIN_THEMES, THEME_API_VERSION } = theme;
+const {
+  parseThemeFile,
+  resolveTheme,
+  serializeThemeCss,
+  BUILTIN_THEMES,
+  THEME_API_VERSION,
+  COLOR_FALLBACKS,
+} = theme;
+const kebab = (s) => s.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+
+/** 后加的可选 token 取到的值与来源:主题自己写的 / 回退自主题的某个 token / 默认主题 */
+function fallbackSummary(manifest, mode, vars) {
+  const own = { ...manifest.tokens?.colors, ...manifest.modes[mode]?.colors };
+  return Object.entries(COLOR_FALLBACKS)
+    .map(([token, chain]) => {
+      const from = own[token] !== undefined ? null : chain.find((k) => own[k] !== undefined);
+      const src = own[token] !== undefined ? "" : from ? `(← ${from})` : "(默认主题)";
+      return `${token}=${vars[`--${kebab(token)}`]}${src}`;
+    })
+    .join(" ");
+}
 const reserved = BUILTIN_THEMES.map((t) => t.id);
 let failed = false;
 
@@ -62,6 +83,7 @@ for (const file of files) {
     console.log(
       `    palette=[${r.chart.palette.join(", ")}] agents=${JSON.stringify(r.chart.agents)}`,
     );
+    console.log(`    ${fallbackSummary(manifest, mode, v)}`);
     const keys = Object.keys(r.css);
     const decls = keys.reduce((n, k) => n + Object.keys(r.css[k]).length, 0);
     console.log(`    css: ${keys.length} 个钩子条目,${decls} 条声明`);

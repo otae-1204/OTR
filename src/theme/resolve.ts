@@ -8,16 +8,21 @@
  *
  * `chart.palette` / `chart.agentFallback` 整组替换;`chart.agents` 按 Agent id 合并;
  * `css` 按「钩子[:状态] → 属性」粒度合并。
+ *
+ * 例外:后加的可选颜色 token(`COLOR_FALLBACKS`,如 `successLabel` / `switchThumb`)在主题
+ * 自己没写时,先回退到主题自己写了的「原先那个 token」,再回退默认主题(见 applyColorFallbacks)。
  */
 
 import { OTR_THEME } from "./builtin";
 import { kebab, mergeCss } from "./css";
 import {
+  COLOR_FALLBACKS,
   COLOR_TOKENS,
   FONT_TOKENS,
   RADIUS_TOKENS,
   SHADOW_TOKENS,
   STAT_TOKENS,
+  type ColorToken,
   type ResolvedTheme,
   type ThemeManifest,
   type ThemeMode,
@@ -50,6 +55,22 @@ export function defaultTokens(mode: ThemeMode): ThemeTokens {
 }
 
 /**
+ * 后加 token 的回退:主题(公共 + 该模式)没写 `token` 时,沿 `COLOR_FALLBACKS[token]` 找主题
+ * 自己写了的第一个 token,取它叠加后的值;链上都没写就保留默认主题的值(已在 `t` 里)。
+ * 所以老主题(写了 success、没写 successLabel)这几处的颜色与之前逐位相同。
+ */
+function applyColorFallbacks(t: ThemeTokens, manifest: ThemeManifest, mode: ThemeMode): void {
+  const own = { ...manifest.tokens?.colors, ...manifest.modes[mode]?.colors };
+  const colors = { ...t.colors };
+  for (const [token, chain] of Object.entries(COLOR_FALLBACKS) as [ColorToken, readonly ColorToken[]][]) {
+    if (own[token] !== undefined) continue;
+    const from = chain.find((k) => own[k] !== undefined);
+    if (from) colors[token] = colors[from];
+  }
+  t.colors = colors;
+}
+
+/**
  * 解析。`mode` 不在主题支持的模式里也能解析:颜色来自默认主题该模式,
  * 公共 token 仍然生效。调用方应优先切到主题支持的模式(见 ThemeProvider)。
  */
@@ -61,6 +82,7 @@ export function resolveTheme(
   let t = defaultTokens(mode);
   t = mergeTokens(t, manifest.tokens);
   t = mergeTokens(t, manifest.modes[mode]);
+  applyColorFallbacks(t, manifest, mode);
 
   const cssVars: Record<string, string> = {};
   for (const k of COLOR_TOKENS) cssVars[`--${kebab(k)}`] = t.colors?.[k] ?? "";

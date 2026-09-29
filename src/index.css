@@ -36,6 +36,11 @@
   --success-text: 161.4 93.5% 30.4%;
   --warning-text: 32.1 94.6% 43.7%;
   --danger-text: 0 84.2% 60.2%;
+  --success-label: 162.9 93.5% 24.3%;
+  --warning-label: 26 90.5% 37.1%;
+  --danger-label: 0 72.2% 50.6%;
+  --switch-thumb: 0 0% 100%;
+  --switch-thumb-off: 240 3.8% 46.1%;
   --stat-input: 217.2 91.2% 59.8%;
   --stat-output: 270.7 91% 65.1%;
   --stat-cache-read: 160.1 84.1% 39.4%;
@@ -81,6 +86,10 @@
   --success-text: 158.1 64.4% 51.6%;
   --warning-text: 43.3 96.4% 56.3%;
   --danger-text: 0 84.2% 60.2%;
+  --success-label: 160.1 84.1% 39.4%;
+  --warning-label: 37.7 92.1% 50.2%;
+  --danger-label: 0 90.6% 70.8%;
+  --switch-thumb-off: 0 0% 100%;
   color-scheme: dark;
 }
 

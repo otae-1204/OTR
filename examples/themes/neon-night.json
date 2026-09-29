@@ -3,9 +3,9 @@
   "apiVersion": 1,
   "id": "neon-night",
   "name": "霓虹夜 Neon Night",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "OTR 示例主题",
-  "description": "只有暗色的示例主题:近黑紫底、青色霓虹主色、品红焦点环、高饱和图表,等宽字体、直角与发光阴影。",
+  "description": "只有暗色的示例主题:近黑紫底、青色霓虹主色、品红焦点环、高饱和图表,等宽字体、直角与发光阴影;开关滑块开深关浅。",
   "homepage": "https://github.com/otae-1204/OTR",
   "tokens": {
     "font": {
@@ -39,12 +39,17 @@
         "overlay": "#9ff4ff",
         "success": "#2ef08a",
         "warning": "#ffc53d",
-        "danger": "#ff4d6d",
+        "danger": "#ff6680",
         "info": "#4da3ff",
         "notice": "#ff4fd8",
         "successText": "#7dffb6",
         "warningText": "#ffd97a",
-        "dangerText": "#ff7c95"
+        "dangerText": "#ff7c95",
+        "successLabel": "#2ef08a",
+        "warningLabel": "#ffc53d",
+        "dangerLabel": "#ff7c95",
+        "switchThumb": "#041017",
+        "switchThumbOff": "#eeecff"
       },
       "stat": {
         "input": "#4da3ff",
@@ -79,7 +84,7 @@
       },
       "shadow": {
         "sm": "0 0 0 1px rgba(34, 211, 238, 0.30), 0 0 14px -2px rgba(34, 211, 238, 0.45)",
-        "base": "0 0 0 1px rgba(238, 236, 255, 0.70), 0 1px 4px 0 rgba(0, 0, 0, 0.60)",
+        "base": "0 1px 3px 0 rgba(0, 0, 0, 0.60), 0 0 8px -1px rgba(34, 211, 238, 0.50)",
         "md": "0 0 0 1px rgba(34, 211, 238, 0.55), 0 0 20px -2px rgba(34, 211, 238, 0.55)",
         "lg": "0 0 0 1px rgba(255, 79, 216, 0.40), 0 12px 32px -8px rgba(0, 0, 0, 0.85)"
       }

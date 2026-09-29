@@ -3,9 +3,9 @@
   "apiVersion": 1,
   "id": "warm-paper",
   "name": "暖纸 Warm Paper",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "OTR 示例主题",
-  "description": "只有亮色的示例主题:米白纸张底色、墨褐正文、陶土色主色、大地色图表,衬线字体与柔和的暖色阴影;附带少量 css 演示(卡片与顶栏的纸张渐变、标题字距)。",
+  "description": "只有亮色的示例主题:米白纸张底色、墨褐正文、陶土色主色、大地色图表,衬线字体与柔和的暖色阴影;附带少量 css 演示(卡片与顶栏的纸张渐变、标题字距与放大 15% 的页面标题)。",
   "homepage": "https://github.com/otae-1204/OTR",
   "tokens": {
     "font": {
@@ -48,7 +48,12 @@
         "notice": "#b1360f",
         "successText": "#2e5f1d",
         "warningText": "#7a4e00",
-        "dangerText": "#9f1d17"
+        "dangerText": "#9f1d17",
+        "successLabel": "#3b7526",
+        "warningLabel": "#8f5d00",
+        "dangerLabel": "#9f1d17",
+        "switchThumb": "#fffaf2",
+        "switchThumbOff": "#75624f"
       },
       "stat": {
         "input": "#235b94",
@@ -112,7 +117,8 @@
           "letter-spacing": "0.02em"
         },
         "page-title": {
-          "letter-spacing": "0.04em"
+          "letter-spacing": "0.04em",
+          "font-size": "1.15em"
         },
         "badge": {
           "border": "1px solid rgba(74, 52, 30, 0.12)"

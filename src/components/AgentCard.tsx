@@ -67,7 +67,7 @@ export function AgentCard({
             {status.notice ? (
               <span
                 title={status.notice}
-                className="shrink-0 cursor-help text-warning"
+                className="shrink-0 cursor-help text-warning-label"
               >
                 ⚠
               </span>
