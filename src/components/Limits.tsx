@@ -37,16 +37,16 @@ const POLL_INTERVAL_MS = 60_000;
 /** 剩余百分比的配色:绿 ≥50、橙 ≥25、红 <25 */
 function remainingTone(usedPercent: number): string {
   const left = 100 - usedPercent;
-  if (left >= 50) return "bg-emerald-500";
-  if (left >= 25) return "bg-amber-500";
-  return "bg-red-500";
+  if (left >= 50) return "bg-success";
+  if (left >= 25) return "bg-warning";
+  return "bg-danger";
 }
 
 function remainingText(usedPercent: number): string {
   const left = 100 - usedPercent;
-  if (left >= 50) return "text-emerald-500";
-  if (left >= 25) return "text-amber-500";
-  return "text-red-500";
+  if (left >= 50) return "text-success";
+  if (left >= 25) return "text-warning";
+  return "text-danger-text";
 }
 
 /** 重置倒计时:只说到"天/小时/分钟"这一档,秒级跳动没有信息量 */
@@ -313,7 +313,7 @@ function AccountTitle({ data, now }: { data: ProviderLimits; now: number }) {
           </span>
         ) : null}
         {!data.configured ? (
-          <span className="shrink-0 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+          <span className="shrink-0 rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning-text">
             待配置
           </span>
         ) : null}
@@ -330,7 +330,7 @@ function AccountTitle({ data, now }: { data: ProviderLimits; now: number }) {
       ) : null}
       {hasData && data.error ? (
         <p
-          className="mt-1 text-[11px] text-amber-600 dark:text-amber-400"
+          className="mt-1 text-[11px] text-warning-text"
           title={data.error}
         >
           刷新失败,显示 {fmtClock(data.fetchedAt)} 的缓存
@@ -363,7 +363,7 @@ function DragGrip({
       aria-label={label}
       title={label}
       onPointerDown={onPointerDown}
-      className={`flex h-8 w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-muted-foreground/45 hover:bg-black/5 hover:text-foreground active:cursor-grabbing group-hover/row:text-muted-foreground/80 dark:hover:bg-white/5 ${
+      className={`flex h-8 w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-muted-foreground/45 hover:bg-overlay/5 hover:text-foreground active:cursor-grabbing group-hover/row:text-muted-foreground/80 ${
         className ?? ""
       }`}
     >
@@ -661,7 +661,7 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
             type="button"
             disabled={loading}
             onClick={() => void load(true)}
-            className="flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+            className="flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium transition-colors hover:bg-overlay/5 disabled:opacity-50"
           >
             <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             刷新
@@ -810,7 +810,7 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
                       ) : (
                         <p
                           className={`min-w-0 text-xs leading-relaxed md:col-span-5 md:col-start-5 ${
-                            records[0].configured ? "text-red-500" : "text-muted-foreground"
+                            records[0].configured ? "text-danger-text" : "text-muted-foreground"
                           }`}
                         >
                           {records[0].error ?? "暂无数据"}
@@ -830,7 +830,7 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
         </div>
       )}
 
-      {error ? <p className="text-xs text-red-500">{error}</p> : null}
+      {error ? <p className="text-xs text-danger-text">{error}</p> : null}
     </div>
   );
 }

@@ -2,6 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * 这里的变量是 JS 跑起来之前的兜底,数值与内置默认主题(src/theme/builtin.ts)逐位一致。
+ * 运行时由 src/theme/apply.ts 把当前主题的变量写到 <html> 的内联样式上(优先级更高)。
+ * 改这里务必同步 builtin.ts;新增 token 也要两边一起加。
+ */
 :root {
   --background: 0 0% 100%;
   --foreground: 240 6% 10%;
@@ -22,7 +27,33 @@
   --border: 240 5.9% 90%;
   --input: 240 5.9% 90%;
   --ring: 210 100% 56%;
+  --overlay: 0 0% 0%;
+  --success: 160.1 84.1% 39.4%;
+  --warning: 37.7 92.1% 50.2%;
+  --danger: 0 84.2% 60.2%;
+  --info: 198.6 88.7% 48.4%;
+  --notice: 24.6 95% 53.1%;
+  --success-text: 161.4 93.5% 30.4%;
+  --warning-text: 32.1 94.6% 43.7%;
+  --danger-text: 0 84.2% 60.2%;
+  --stat-input: 217.2 91.2% 59.8%;
+  --stat-output: 270.7 91% 65.1%;
+  --stat-cache-read: 160.1 84.1% 39.4%;
+  --stat-cache-write: 37.7 92.1% 50.2%;
+  --stat-calls: 198.6 88.7% 48.4%;
+  --stat-cost: 142.1 70.6% 45.3%;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
   --radius: 0.5rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 0.875rem;
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
   color-scheme: light;
 }
 
@@ -46,6 +77,10 @@
   --border: 240 5% 24%;
   --input: 240 5% 24%;
   --ring: 210 100% 56%;
+  --overlay: 0 0% 100%;
+  --success-text: 158.1 64.4% 51.6%;
+  --warning-text: 43.3 96.4% 56.3%;
+  --danger-text: 0 84.2% 60.2%;
   color-scheme: dark;
 }
 
@@ -64,8 +99,7 @@ body {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-sans);
 }
 
 *:focus-visible {
@@ -79,4 +113,3 @@ body {
 .pie-card .recharts-surface:focus {
   outline: none;
 }
-

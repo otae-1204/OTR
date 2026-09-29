@@ -99,6 +99,13 @@ impl Default for LimitAccount {
     }
 }
 
+/// 默认主题 id(内置,随应用打包)
+pub const DEFAULT_THEME_ID: &str = "otr";
+
+fn default_theme_id() -> String {
+    DEFAULT_THEME_ID.to_string()
+}
+
 /// 额度默认刷新间隔:60 秒。额度是慢变量,再密也没有信息增量,只会白烧请求。
 fn default_refresh_secs() -> u64 {
     60
@@ -202,7 +209,12 @@ impl CustomAgentConfig {
 pub struct Settings {
     pub enabled_agents: Vec<String>,
     pub start_minimized: bool,
+    /// 深浅模式:"dark" | "light"。历史字段名,含义是**模式**;主题见 `theme_id`。
     pub theme: String,
+    /// 当前主题 id:内置 "otr",或 `<数据目录>/themes/` 里某个清单的 id。
+    /// 后端只负责存取;找不到 / 校验失败时由前端回退到默认主题(不改这个值)。
+    #[serde(default = "default_theme_id")]
+    pub theme_id: String,
     pub custom_agents: Vec<CustomAgentConfig>,
     /// 模型定价表(model → $/M tokens)。**成本的唯一权威**:填了定价的模型一律按它重算,
     /// 没填的才回退到数据自带成本(币种由 Provider::native_cost_currency 声明)。
@@ -255,6 +267,7 @@ impl Default for Settings {
             enabled_agents: BUILTIN_AGENTS.iter().map(|s| s.to_string()).collect(),
             start_minimized: false,
             theme: "dark".into(),
+            theme_id: default_theme_id(),
             custom_agents: vec![],
             pricing: std::collections::HashMap::new(),
             pricing_source: std::collections::HashMap::new(),
@@ -424,6 +437,21 @@ mod tests {
         assert_eq!(s.limit_accounts.len(), 0);
         assert_eq!(s.refresh_secs, 60);
         assert!(s.limit_providers.iter().any(|p| p == "cursor"));
+        assert_eq!(s.theme_id, DEFAULT_THEME_ID, "旧文件缺 themeId 时用默认主题");
+        assert_eq!(s.theme, "dark");
+    }
+
+    /// 主题选择往返:themeId 以 camelCase 落盘,读回一致;模式字段不受影响
+    #[test]
+    fn theme_id_round_trips_and_keeps_mode() {
+        let mut s = Settings::default();
+        s.theme_id = "nord".into();
+        s.theme = "light".into();
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(text.contains("\"themeId\":\"nord\""), "{text}");
+        let back: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.theme_id, "nord");
+        assert_eq!(back.theme, "light");
     }
 
     /// 往返:账号配置存下来再读回来必须一致

@@ -1,4 +1,6 @@
 /** @type {import('tailwindcss').Config} */
+// 颜色 / 圆角 / 阴影 / 字体全部引用 CSS 变量:变量的值由主题决定(src/theme/),
+// index.css 里是 JS 跑起来之前的兜底(= 内置默认主题)。token 清单见 docs/theme_interface.md。
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   darkMode: ["selector", ".dark"],
@@ -38,10 +40,47 @@ export default {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
+        /** hover 叠加基色:用法 `hover:bg-overlay/5` */
+        overlay: "hsl(var(--overlay))",
+        /** 状态色:DEFAULT 用于填充,text 用于浅色底上的文字 */
+        success: {
+          DEFAULT: "hsl(var(--success))",
+          text: "hsl(var(--success-text))",
+        },
+        warning: {
+          DEFAULT: "hsl(var(--warning))",
+          text: "hsl(var(--warning-text))",
+        },
+        danger: {
+          DEFAULT: "hsl(var(--danger))",
+          text: "hsl(var(--danger-text))",
+        },
+        info: "hsl(var(--info))",
+        notice: "hsl(var(--notice))",
+        /** 统计卡各项指标的强调色 */
+        stat: {
+          input: "hsl(var(--stat-input))",
+          output: "hsl(var(--stat-output))",
+          "cache-read": "hsl(var(--stat-cache-read))",
+          "cache-write": "hsl(var(--stat-cache-write))",
+          calls: "hsl(var(--stat-calls))",
+          cost: "hsl(var(--stat-cost))",
+        },
       },
       borderRadius: {
-        lg: "0.75rem",
-        xl: "0.875rem",
+        md: "var(--radius-md)",
+        lg: "var(--radius-lg)",
+        xl: "var(--radius-xl)",
+      },
+      boxShadow: {
+        sm: "var(--shadow-sm)",
+        DEFAULT: "var(--shadow)",
+        md: "var(--shadow-md)",
+        lg: "var(--shadow-lg)",
+      },
+      fontFamily: {
+        sans: "var(--font-sans)",
+        mono: "var(--font-mono)",
       },
       keyframes: {
         "fade-in": {

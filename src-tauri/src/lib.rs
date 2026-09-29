@@ -8,6 +8,7 @@ pub mod pricing;
 pub mod providers;
 pub mod settings;
 pub mod store;
+pub mod themes;
 pub mod tray;
 pub mod watcher;
 
@@ -210,6 +211,8 @@ pub fn run() {
             commands::save_limit_credential,
             commands::delete_limit_credential,
             commands::open_cookie_guide,
+            commands::list_themes,
+            commands::get_themes_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OTR");

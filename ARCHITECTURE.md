@@ -266,7 +266,8 @@ src-tauri/
 │   ├── model.rs               # UsageRecord / 视图结构 / 时间与格式化工具
 │   ├── commands.rs            # Tauri 命令(见 §8)
 │   ├── store.rs               # SQLite:快照写入、游标、CostBasis、历史查询
-│   ├── settings.rs            # 用户设置:启停 agent、定价表、币种汇率、自定义 Agent、额度账号
+│   ├── settings.rs            # 用户设置:启停 agent、定价表、币种汇率、自定义 Agent、额度账号、主题 id
+│   ├── themes.rs              # 用户主题目录的发现与读取(只做文件系统层;校验在前端)
 │   ├── paths.rs               # 各 Agent 数据目录探测
 │   ├── pricing.rs             # DeepSeek curated 定价表 + 一次性迁移
 │   ├── peak.rs                # 峰谷时段判定 + 按桶的峰值占比
@@ -316,6 +317,7 @@ src/
 ├── api/bindings.ts              # 手写的类型与命令封装
 ├── hooks/useUsageData.ts        # summary + agents + settings;事件订阅 + 30s 轮询 + in-flight 去重
 ├── lib/{format,range,remote}.ts # 格式化 / 日期区间 / GitHub 版本 + 实时汇率
+├── theme/                       # 主题接口:token 目录、清单校验、解析、应用、ThemeProvider(见 docs/theme_interface.md)
 └── components/
     StatCard.tsx  AgentCard.tsx  TrendChart.tsx
     ModelPie.tsx  SessionTable.tsx  Settings.tsx
@@ -338,6 +340,7 @@ src/
 - `rescan(full?)`(手动扫描;有 pending 合并)
 - `list_models() -> Vec<String>`(设置页定价表用)
 - `get_settings() / save_settings(s)`(`save_settings` 不改额度账号和来源开关,那两样由下面的命令维护,避免设置页其它区块用打开时的快照把刚加的账号盖掉)
+- `list_themes() / get_themes_dir()`(主题:枚举并读出 `<数据目录>/themes/` 里的清单文件,无参数、跳过符号链接、单文件限 256 KiB;解析与校验在前端 `src/theme/`,见 `docs/theme_interface.md`)
 
 **额度页 Commands**
 - `get_limits() -> Vec<ProviderLimits>`(读内存缓存,**不发网络**,供前端秒开)

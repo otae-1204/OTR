@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ThemeFile } from "../theme/types";
 
 export interface Totals {
   inputTokens: number;
@@ -191,7 +192,10 @@ export const DEFAULT_LIMIT_PROVIDERS = ["cursor", "codex", "deepseek", "qwen"];
 export interface Settings {
   enabledAgents: string[];
   startMinimized: boolean;
+  /** 深浅模式:"dark" | "light"(历史字段名,含义是模式而不是主题) */
   theme: string;
+  /** 当前主题 id(内置 "otr" 或用户主题目录里的主题);缺省 = "otr" */
+  themeId?: string;
   customAgents: CustomAgentConfig[];
   pricing: Record<string, PriceEntry>;
   /** 定价来源:model -> "manual" | "models.dev:<provider>";仅用于 UI 展示 */
@@ -218,32 +222,10 @@ export const AGENT_LABELS: Record<string, string> = {
   cursor: "Cursor",
 };
 
-export const AGENT_COLORS: Record<string, string> = {
-  dsh: "#8b5cf6",
-  "claude-code": "#f59e0b",
-  codex: "#3b82f6",
-  zcode: "#10b981",
-  opencode: "#06b6d4",
-  pi: "#ec4899",
-  cursor: "#A3A3A3",
-};
-
-const FALLBACK_PALETTE = [
-  "#ec4899",
-  "#f97316",
-  "#84cc16",
-  "#a855f7",
-  "#14b8a6",
-  "#eab308",
-];
-
-/** 未知 Agent(自定义等)的稳定配色:按 id 哈希取色 */
-export function agentColor(id: string): string {
-  if (AGENT_COLORS[id]) return AGENT_COLORS[id];
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return FALLBACK_PALETTE[h % FALLBACK_PALETTE.length];
-}
+/*
+ * Agent 品牌色与图表调色板现在由主题提供(src/theme/),
+ * 组件通过 useTheme().agentColor(id) 取色;默认值见 src/theme/builtin.ts。
+ */
 
 export const api = {
   listAgents: () => invoke<AgentStatus[]>("list_agents"),
@@ -295,4 +277,7 @@ export const api = {
   /** 打开 Cookie 教程窗口。只在用户点击时调用。 */
   openCookieGuide: (provider: string) =>
     invoke<void>("open_cookie_guide", { provider }),
+  // 主题:Rust 只负责枚举并读出用户主题目录里的文件,解析与校验在前端 src/theme/
+  listThemes: () => invoke<ThemeFile[]>("list_themes"),
+  getThemesDir: () => invoke<string>("get_themes_dir"),
 };

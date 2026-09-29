@@ -1,4 +1,5 @@
-import { agentColor, type AgentStatus } from "../api/bindings";
+import type { AgentStatus } from "../api/bindings";
+import { useTheme } from "../theme/ThemeProvider";
 import { fmtTokens } from "../lib/format";
 import { AgentIcon, usesImageIcon } from "./AgentIcon";
 
@@ -25,6 +26,7 @@ export function AgentCard({
   selected,
   onSelect,
 }: AgentCardProps) {
+  const { agentColor } = useTheme();
   const color = agentColor(status.id);
   const label = status.displayName || status.id;
   const pct =
@@ -63,7 +65,7 @@ export function AgentCard({
             {status.notice ? (
               <span
                 title={status.notice}
-                className="shrink-0 cursor-help text-amber-500"
+                className="shrink-0 cursor-help text-warning"
               >
                 ⚠
               </span>

@@ -1,0 +1,166 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/otae-1204/OTR/docs/theme.schema.json",
+  "title": "OTR theme manifest (apiVersion 1)",
+  "description": "OTR(Otae's Token Radar)主题清单。放在 <应用数据目录>/themes/<name>.json 或 themes/<name>/theme.json。详见 docs/theme_interface.md。",
+  "type": "object",
+  "required": ["apiVersion", "id", "name", "modes"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "apiVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "主题格式版本。当前为 1。"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+      "description": "唯一 id:小写字母/数字开头,允许 - _ .,最长 64。不能是内置主题的 id(otr)。"
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "展示名" },
+    "version": { "type": "string", "maxLength": 32, "description": "主题自己的版本号,仅展示" },
+    "author": { "type": "string", "maxLength": 200 },
+    "description": { "type": "string", "maxLength": 200 },
+    "homepage": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^https?://",
+      "description": "仅作文本展示,应用不会访问它"
+    },
+    "tokens": {
+      "$ref": "#/definitions/tokens",
+      "description": "与深浅模式无关的公共 token(字体、圆角、图表调色板等;颜色也可以放这里)"
+    },
+    "modes": {
+      "type": "object",
+      "description": "按模式的 token。至少提供 dark 或 light 其中之一;缺的模式在应用里不可选。",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "dark": { "$ref": "#/definitions/tokens" },
+        "light": { "$ref": "#/definitions/tokens" }
+      }
+    }
+  },
+  "definitions": {
+    "color": {
+      "type": "string",
+      "description": "不透明颜色:#rgb / #rrggbb / rgb() / hsl() / 裸 HSL 三元组 \"240 5% 12%\"。不接受颜色关键字,不接受透明度。",
+      "pattern": "^(#[0-9a-fA-F]{3}|#[0-9a-fA-F]{6}|#[0-9a-fA-F]{4}|#[0-9a-fA-F]{8}|rgba?\\(.*\\)|hsla?\\(.*\\)|-?[0-9.]+\\s+-?[0-9.]+%\\s+-?[0-9.]+%)$"
+    },
+    "colorList": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": { "$ref": "#/definitions/color" }
+    },
+    "length": {
+      "type": "string",
+      "pattern": "^(0|(\\d+(\\.\\d+)?|\\.\\d+)(px|rem|em))$",
+      "description": "0 或带 px/rem/em 的非负数(px ≤ 128,rem/em ≤ 8)"
+    },
+    "shadow": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "none,或逗号分隔的若干层:[inset] 2–4 个长度 [颜色];颜色可带透明度"
+    },
+    "fontFamily": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "逗号分隔的字体族;只允许字母/数字/空格/引号/逗号/连字符/下划线/点(含中文)"
+    },
+    "tokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "colors": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "background": { "$ref": "#/definitions/color" },
+            "foreground": { "$ref": "#/definitions/color" },
+            "card": { "$ref": "#/definitions/color" },
+            "cardForeground": { "$ref": "#/definitions/color" },
+            "popover": { "$ref": "#/definitions/color" },
+            "popoverForeground": { "$ref": "#/definitions/color" },
+            "primary": { "$ref": "#/definitions/color" },
+            "primaryForeground": { "$ref": "#/definitions/color" },
+            "secondary": { "$ref": "#/definitions/color" },
+            "secondaryForeground": { "$ref": "#/definitions/color" },
+            "muted": { "$ref": "#/definitions/color" },
+            "mutedForeground": { "$ref": "#/definitions/color" },
+            "accent": { "$ref": "#/definitions/color" },
+            "accentForeground": { "$ref": "#/definitions/color" },
+            "destructive": { "$ref": "#/definitions/color" },
+            "destructiveForeground": { "$ref": "#/definitions/color" },
+            "border": { "$ref": "#/definitions/color" },
+            "input": { "$ref": "#/definitions/color" },
+            "ring": { "$ref": "#/definitions/color" },
+            "overlay": { "$ref": "#/definitions/color" },
+            "success": { "$ref": "#/definitions/color" },
+            "warning": { "$ref": "#/definitions/color" },
+            "danger": { "$ref": "#/definitions/color" },
+            "info": { "$ref": "#/definitions/color" },
+            "notice": { "$ref": "#/definitions/color" },
+            "successText": { "$ref": "#/definitions/color" },
+            "warningText": { "$ref": "#/definitions/color" },
+            "dangerText": { "$ref": "#/definitions/color" }
+          }
+        },
+        "stat": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "input": { "$ref": "#/definitions/color" },
+            "output": { "$ref": "#/definitions/color" },
+            "cacheRead": { "$ref": "#/definitions/color" },
+            "cacheWrite": { "$ref": "#/definitions/color" },
+            "calls": { "$ref": "#/definitions/color" },
+            "cost": { "$ref": "#/definitions/color" }
+          }
+        },
+        "chart": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "palette": { "$ref": "#/definitions/colorList" },
+            "agents": {
+              "type": "object",
+              "propertyNames": { "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+              "additionalProperties": { "$ref": "#/definitions/color" }
+            },
+            "agentFallback": { "$ref": "#/definitions/colorList" }
+          }
+        },
+        "font": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sans": { "$ref": "#/definitions/fontFamily" },
+            "mono": { "$ref": "#/definitions/fontFamily" }
+          }
+        },
+        "radius": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "md": { "$ref": "#/definitions/length" },
+            "lg": { "$ref": "#/definitions/length" },
+            "xl": { "$ref": "#/definitions/length" }
+          }
+        },
+        "shadow": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sm": { "$ref": "#/definitions/shadow" },
+            "base": { "$ref": "#/definitions/shadow" },
+            "md": { "$ref": "#/definitions/shadow" },
+            "lg": { "$ref": "#/definitions/shadow" }
+          }
+        }
+      }
+    }
+  }
+}

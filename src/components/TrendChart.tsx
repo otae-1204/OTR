@@ -9,12 +9,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import {
-  agentColor,
-  AGENT_LABELS,
-  api,
-  type DailyUsage,
-} from "../api/bindings";
+import { AGENT_LABELS, api, type DailyUsage } from "../api/bindings";
+import { useTheme } from "../theme/ThemeProvider";
 import { fmtTokens } from "../lib/format";
 import { EmptyState, Skeleton } from "./Skeleton";
 import { TrendingUpIcon } from "./icons";
@@ -50,7 +46,7 @@ function TrendTooltip({
       style={{
         background: "hsl(var(--card))",
         border: "1px solid hsl(var(--border))",
-        borderRadius: 12,
+        borderRadius: "var(--radius-lg)",
         fontSize: 12,
       }}
     >
@@ -169,6 +165,7 @@ export function TrendChart({
   all = false,
   refreshKey,
 }: TrendChartProps) {
+  const { agentColor } = useTheme();
   const [stacked, setStacked] = useState(false);
   const [rows, setRows] = useState<DailyUsage[] | null>(null);
   const [granularity, setGranularity] = useState<Granularity>(() =>
@@ -321,7 +318,7 @@ export function TrendChart({
               className={`h-7 rounded-lg px-2.5 text-xs font-medium transition-colors ${
                 stacked === v
                   ? "bg-background shadow-sm text-foreground"
-                  : "text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                  : "text-muted-foreground hover:bg-overlay/5"
               }`}
             >
               {label}

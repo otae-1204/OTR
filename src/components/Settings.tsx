@@ -1,9 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  AGENT_COLORS,
   AGENT_LABELS,
-  agentColor,
   api,
   type AgentStatus,
   type CustomAgentConfig,
@@ -27,6 +25,8 @@ import {
 } from "./icons";
 import { AgentIcon, usesImageIcon } from "./AgentIcon";
 import { compareVersions, fetchLatestVersion, fetchUsdCnyRate } from "../lib/remote";
+import { useTheme } from "../theme/ThemeProvider";
+import type { ThemeEntry, ThemeMode } from "../theme/types";
 
 const KNOWN_AGENTS = [
   "dsh",
@@ -37,8 +37,6 @@ const KNOWN_AGENTS = [
   "pi",
   "cursor",
 ];
-const THEME_KEY = "token-show-theme";
-
 const KIND_OPTIONS: { value: string; label: string }[] = [
   { value: "claude-code", label: "Claude Code 布局" },
   { value: "codex", label: "Codex 布局" },
@@ -60,7 +58,7 @@ function Badge({
     <span
       className={`rounded-md px-1.5 py-0.5 text-xs ${
         tone === "good"
-          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+          ? "bg-success/10 text-success-text"
           : "bg-muted text-muted-foreground"
       }`}
     >
@@ -69,7 +67,7 @@ function Badge({
   );
 }
 
-/** 自制开关:w-11 h-6 轨道,选中 bg-emerald-500,thumb 平移动画 */
+/** 自制开关:w-11 h-6 轨道,选中 bg-success,thumb 平移动画 */
 function Toggle({
   checked,
   disabled,
@@ -90,11 +88,11 @@ function Toggle({
       disabled={disabled}
       onClick={onChange}
       className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 ${
-        checked ? "bg-emerald-500" : "bg-muted-foreground/30"
+        checked ? "bg-success" : "bg-muted-foreground/30"
       } disabled:cursor-not-allowed disabled:opacity-50`}
     >
       <span
-        className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${
+        className={`inline-block h-5 w-5 rounded-full bg-primary-foreground shadow transition-transform duration-200 ${
           checked ? "translate-x-5" : "translate-x-0.5"
         }`}
       />
@@ -506,7 +504,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                           <button
                             type="button"
                             onClick={() => void browseHome()}
-                            className="inline-flex h-8 shrink-0 items-center rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                            className="inline-flex h-8 shrink-0 items-center rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-overlay/5"
                           >
                             浏览
                           </button>
@@ -563,7 +561,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                           <button
                             type="button"
                             onClick={() => setOpenProvider(null)}
-                            className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                            className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-overlay/5"
                           >
                             取消
                           </button>
@@ -596,8 +594,8 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
           );
         })}
       </div>
-      {msg ? <p className="px-4 py-2 text-xs text-emerald-500">{msg}</p> : null}
-      {err ? <p className="px-4 py-2 text-xs text-red-500">{err}</p> : null}
+      {msg ? <p className="px-4 py-2 text-xs text-success">{msg}</p> : null}
+      {err ? <p className="px-4 py-2 text-xs text-danger-text">{err}</p> : null}
     </div>
   );
 }
@@ -702,7 +700,7 @@ function SectionCard({
           type="button"
           onClick={toggle}
           aria-expanded={open}
-          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-overlay/5"
         >
           <div className="min-w-0 flex-1">{head}</div>
           <ChevronDownIcon
@@ -760,9 +758,9 @@ export function Settings({
   const [busyAction, setBusyAction] = useState<"none" | "refresh" | "rescan">(
     "none",
   );
-  const [theme, setTheme] = useState<"dark" | "light">(() =>
-    document.documentElement.classList.contains("dark") ? "dark" : "light",
-  );
+  // 主题与深浅模式由 ThemeProvider 应用到 DOM;这里只负责把选择写进设置
+  const themeCtx = useTheme();
+  const theme = themeCtx.mode;
   // 自定义 Agent 表单
   const [updateState, setUpdateState] = useState<
     "idle" | "checking" | "latest" | "available" | "error"
@@ -818,16 +816,47 @@ export function Settings({
     void persist({ ...settings, enabledAgents: [...enabled] });
   };
 
-  const applyTheme = (mode: "dark" | "light") => {
-    document.documentElement.classList.toggle("dark", mode === "dark");
-    localStorage.setItem(THEME_KEY, mode);
-    setTheme(mode);
+  const applyTheme = (mode: ThemeMode) => {
+    const outcome = themeCtx.setMode(mode);
     if (settings) {
-      const next = { ...settings, theme: mode };
+      const next = { ...settings, theme: outcome.mode };
       setSettings(next);
       void api.saveSettings(next).catch(() => undefined);
     }
   };
+
+  const applyThemeId = (id: string) => {
+    const outcome = themeCtx.selectTheme(id);
+    if (settings) {
+      // 主题不支持当前模式时会自动切模式,一并记下来
+      const next = { ...settings, themeId: id, theme: outcome.mode };
+      setSettings(next);
+      void api.saveSettings(next).catch(() => undefined);
+    }
+  };
+
+  const [themeReloading, setThemeReloading] = useState(false);
+  const reloadThemes = async () => {
+    setThemeReloading(true);
+    try {
+      await themeCtx.reload();
+    } finally {
+      setThemeReloading(false);
+    }
+  };
+  /** 当前生效主题的条目(用来判断它支持哪些模式) */
+  const activeEntry: ThemeEntry | undefined = themeCtx.entries.find(
+    (e) => e.id === themeCtx.theme.id && e.manifest,
+  );
+  const modeSupported = (mode: ThemeMode) =>
+    !activeEntry || activeEntry.modes.includes(mode);
+  const selectedExists = themeCtx.entries.some(
+    (e) => e.id === themeCtx.selectedId && e.manifest,
+  );
+  /** 有诊断信息的用户主题(错误或警告),列在主题选择下面 */
+  const themeIssues = themeCtx.entries.filter(
+    (e) => e.source === "user" && e.diagnostics.length > 0,
+  );
 
   const checkUpdate = async () => {
     setUpdateState("checking");
@@ -1186,7 +1215,7 @@ export function Settings({
             const enabled = settings
               ? settings.enabledAgents.includes(row.id)
               : (status?.enabled ?? false);
-            const color = agentColor(row.id);
+            const color = themeCtx.agentColor(row.id);
             const label = row.label;
             return (
               <div
@@ -1341,7 +1370,7 @@ export function Settings({
             <div className="text-sm font-medium">
               当前版本 {appVersion || "0.1.0"}
               {updateLatest ? (
-                <span className="ml-2 rounded-md bg-orange-500/15 px-1.5 py-0.5 text-xs font-medium text-orange-500">
+                <span className="ml-2 rounded-md bg-notice/15 px-1.5 py-0.5 text-xs font-medium text-notice">
                   可更新到 v{updateLatest}
                 </span>
               ) : null}
@@ -1360,7 +1389,7 @@ export function Settings({
             type="button"
             onClick={() => void checkUpdate()}
             disabled={updateState === "checking"}
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-overlay/5 disabled:opacity-50"
           >
             <RefreshIcon
               className={`h-3.5 w-3.5 ${updateState === "checking" ? "animate-spin" : ""}`}
@@ -1421,7 +1450,7 @@ export function Settings({
               onClick={() => void fetchFxRate()}
               disabled={fxState === "loading" || !settings}
               title="从 er-api / frankfurter 获取实时 USD→CNY 汇率"
-              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-overlay/5 disabled:opacity-50"
             >
               获取实时汇率
             </button>
@@ -1505,7 +1534,7 @@ export function Settings({
                               !p
                                 ? "text-muted-foreground/50"
                                 : src === "manual"
-                                  ? "text-amber-500"
+                                  ? "text-warning"
                                   : "text-muted-foreground/70"
                             }`}
                           >
@@ -1574,7 +1603,7 @@ export function Settings({
             type="button"
             onClick={handleRefresh}
             disabled={busyAction !== "none"}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-overlay/5 disabled:opacity-50"
           >
             <RefreshIcon
               className={`h-3.5 w-3.5 ${busyAction === "refresh" ? "animate-spin" : ""}`}
@@ -1602,21 +1631,112 @@ export function Settings({
         icon={<SunIcon className="h-4 w-4 text-primary" />}
         title="外观与启动"
       >
-        <div className="flex items-center justify-between px-4 py-3">
+        <div className="px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium">主题</div>
+              <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                {themeCtx.fallbackReason ?? `当前:${themeCtx.theme.name}`}
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <select
+                value={selectedExists ? themeCtx.selectedId : "__missing__"}
+                onChange={(e) => applyThemeId(e.target.value)}
+                className="h-8 max-w-[220px] rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary"
+                title="选择主题;第三方主题放进下方目录后点「重新扫描」"
+              >
+                {selectedExists ? null : (
+                  <option value="__missing__" disabled>
+                    {themeCtx.selectedId}(未找到)
+                  </option>
+                )}
+                {themeCtx.entries.map((e) => (
+                  <option
+                    key={e.path ?? e.id}
+                    value={e.manifest ? e.id : `__invalid__:${e.path ?? e.id}`}
+                    disabled={!e.manifest}
+                  >
+                    {e.name}
+                    {e.source === "builtin" ? " · 内置" : ""}
+                    {e.manifest ? "" : "(无效)"}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => void reloadThemes()}
+                disabled={themeReloading}
+                title="重新扫描主题目录"
+                className="inline-flex h-8 items-center gap-1 rounded-lg border border-border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-overlay/5 disabled:opacity-50"
+              >
+                <RefreshIcon
+                  className={`h-3.5 w-3.5 ${themeReloading ? "animate-spin" : ""}`}
+                />
+                重新扫描
+              </button>
+            </div>
+          </div>
+          <p className="mt-2 break-all text-[11px] text-muted-foreground">
+            第三方主题:把 <code className="font-mono">theme.json</code> 放进{" "}
+            <code className="font-mono">{themeCtx.themesDir ?? "(应用数据目录)/themes"}</code>
+            {" "}后重新扫描;格式见 docs/theme_interface.md
+          </p>
+          {themeCtx.listingError ? (
+            <p className="mt-1 text-[11px] text-danger-text">
+              主题目录读取失败:{themeCtx.listingError}
+            </p>
+          ) : null}
+          {themeIssues.length > 0 ? (
+            <ul className="mt-2 space-y-1 text-[11px]">
+              {themeIssues.map((e) => (
+                <li key={e.path ?? e.id}>
+                  <span className="font-medium">{e.name}</span>
+                  <span className="text-muted-foreground">({e.path})</span>
+                  <ul className="mt-0.5 space-y-0.5 pl-3">
+                    {e.diagnostics.slice(0, 8).map((d, i) => (
+                      <li
+                        key={i}
+                        className={
+                          d.level === "error" ? "text-danger-text" : "text-warning-text"
+                        }
+                      >
+                        {d.level === "error" ? "错误" : "警告"}
+                        {d.path ? ` · ${d.path}` : ""}:{d.message}
+                      </li>
+                    ))}
+                    {e.diagnostics.length > 8 ? (
+                      <li className="text-muted-foreground">
+                        …还有 {e.diagnostics.length - 8} 条
+                      </li>
+                    ) : null}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+
+        <div className="flex items-center justify-between border-t border-border/40 px-4 py-3">
           <div>
-            <div className="text-sm font-medium">主题</div>
+            <div className="text-sm font-medium">深浅模式</div>
             <div className="mt-0.5 text-xs text-muted-foreground">
               当前:{theme === "dark" ? "暗色" : "亮色"}
+              {activeEntry && activeEntry.modes.length === 1
+                ? `(该主题只提供${activeEntry.modes[0] === "dark" ? "暗色" : "亮色"})`
+                : ""}
             </div>
           </div>
           <div className="flex items-center gap-1 rounded-xl bg-muted p-1">
             <button
               type="button"
               onClick={() => applyTheme("dark")}
-              className={`flex h-7 items-center gap-1 rounded-lg px-2.5 text-xs font-medium transition-colors ${
+              disabled={!modeSupported("dark")}
+              title={modeSupported("dark") ? undefined : "当前主题没有暗色模式"}
+              className={`flex h-7 items-center gap-1 rounded-lg px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                 theme === "dark"
                   ? "bg-background shadow-sm text-foreground"
-                  : "text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                  : "text-muted-foreground hover:bg-overlay/5"
               }`}
             >
               <MoonIcon className="h-3.5 w-3.5" />
@@ -1625,10 +1745,12 @@ export function Settings({
             <button
               type="button"
               onClick={() => applyTheme("light")}
-              className={`flex h-7 items-center gap-1 rounded-lg px-2.5 text-xs font-medium transition-colors ${
+              disabled={!modeSupported("light")}
+              title={modeSupported("light") ? undefined : "当前主题没有亮色模式"}
+              className={`flex h-7 items-center gap-1 rounded-lg px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                 theme === "light"
                   ? "bg-background shadow-sm text-foreground"
-                  : "text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                  : "text-muted-foreground hover:bg-overlay/5"
               }`}
             >
               <SunIcon className="h-3.5 w-3.5" />

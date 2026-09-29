@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_LABELS,
-  agentColor,
   api,
   type AgentStatus,
   type RangeSummary,
   type Totals,
 } from "./api/bindings";
 import { useUsageData } from "./hooks/useUsageData";
+import { useTheme } from "./theme/ThemeProvider";
 import { compareVersions, fetchLatestVersion } from "./lib/remote";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -36,11 +36,10 @@ import {
 
 type View = "dashboard" | "limits" | "settings";
 
-const THEME_KEY = "token-show-theme";
 const SPIN_DURATION_MS = 1000;
 
 const TOOLBAR_BTN =
-  "flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-black/5 dark:hover:bg-white/5";
+  "flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-overlay/5";
 const TOOLBAR_BTN_IDLE = "text-muted-foreground";
 const TOOLBAR_BTN_ACTIVE = "bg-background shadow-sm text-foreground";
 
@@ -55,6 +54,7 @@ export default function App() {
   const [limitsEpoch, setLimitsEpoch] = useState(0);
   const spinTimerRef = useRef<number | null>(null);
   const { summary, agents, settings, loading, refresh } = useUsageData();
+  const { agentColor } = useTheme();
 
   // 筛选状态:Agent 维度 + 日期范围
   const [agentId, setAgentId] = useState<string | null>(null);
@@ -73,14 +73,6 @@ export default function App() {
   const [rangeLoading, setRangeLoading] = useState(false);
   // 竞态防护:只接受与当前筛选一致的响应(快速切换时旧响应可能更晚返回)
   const rangeReqRef = useRef("");
-
-  // 恢复主题(index.html 默认 dark,本地记忆可切亮色)
-  useEffect(() => {
-    document.documentElement.classList.toggle(
-      "dark",
-      localStorage.getItem(THEME_KEY) !== "light",
-    );
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -309,7 +301,7 @@ export default function App() {
               <SettingsIcon className="h-4 w-4" />
               {updateLatest ? (
                 <span
-                  className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-orange-500 ring-2 ring-background"
+                  className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-notice ring-2 ring-background"
                   title={`发现新版本 v${updateLatest}`}
                 />
               ) : null}
@@ -334,7 +326,7 @@ export default function App() {
                   className={`${CHIP} border ${
                     agentId === null
                       ? "border-primary/50 bg-primary/15 text-foreground"
-                      : "border-transparent text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                      : "border-transparent text-muted-foreground hover:bg-overlay/5"
                   }`}
                 >
                   全部
@@ -349,7 +341,7 @@ export default function App() {
                     className={`${CHIP} border ${
                       agentId === status.id
                         ? "border-primary/50 bg-primary/15 text-foreground"
-                        : "border-transparent text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                        : "border-transparent text-muted-foreground hover:bg-overlay/5"
                     } ${status.detected ? "" : "opacity-50"}`}
                   >
                     <span
@@ -373,7 +365,7 @@ export default function App() {
                     className={`${CHIP} ${
                       preset === p
                         ? "bg-background shadow-sm text-foreground ring-1 ring-border"
-                        : "text-muted-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                        : "text-muted-foreground hover:bg-overlay/5"
                     } bg-muted`}
                   >
                     {PRESET_LABELS[p]}

@@ -20,7 +20,7 @@ function MiniStat({
   icon: ReactNode;
   label: string;
   value: string;
-  /** 语义色 class,如 text-blue-500 */
+  /** 语义色 class,如 text-stat-input(由主题的 stat token 决定) */
   accent: string;
   title?: string;
 }) {
@@ -128,7 +128,7 @@ export function StatCard({
       {/* 缓存命中率进度条 */}
       <div className="mt-3" title={HIT_RATE_TIP}>
         <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-          <span className="flex items-center gap-1.5 font-medium text-emerald-500">
+          <span className="flex items-center gap-1.5 font-medium text-success">
             <DatabaseIcon className="h-3 w-3" />
             缓存命中率
           </span>
@@ -136,7 +136,7 @@ export function StatCard({
         </div>
         <div className="relative mt-1 h-1.5 overflow-hidden rounded-full bg-muted/60">
           <div
-            className="absolute inset-y-0 left-0 rounded-full bg-emerald-500 transition-all duration-500"
+            className="absolute inset-y-0 left-0 rounded-full bg-success transition-all duration-500"
             style={{ width: `${(hit * 100).toFixed(1)}%` }}
           />
         </div>
@@ -146,7 +146,7 @@ export function StatCard({
         <MiniStat
           icon={<ArrowDownIcon className="h-3.5 w-3.5" />}
           label="输入"
-          accent="text-blue-500"
+          accent="text-stat-input"
           value={totals ? fmtTokens(totals.inputTokens) : "--"}
           title={
             totals
@@ -157,14 +157,14 @@ export function StatCard({
         <MiniStat
           icon={<ArrowUpIcon className="h-3.5 w-3.5" />}
           label="输出"
-          accent="text-purple-500"
+          accent="text-stat-output"
           value={totals ? fmtTokens(totals.outputTokens) : "--"}
           title={totals ? `${totals.outputTokens.toLocaleString()} tokens` : undefined}
         />
         <MiniStat
           icon={<DatabaseIcon className="h-3.5 w-3.5" />}
           label="缓存读"
-          accent="text-emerald-500"
+          accent="text-stat-cache-read"
           value={totals ? fmtTokens(totals.cacheReadTokens) : "--"}
           title={
             totals
@@ -175,20 +175,20 @@ export function StatCard({
         <MiniStat
           icon={<DownloadIcon className="h-3.5 w-3.5" />}
           label="缓存写"
-          accent="text-amber-500"
+          accent="text-stat-cache-write"
           value={totals ? fmtTokens(totals.cacheWriteTokens) : "--"}
           title={totals ? `${totals.cacheWriteTokens.toLocaleString()} tokens` : undefined}
         />
         <MiniStat
           icon={<ActivityIcon className="h-3.5 w-3.5" />}
           label="请求次数"
-          accent="text-sky-500"
+          accent="text-stat-calls"
           value={totals ? totals.calls.toLocaleString() : "--"}
         />
         <MiniStat
           icon={<CoinsIcon className="h-3.5 w-3.5" />}
           label="成本"
-          accent="text-green-500"
+          accent="text-stat-cost"
           value={totals ? fmtCost(totals.cost, currency, rate) : "--"}
           title={
             totals

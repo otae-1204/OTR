@@ -5,18 +5,8 @@ import { fmtCost, fmtTokens } from "../lib/format";
 import { cacheHitRate } from "./StatCard";
 import { EmptyState } from "./Skeleton";
 import { PieChartIcon } from "./icons";
+import { useTheme } from "../theme/ThemeProvider";
 
-const PALETTE = [
-  "#3b82f6",
-  "#a855f7",
-  "#10b981",
-  "#f97316",
-  "#f59e0b",
-  "#06b6d4",
-  "#ec4899",
-  "#84cc16",
-  "#64748b",
-];
 
 interface Slice {
   name: string;
@@ -37,7 +27,7 @@ function PieTooltip({ active, payload, total }: any) {
       style={{
         background: "hsl(var(--card))",
         border: "1px solid hsl(var(--border))",
-        borderRadius: 12,
+        borderRadius: "var(--radius-lg)",
         fontSize: 12,
       }}
     >
@@ -60,7 +50,7 @@ function HitRateBar({ totals }: { totals: Totals }) {
     >
       <div className="relative h-1.5 w-24 overflow-hidden rounded-full bg-muted/60">
         <div
-          className="absolute inset-y-0 left-0 rounded-full bg-emerald-500"
+          className="absolute inset-y-0 left-0 rounded-full bg-success"
           style={{ width: `${(hit * 100).toFixed(1)}%` }}
         />
       </div>
@@ -81,6 +71,8 @@ interface ModelPieProps {
 
 /** 模型占比(环形图 + 图例);点击扇区在该卡片内查看该模型明细(含缓存命中率) */
 export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps) {
+  // 扇区按序取色,调色板来自当前主题
+  const { chartPalette: PALETTE } = useTheme();
   const [selected, setSelected] = useState<string | null>(null);
 
   const slices = useMemo<Slice[]>(() => {

@@ -1,10 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  agentColor,
-  AGENT_LABELS,
-  api,
-  type SessionUsage,
-} from "../api/bindings";
+import { AGENT_LABELS, api, type SessionUsage } from "../api/bindings";
+import { useTheme } from "../theme/ThemeProvider";
 import { fmtCost, fmtDateTime, fmtTokens, fromNow } from "../lib/format";
 import { EmptyState, Skeleton } from "./Skeleton";
 import { ClockIcon } from "./icons";
@@ -57,6 +53,7 @@ export function SessionTable({
   currency,
   rate,
 }: SessionTableProps) {
+  const { agentColor } = useTheme();
   const [sessions, setSessions] = useState<SessionUsage[] | null>(null);
   const requestId = useRef(0);
   const filterKey = `${agentId ?? ""}|${from ?? ""}|${to ?? ""}`;
@@ -165,7 +162,7 @@ export function SessionTable({
                       >
                         {fmtTokens(s.totalTokens)}
                       </td>
-                      <td className="py-2.5 text-right tabular-nums text-green-500">
+                      <td className="py-2.5 text-right tabular-nums text-stat-cost">
                         {fmtCost(s.cost, currency, rate)}
                       </td>
                     </tr>

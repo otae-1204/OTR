@@ -6,6 +6,7 @@ use crate::model::{
 use crate::limits;
 use crate::settings::{LimitAccount, Settings};
 use crate::store::CostBasis;
+use crate::themes;
 use crate::{providers, run_scan, AppState};
 
 fn err_str<E: std::fmt::Display>(e: E) -> String {
@@ -514,6 +515,35 @@ pub fn save_settings(app: AppHandle, mut settings: Settings) -> std::result::Res
         w.rewatch(crate::watcher::current_watch_paths(&state, &current));
     }
     Ok(())
+}
+
+// ---- 主题 ----
+
+/// 用户主题目录:与 settings.json 同级的 `themes/`。不存在就建出来,方便用户找到。
+fn themes_dir_of(state: &AppState) -> std::result::Result<std::path::PathBuf, String> {
+    let base = state
+        .settings_path
+        .parent()
+        .ok_or_else(|| "无法定位应用数据目录".to_string())?;
+    let dir = themes::themes_dir(base);
+    themes::ensure_dir(&dir).map_err(|e| format!("创建主题目录失败:{e}"))?;
+    Ok(dir)
+}
+
+/// 枚举并读出用户主题目录里的主题文件。**没有参数**:前端不能指定路径,
+/// 读取范围只在固定目录内(符号链接跳过、单文件限 256 KiB)。解析与校验在前端。
+#[tauri::command]
+pub fn list_themes(app: AppHandle) -> std::result::Result<Vec<themes::ThemeFile>, String> {
+    let state = app.state::<AppState>();
+    let dir = themes_dir_of(&state)?;
+    Ok(themes::discover(&dir))
+}
+
+/// 主题目录的绝对路径(设置页展示,告诉用户往哪放文件)
+#[tauri::command]
+pub fn get_themes_dir(app: AppHandle) -> std::result::Result<String, String> {
+    let state = app.state::<AppState>();
+    Ok(themes_dir_of(&state)?.to_string_lossy().to_string())
 }
 
 /// 需要手填 Cookie 的套餐(Qwen / StepFun)教程窗口。只在用户点「教程」时创建。
