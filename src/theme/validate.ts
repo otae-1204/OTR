@@ -42,7 +42,11 @@ export const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 const MAX_NAME_LEN = 64;
 const MAX_TEXT_LEN = 200;
-const CONTROL_RE = /[\u0000-\u001f\u007f]/;
+/** 控制字符:C0 / DEL / C1,以及双向文本控制符(会把设置页里名字后面的「· 内置」「(无效)」之类的文字搅乱顺序) */
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+const CONTROL_RE_G = new RegExp(CONTROL_RE.source, "g");
+/** JSON 语法错误的引擎报错最多展示多少字符(WebKit 会把整个出错的词原样带上) */
+const MAX_PARSE_ERROR_LEN = 160;
 
 class Diag {
   readonly list: ThemeDiagnostic[] = [];
@@ -99,8 +103,6 @@ function optionalText(
   }
   return s;
 }
-
-export { normalizeFontFamily, normalizeLength, normalizeShadow };
 
 /** 语义色:必须不透明,归一化成 HSL 三元组 */
 export function normalizeSemanticColor(v: unknown): string | null {
@@ -317,9 +319,10 @@ export function validateManifest(
     warnUnknownKeys(raw.modes, THEME_MODES, "modes", d);
     for (const m of THEME_MODES) {
       if (raw.modes[m] === undefined) continue;
+      // 允许 `"dark": {}`:表示「提供该模式,但全部用默认值」;不是对象(null、字符串、数组)时
+      // validateTokens 已告警,该模式不算提供(否则「已忽略」的模式反而会出现在可选模式里)
       const t = validateTokens(raw.modes[m], `modes.${m}`, d);
-      // 允许 `"dark": {}`:表示「提供该模式,但全部用默认值」
-      modes[m] = t ?? {};
+      if (t) modes[m] = t;
     }
     if (Object.keys(modes).length === 0) {
       d.error("modes", "至少要有 dark 或 light 其中之一");
@@ -361,11 +364,13 @@ export function parseThemeFile(
     // Windows 上的记事本 / PowerShell 5.1 常写出带 BOM 的 UTF-8,JSON.parse 不认,先去掉
     raw = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
   } catch (err) {
+    // 引擎的报错可能带出错位置附近的原文片段(V8 约前后十来个字符,WebKit 是整个出错的词),
+    // 截断并去掉控制字符,免得一个超长的词把设置页撑开
+    const raw = String((err as Error)?.message ?? err).replace(CONTROL_RE_G, " ");
+    const msg = raw.length > MAX_PARSE_ERROR_LEN ? `${raw.slice(0, MAX_PARSE_ERROR_LEN)}…` : raw;
     return {
       manifest: null,
-      diagnostics: [
-        { level: "error", path: "", message: `不是合法 JSON:${(err as Error).message}` },
-      ],
+      diagnostics: [{ level: "error", path: "", message: `不是合法 JSON:${msg}` }],
     };
   }
   return validateManifest(raw, opts);

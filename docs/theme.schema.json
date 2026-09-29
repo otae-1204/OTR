@@ -121,9 +121,9 @@
         "text-decoration-style": { "$ref": "#/definitions/cssValue", "description": "solid / double / dotted / dashed / wavy" },
         "text-decoration-color": { "$ref": "#/definitions/cssValue", "description": "颜色" },
         "backdrop-filter": { "$ref": "#/definitions/cssValue", "description": "none,或最多 3 个 blur(≤ 40px) / saturate() / brightness() / contrast()(0–3 或 0–300%);同时写出 -webkit- 前缀" },
-        "font-family": { "$ref": "#/definitions/cssValue", "description": "与 font token 同样的字体族语法,或 var(--font-sans|--font-mono)" },
-        "box-shadow": { "$ref": "#/definitions/cssValue", "description": "与 shadow token 同样的语法(颜色须是字面量),或 var(--shadow|--shadow-sm|md|lg)" },
-        "text-shadow": { "$ref": "#/definitions/cssValue", "description": "逗号分隔的若干层:2–3 个长度 [颜色];不允许 inset" },
+        "font-family": { "type": "string", "minLength": 1, "maxLength": 200, "description": "与 font token 同样的字体族语法(≤ 200 字符,唯一允许引号与 Unicode 字母的属性),或 var(--font-sans|--font-mono)" },
+        "box-shadow": { "type": "string", "minLength": 1, "maxLength": 200, "description": "与 shadow token 同样的语法(≤ 200 字符,颜色须是字面量),或 var(--shadow|--shadow-sm|md|lg)" },
+        "text-shadow": { "type": "string", "minLength": 1, "maxLength": 200, "description": "逗号分隔的若干层:2–3 个长度 [颜色](≤ 200 字符);不允许 inset" },
         "font-size": { "type": "string", "maxLength": 256, "pattern": "^\\s*\\+?(0?\\.[89]\\d*|1(\\.[01]\\d*|\\.2(0*))?)(em|EM|Em|eM)\\s*$|^\\s*\\+?(8\\d(\\.\\d+)?|9\\d(\\.\\d+)?|1[01]\\d(\\.\\d+)?|120(\\.0+)?)%\\s*$", "description": "相对组件原字号的倍率:0.8em–1.2em 或 80%–120%(±20%)。不接受 px / rem / calc() / var() / 关键字。应用把它写成钩子上的倍率变量,每个元素按自己原来的字号缩放,嵌套钩子不累乘" },
         "line-height": { "type": "string", "maxLength": 256, "pattern": "^\\s*\\+?(0?\\.[89]\\d*|1(\\.[01]\\d*|\\.2(0*))?)\\s*$|^\\s*\\+?(8\\d(\\.\\d+)?|9\\d(\\.\\d+)?|1[01]\\d(\\.\\d+)?|120(\\.0+)?)%\\s*$", "description": "相对组件原行高的倍率:无单位 0.8–1.2 或 80%–120%(±20%;注意不是 CSS 里「字号的几倍」)。不接受 em / px / normal / calc() / var()" }
       }
@@ -226,6 +226,7 @@
         "css": {
           "type": "object",
           "description": "受限自定义 CSS(apiVersion 1 内新增的可选字段)。键 = 钩子名,可加一个状态后缀(:hover / :active / :focus / :disabled / :selected);值 = { 属性: 值 }。属性只认白名单、值按各自语法分词校验,不合法的条目丢弃并告警。钩子目录与语法见 docs/theme_interface.md §14。",
+          "maxProperties": 64,
           "propertyNames": { "pattern": "^(app|header|main|filter-bar|page-title|card|card-title|stat-card|mini-stat|agent-card|chart-card|table-card|limit-card|settings-section|chart|tooltip|legend|table|table-head|table-row|button|button-primary|segmented|segmented-button|chip|badge|progress|progress-fill|switch|switch-thumb|input|empty-state)(:(hover|active|focus|disabled|selected))?$" },
           "additionalProperties": { "$ref": "#/definitions/cssBlock" }
         }

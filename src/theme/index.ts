@@ -12,6 +12,9 @@ export {
   serializeThemeCss,
   selectorForKey,
   sanitizeCss,
+  MAX_CSS_KEYS,
+  MAX_CSS_DECLS,
+  MAX_CSS_VALUE_LEN,
 } from "./css";
 export { resolveTheme, pickAgentColor, defaultTokens } from "./resolve";
 export {

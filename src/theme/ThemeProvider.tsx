@@ -128,6 +128,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [resetSeq, setResetSeq] = useState(0);
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
+  /**
+   * 代次:bootstrap 是异步的,可能与另一次 bootstrap(重新扫描 + 托盘复位)或用户的选择交错。
+   * 只有**最后一次**开始的 bootstrap 能落地;它开始之后用户又选过主题 / 模式时,它只更新条目列表,
+   * 不再按(已经过时的)设置文件改回去。
+   */
+  const bootSeq = useRef(0);
+  const pickSeq = useRef(0);
 
   /** 按「主题 id + 偏好模式」应用;生效模式由 decide() 决定,偏好原样记下 */
   const applyWith = useCallback(
@@ -150,6 +157,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const bootstrap = useCallback(
     async (idOverride?: string, modeOverride?: ThemeMode) => {
+      const boot = ++bootSeq.current;
+      const pick = pickSeq.current;
       setLoading(true);
       const [settings, listing] = await Promise.all([
         api.getSettings().catch((err) => {
@@ -158,6 +167,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         }),
         loadThemeListing(),
       ]);
+      // 更新的 bootstrap 已经开始:让它来落地(它也负责收起 loading)
+      if (boot !== bootSeq.current) return;
       setEntries(listing.entries);
       setThemesDir(listing.themesDir);
       setListingError(listing.error);
@@ -169,7 +180,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         normalizeMode(settings?.preferredMode) ??
         normalizeMode(settings?.theme) ??
         readPreferredMode();
-      applyWith(listing.entries, id, preferred);
+      if (pick === pickSeq.current) applyWith(listing.entries, id, preferred);
       setLoading(false);
     },
     [applyWith],
@@ -200,11 +211,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   // 选主题、重新扫描都按**偏好**模式来;单模式主题只改变生效模式,切回双模式主题时自然恢复
   const selectTheme = useCallback(
-    (id: string) => applyWith(entriesRef.current, id, preferredMode),
+    (id: string) => {
+      pickSeq.current++;
+      return applyWith(entriesRef.current, id, preferredMode);
+    },
     [applyWith, preferredMode],
   );
   const setMode = useCallback(
-    (mode: ThemeMode) => applyWith(entriesRef.current, selectedId, mode),
+    (mode: ThemeMode) => {
+      pickSeq.current++;
+      return applyWith(entriesRef.current, selectedId, mode);
+    },
     [applyWith, selectedId],
   );
   const reload = useCallback(

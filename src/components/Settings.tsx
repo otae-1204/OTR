@@ -1723,8 +1723,10 @@ export function Settings({
               <select
                 value={selectedExists ? themeCtx.selectedId : "__missing__"}
                 onChange={(e) => applyThemeId(e.target.value)}
+                // 设置快照还没读到时不能选:选了会生效却存不进设置文件
+                disabled={!settings}
                 data-theme-part="input"
-                className="h-8 max-w-[220px] rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary"
+                className="h-8 max-w-[220px] rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary disabled:opacity-50"
                 title="选择主题;第三方主题放进下方目录后点「重新扫描」"
               >
                 {selectedExists ? null : (
@@ -1815,7 +1817,7 @@ export function Settings({
             <button
               type="button"
               onClick={() => applyTheme("dark")}
-              disabled={singleMode !== null}
+              disabled={singleMode !== null || !settings}
               title={modeLockedTip}
               data-theme-part="segmented-button"
               data-theme-state={theme === "dark" ? "selected" : undefined}
@@ -1831,7 +1833,7 @@ export function Settings({
             <button
               type="button"
               onClick={() => applyTheme("light")}
-              disabled={singleMode !== null}
+              disabled={singleMode !== null || !settings}
               title={modeLockedTip}
               data-theme-part="segmented-button"
               data-theme-state={theme === "light" ? "selected" : undefined}

@@ -30,8 +30,6 @@ import {
   type ThemeTokens,
 } from "./types";
 
-export { kebab };
-
 function mergeTokens(base: ThemeTokens, over: ThemeTokens | undefined): ThemeTokens {
   if (!over) return base;
   return {

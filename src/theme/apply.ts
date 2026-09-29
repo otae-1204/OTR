@@ -90,8 +90,11 @@ function readCache(): ThemeCache | null {
     }
     const vars: Record<string, string> = {};
     for (const [k, v] of Object.entries(c.vars)) {
+      // 变量名与 resolve.ts 产出的一致(`--agent-<id>` 的 id 可含 `.` `_`);
       // `--otr-*` 是应用自己的变量(字号 / 行高倍率只能由 css 表在钩子上设置),不从缓存恢复
-      if (/^--[a-z0-9-]+$/.test(k) && !k.startsWith("--otr-") && typeof v === "string") vars[k] = v;
+      if (/^--[a-z0-9][a-z0-9._-]*$/.test(k) && !k.startsWith("--otr-") && typeof v === "string") {
+        vars[k] = v;
+      }
     }
     // 缓存里的 css 表不信任,整张过一遍与清单相同的校验
     const css = c.css === undefined ? undefined : sanitizeCss(c.css);

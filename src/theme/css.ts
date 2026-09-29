@@ -27,7 +27,7 @@
  */
 
 import { parseColor, toHex, type Rgba } from "./color";
-import { COLOR_TOKENS, STAT_TOKENS } from "./types";
+import { COLOR_TOKENS, STAT_TOKENS, type ThemeCss } from "./types";
 import {
   formatShadowColor,
   normalizeFontFamily,
@@ -98,8 +98,7 @@ export const MAX_CSS_DECLS = 24;
 /** 单个值的最大长度 */
 export const MAX_CSS_VALUE_LEN = 256;
 
-/** 键 → 属性 → 归一化后的值 */
-export type ThemeCss = Record<string, Record<string, string>>;
+export type { ThemeCss };
 
 // ---------------------------------------------------------------------------
 // 分词器

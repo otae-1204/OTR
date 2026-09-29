@@ -269,15 +269,15 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 
 实现:`src/theme/validate.ts`(`validateManifest` / `parseThemeFile`)。输出 `{ manifest | null, diagnostics[] }`,每条诊断带 `level`(`error` / `warning`)、JSON 路径、中文说明,设置页会列出来。
 
-**error(整份拒绝,回退默认主题)**:不是 JSON 对象;`apiVersion` 缺失 / 非整数 / 高于支持版本 / 小于 1;`id` 缺失或不合法或占用内置 id;`name` 缺失或超长;`modes` 缺失或一个模式都没有;文件超过 256 KiB;不是合法 JSON(含 UTF-8 错误)。
+**error(整份拒绝,回退默认主题)**:不是 JSON 对象;`apiVersion` 缺失 / 非整数 / 高于支持版本 / 小于 1;`id` 缺失或不合法或占用内置 id;`name` 缺失、超长或含控制字符(含 C1 与双向文本控制符,见下);`modes` 缺失或一个模式都没有(值不是对象的模式——`null`、字符串、数组——报 warning 且**不算提供**);文件超过 256 KiB;不是合法 JSON(含 UTF-8 错误;引擎报错截断到 160 字符)。
 
-**warning(丢弃该项,回退默认值,其余生效)**:未知字段(任何层级);颜色解析失败或带透明度(新 token `*Label` / `switchThumb*` 同样要求不透明);字体族含白名单外字符或引号不成对;长度不是 `0` / `px` / `rem` / `em` 或超过上限(128px / 8rem);阴影不符合 `[inset] 2–4 个长度 [颜色]` 的层语法;调色板不是 1–16 个颜色的数组(空数组 / 全部无效也回退);`agents` 里的 id 不合法;`homepage` 不是 http(s);`css` 表里未知的钩子或状态、白名单外的属性、不合语法的值(包括超出 0.8–1.2 倍率的 `font-size` / `line-height`;逐条报告,路径如 `modes.dark.css.card.position`,见 §14.5)。
+**warning(丢弃该项,回退默认值,其余生效)**:未知字段(任何层级);颜色解析失败或带透明度(新 token `*Label` / `switchThumb*` 同样要求不透明);字体族含白名单外字符或引号不成对;长度不是 `0` / `px` / `rem` / `em` 或超过上限(128px / 8rem);阴影不符合 `[inset] 2–4 个长度 [颜色]` 的层语法;调色板不是 1–16 个颜色的数组(空数组 / 全部无效也回退);`agents` 里的 id 不合法;`homepage` 不是 http(s);`version` / `author` / `description` / `homepage` 超长或含控制字符(C0、DEL、C1,以及 U+061C / U+200E / U+200F / U+202A–U+202E / U+2066–U+2069 这些双向文本控制符 —— 它们会把设置页里名字后面的「· 内置」「(无效)」搅乱顺序);`css` 表里未知的钩子或状态、白名单外的属性、不合语法的值(包括超出 0.8–1.2 倍率的 `font-size` / `line-height`;逐条报告,路径如 `modes.dark.css.card.position`,见 §14.5)。
 
 **值的归一化**:语义色与 `stat` 色 → `H S% L%` 三元组;图表色 → `#rrggbb`;阴影里的颜色 → `rgb(r g b / a)`;字体族 → 逗号后统一一个空格;`css` 里的值先分词再按属性语法重新拼出(颜色 → `#rrggbb` / `rgb(r g b / a)`,数字 → 最多三位小数 + 单位)。写进 CSS 的永远是我们自己格式化出来的字符串。
 
 **内置主题**同样跑一遍校验(`normalizeBuiltin`),写坏了会在开发期直接抛错。
 
-**命令行校验**:`node scripts/theme-lint.mjs <文件>`,用的是应用里同一份代码;加 `--print-css` 可打印 `css` 表最终生成的样式文本。可选的对比度检查:`node scripts/theme-contrast.mjs <文件>`(`--builtin` 查内置默认主题,`--only` 只看某几组,见 §12.3)。自检用例:`npm run test:theme`(`scripts/theme-css-selftest.mjs`,一千二百余条断言:css 校验器与各类注入尝试、字号 / 行高倍率、后加 token 的回退链、偏好模式、以及 schema / `index.css` / `tailwind.config.js` / Rust 复位脚本与代码的一致性)。
+**命令行校验**:`node scripts/theme-lint.mjs <文件>`,用的是应用里同一份代码;加 `--print-css` 可打印 `css` 表最终生成的样式文本。可选的对比度检查:`node scripts/theme-contrast.mjs <文件>`(`--builtin` 查内置默认主题,`--only` 只看某几组,见 §12.3)。自检用例:`npm run test:theme`(`scripts/theme-css-selftest.mjs`,一千四百余条断言:css 校验器与各类注入尝试、字号 / 行高倍率、后加 token 的回退链、偏好模式、首帧缓存的恢复与复位(假 DOM)、清单结构与文本字段、示例主题零诊断且 token 写全,以及 schema(token 列表与限值)/ `index.css` / `tailwind.config.js` / Rust 复位脚本与代码的一致性)。
 
 **编码**:文件须是 UTF-8;开头的 BOM 会被忽略(Windows 记事本 / PowerShell 5.1 常会写出 BOM)。
 
@@ -297,6 +297,7 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 | JS 完全没跑起来 | `index.css` 的 `:root` / `.dark` 兜底值就是默认主题(自检脚本逐个变量对照) |
 | 主题把界面弄得不可见 / 设置页点不到 | 托盘菜单「恢复默认主题」:Rust 直接改设置并对窗口执行固定复位脚本,不依赖设置页也不依赖前端脚本(§5,Q16) |
 | 首帧 | 上次的变量缓存(`localStorage["otr-theme-cache"]`)与本机记忆的**生效**模式先应用,随后被设置文件的真相覆盖;读不到设置时,偏好模式用本机记忆的 `otr-preferred-mode` |
+| 加载交错(重新扫描与托盘复位几乎同时、或加载还没回来用户就选了主题) | 只有**最后一次**开始的加载能落地;加载期间用户选过主题 / 模式时,加载结果只更新条目列表,不会按(已经过时的)设置文件把选择改回去。设置页在设置快照读到之前禁用主题下拉框与深浅按钮(否则会「生效但没存进设置」) |
 
 叠加顺序(单 token 粒度):默认主题公共 → 默认主题该模式 → 本主题公共 → 本主题该模式。`chart.palette` / `agentFallback` 整组替换,`chart.agents` 按 id 合并,`css` 按「钩子[:状态] → 属性」粒度合并(§14.6)。
 
@@ -308,10 +309,10 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 2. **没有任意 CSS**:每个 token 都有自己的白名单语法(§7),值经解析后**重新格式化**再写入,原始字符串不落地。`css` 字段也不是文本而是一张表(§14):选择器由应用按钩子名生成、属性只认白名单、值先分词(字符集只有字母数字、空格与 `-+.%#(),/`)再按属性语法逐 token 匹配、最后由我们重新拼出字符串。`url(`、`@import`、`expression(`、`image-set(`、`!important`、`;`、`{`、`}`、`<`、`@`、注释、引号、反斜杠在分词阶段就被整体拒绝,`var()` 只能引用本主题体系的变量(§14.4)。`font-size` / `line-height` 只接受单个 0.8–1.2 的倍率,输出的是应用自己的倍率变量而不是字面值(§14.3);`--otr-*` 变量主题既不能引用也不能写,首帧缓存里出现也会被丢掉。序列化前每个值再归一化一遍,所以哪怕 localStorage 缓存被改也进不来结构字符。校验不是正则黑名单,是分词 + 逐项白名单 + 自检用例(`npm run test:theme`)。
 3. **写入方式本身就受限**:token 走 `element.style.setProperty("--x", value)`,只能设置一个自定义属性的值,无法跳出到别的规则或选择器;`css` 表只经过**唯一一个**受控的 `<style id="otr-theme-css">`,内容整体替换、切换主题时移除,不用 `innerHTML`、不拼接用户字符串进选择器。CSP 的 `style-src 'self' 'unsafe-inline'` 本来就允许内联样式,本功能没有放宽任何策略。
 4. **CSP 兜底**:`img-src 'self' data:`、`font-src 'self' data:`、`connect-src` 白名单 —— 就算前三层都失守,也不能发起外链请求。
-5. **文件系统边界(Rust `themes.rs`)**:命令**没有参数**,前端无法指定路径,不存在路径穿越;只枚举固定目录、深度一层;**符号链接一律跳过**(文件或目录),读取范围不会离开主题目录;隐藏项跳过;单文件上限 256 KiB(超过只报错不读);最多 64 个主题;非 UTF-8 报错。
+5. **文件系统边界(Rust `themes.rs`)**:命令**没有参数**,前端无法指定路径,不存在路径穿越;只枚举固定目录、深度一层;**符号链接一律跳过**(文件或目录),读取范围不会离开主题目录;隐藏项跳过;单文件上限 256 KiB(超过只报错不读 —— 先看元数据,读取本身也最多读「上限 + 1」字节,检查与读取之间文件被写大也读不进来);最多 64 个主题(按文件名排序后截断);非 UTF-8 报错。`themes/` 目录本身是用户的目录,若它本身是符号链接(例如指到同步盘)会照常跟随;跳过的是目录里的条目。
 6. **不联网**:`homepage` 只显示文本,不是链接;应用不会因为主题去访问任何地址。
 7. **不碰别的设置**:主题只影响外观;`save_settings` 依旧保留额度账号等受保护字段。托盘「恢复默认主题」只改 `themeId` 与 `theme`,其余设置原样保留(Rust 单测覆盖)。
-8. **不泄漏**:设置页展示的诊断只含文件路径、字段路径与固定文案,不回显文件内容。
+8. **不泄漏**:设置页展示的诊断只含文件路径、字段路径与固定文案;唯一的例外是「不是合法 JSON」,它附带 JS 引擎的报错,可能含出错位置附近的一小段原文(V8 前后十来个字符,WebKit 是整个出错的词),截断到 160 字符并去掉控制字符。内容只显示在本机设置页,不会发往任何地方。
 9. **复位脚本是常量**:「恢复默认主题」对窗口执行的 `themes::RESET_SCRIPT` 是编译期常量,不拼接任何输入,只做三件事(删首帧缓存键、删受控 `<style>`、清 `<html>` 内联样式);只能由托盘菜单在 Rust 侧触发,前端没有对应命令。Rust 单测与自检脚本分别检查它的内容与前端常量一致。
 
 ## 10. 内置主题如何纳入体系
@@ -363,13 +364,13 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 
 | 文件 | 作用 |
 |---|---|
-| `themes.rs` | `themes_dir()` / `ensure_dir()` / `discover()`:枚举两种布局、跳过符号链接与隐藏项、大小与数量上限、UTF-8 检查;`RESET_EVENT` / `RESET_SCRIPT`(托盘复位);附单测 |
+| `themes.rs` | `themes_dir()` / `ensure_dir()` / `discover()`:枚举两种布局、跳过符号链接与隐藏项、大小(`read_bounded`:读取本身有上限)与数量上限、UTF-8 检查;`RESET_EVENT` / `RESET_SCRIPT`(托盘复位);附单测 |
 | `commands.rs` | `list_themes()`(无参数)、`get_themes_dir()`;`save_settings` 补齐缺失的 `preferredMode` |
 | `tray.rs` | 托盘菜单「恢复默认主题」(`reset-theme`)→ `reset_theme_to_default()`:改设置、对窗口执行复位脚本、发 `theme://reset`、显示主窗口 |
 | `lib.rs` | 注册模块与命令 |
 | `settings.rs` | `Settings.theme_id`(JSON `themeId`,默认 `"otr"`)、`preferred_mode`(JSON `preferredMode`,旧文件由 `theme` 推导:`normalize_preferred_mode`)、`reset_theme()`;附单测 |
 
-其它:`docs/theme.schema.json`(JSON Schema,编辑器补全;颜色 token 列表、`css` 的钩子键模式、属性名列表与 `font-size` / `line-height` 的正则由自检脚本保证与代码一致)、`scripts/lib/load-theme.mjs`(脚本共用的 esbuild 打包导入)、`scripts/theme-lint.mjs`(命令行校验,`--print-css`;打印后加 token 的取值与来源)、`scripts/theme-contrast.mjs`(按界面真实用法算前景/背景对比度,分组、`--builtin`、`--only`)、`scripts/theme-css-selftest.mjs`(自检,`npm run test:theme`)、`examples/themes/`(示例主题,见 §12.5)。
+其它:`docs/theme.schema.json`(JSON Schema,编辑器补全;全部 token 组的键、`css` 的钩子键模式、属性名列表、`font-size` / `line-height` 的正则,以及调色板长度 / 键数 / 声明数 / 值长度等限值由自检脚本保证与代码一致)、`scripts/lib/load-theme.mjs`(脚本共用的 esbuild 打包导入)、`scripts/theme-lint.mjs`(命令行校验,`--print-css`;打印后加 token 的取值与来源)、`scripts/theme-contrast.mjs`(按界面真实用法算前景/背景对比度,分组、`--builtin`、`--only`)、`scripts/theme-css-selftest.mjs`(自检,`npm run test:theme`)、`examples/themes/`(示例主题,见 §12.5)。
 
 ## 12. 主题作者指南(Author guide)
 
@@ -409,7 +410,7 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 然后按需要往里加:
 
 - **只想做一个模式**:`modes` 里只写 `dark` 或 `light`。用户选你的主题时会临时切到这个模式,深浅按钮整体灰掉;用户原来的深浅偏好不会被改,换回双模式主题时自动恢复。
-- **两个模式**:`modes.dark` 和 `modes.light` 各给一套 `colors`。任何没写的 token 都用默认主题**对应模式**的值,所以可以逐步补全。
+- **两个模式**:`modes.dark` 和 `modes.light` 各给一套 `colors`。任何没写的 token 都用默认主题**对应模式**的值,所以可以逐步补全。公共 `tokens` 里的图表色两种模式共用,要对两种卡片底色都 ≥ 3:1 —— 实际上就是亮度居中的「中间调」(相对亮度约 0.14–0.28;太亮的黄、太深的蓝做不到),做不到时就像灯塔那样每个模式各写一套 `chart`。青瓷(§12.5)是公共 / 模式拆分的完整例子。
 - **和模式无关的东西**(字体、圆角、阴影、图表调色板、Agent 品牌色)放在顶层 `tokens` 里,两种模式共用;如果某个模式要不一样,再在那个模式里覆盖一次即可。
 - **颜色写法**:`"#3b82f6"`、`"#38f"`、`"rgb(59, 130, 246)"`、`"hsl(217 91% 60%)"`、`"217 91% 60%"` 都行;**不要带透明度**(`#ff000080`、`rgba(...)` 会被当成无效并回退)。
 - **Agent 品牌色**:`chart.agents` 的键是 Agent id:内置的 `dsh`、`claude-code`、`codex`、`zcode`、`opencode`、`pi`、`cursor`;自定义 Agent 的 id 在设置页的 id 规则是 `custom-<名字>`(可在 `settings.json` 的 `customAgents` 里看到)。只写你想改的。
@@ -423,7 +424,7 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 - **hover 叠加色**:`overlay` 不必是纯黑 / 纯白;暖色主题用深褐、冷色主题用带色相的浅色,hover 时更协调(界面固定按 5% 叠加)。
 - **token 表达不了的效果**(卡片渐变底、毛玻璃顶栏、标题字距、选中态描边):用 `css` 表,见 §12.6。
 
-完整的 token 名单见 §3;想要编辑器补全,在文件里加 `"$schema": "https://raw.githubusercontent.com/otae-1204/OTR/main/docs/theme.schema.json"`(或指向本仓库 `docs/theme.schema.json` 的本地路径;注意 schema 里的 `$id` 只是标识,不是可下载地址)。§4.1 有一个两种模式齐全的完整示例,§12.5 有两个单模式示例,都可以直接抄。
+完整的 token 名单见 §3;想要编辑器补全,在文件里加 `"$schema": "https://raw.githubusercontent.com/otae-1204/OTR/main/docs/theme.schema.json"`(或指向本仓库 `docs/theme.schema.json` 的本地路径;注意 schema 里的 `$id` 只是标识,不是可下载地址)。§4.1 有一个两种模式齐全的完整示例,§12.5 有五个示例主题(两个双模式、三个单模式),都可以直接抄。
 
 ### 12.3 怎么验证
 
@@ -466,14 +467,27 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 
 ### 12.5 示例主题
 
-`examples/themes/` 里有两个完全按本指南制作的第三方主题,安装方法见该目录的 `README.md`:
+`examples/themes/` 里有五个完全按本指南制作的第三方主题,安装方法见该目录的 `README.md`:
 
 | 文件 | id / 名称 | 模式 | 风格 |
 |---|---|---|---|
 | `warm-paper.json` | `warm-paper` / 暖纸 Warm Paper | 只有 `light` | 米白纸张底、墨褐正文、陶土色主色、大地色图表;衬线字体、较大圆角、暖褐阴影;开关「开」米白滑块 /「关」褐灰滑块;附带 8 个钩子的 `css` 演示(顶栏 / 卡片的纸张渐变、选中 Agent 卡的主色晕染、标题字距、页面标题放大 15%、角标描边、tooltip 毛玻璃),见 §12.6 |
 | `neon-night.json` | `neon-night` / 霓虹夜 Neon Night | 只有 `dark` | 近黑紫底、青色霓虹主色(深色按钮文字)、品红焦点环;等宽字体、近直角、发光阴影;开关「开」深色滑块 /「关」浅色滑块,`shadow.base` 只作青色微光装饰 |
+| `beacon.json` | `beacon` / 灯塔 Beacon | `dark` + `light` | **高对比 / 无障碍**:暗色纯黑底白字、黄色主色、青色焦点环;亮色白底黑字、深蓝主色、洋红焦点环;**所有文字 ≥ 7:1(WCAG AAA)**;图表色暗色用 Okabe-Ito 原色、亮色用 Okabe-Ito + Paul Tol 的深色组合(按 Machado 2009 模拟红 / 绿 / 蓝色盲,两两 ΔE ≥ 14);Verdana 系高易读字体、小圆角、无投影(阴影 token 全部改成 1–2px 描边:卡片 hover、开关滑块、选中的 Agent 卡、tooltip);`css`:卡片标题加粗、统计小格字号 ×1.15、角标字号 ×1.1 并加 `currentColor` 描边、分段控件选中态改成主色实底、chip 选中描焦点环色、表格行 hover 主色淡底 |
+| `celadon.json` | `celadon` / 青瓷 Celadon | `dark` + `light` | **双模式**示例:亮色粉青釉面、暗色深釉;玉色主色、青花蓝焦点环、朱砂 / 赭石点缀;人文无衬线字体(Gill Sans 系)、大圆角;字体 / 圆角 / 图表色 / 不带颜色的 `css` 放公共 `tokens`,语义色 / `stat` / 阴影 / 带颜色的 `css` 放各模式(图表色两种模式共用,所以都选了对两种卡片都 ≥ 3:1 的中间调);`css`:页面标题 ×1.1 与字距、卡片标题字距、表格行行高 ×1.15、选中 Agent 卡的玉色晕染(公共),卡片左上角的釉光与顶栏渐变(各模式) |
+| `fjord.json` | `fjord` / 北境 Fjord | 只有 `dark` | 冷静的北欧风:极夜石板蓝底、霜白正文、冰川青主色、低饱和的极光色图表与柔和的状态色;Inter 系无衬线、中等圆角、深蓝黑柔影;`css`:卡片 / 页面标题改中等字重加字距(公共),顶栏毛玻璃 + 饱和度、统计卡的极光微光渐变、进度条填充的冰面高光、chip 选中描主色(暗色) |
 
-两者都覆盖了全部 33 个 `colors`(含 `*Label` 与 `switchThumb*`)、6 个 `stat`、`chart` 的三项,以及 `font` / `radius` / `shadow`;布局按 §12.2「单模式主题的 token 放哪」(暖纸的 `css` 也放在 `modes.light` 里,因为渐变里带颜色)。`theme-lint.mjs` 零错误零警告;`theme-contrast.mjs` 全部项目达标:文字最低 5.42:1(霓虹夜)/ 4.64:1(暖纸),开关「开 / 关」12.78 / 9.09:1(霓虹夜)与 5.38 / 3.50:1(暖纸)。都做成单模式;Q1 已确认保留 `modes`,以后可以给它们补另一个模式。
+五个主题都覆盖了全部 33 个 `colors`(含 `*Label` 与 `switchThumb*`)、6 个 `stat`、`chart` 的三项,以及 `font` / `radius` / `shadow`(`npm run test:theme` 逐个模式检查);单模式主题按 §12.2「单模式主题的 token 放哪」布局(暖纸的 `css` 也放在 `modes.light` 里,因为渐变里带颜色)。`theme-lint.mjs` 全部零错误零警告;`theme-contrast.mjs` 全部项目达标(双模式主题两个模式都达标):
+
+| 主题 · 模式 | 文字最低 | 图形最低 | 开关 开 / 关 |
+|---|---|---|---|
+| 暖纸 · light | 4.64 | 3.17 | 5.38 / 3.50 |
+| 霓虹夜 · dark | 5.42 | 3.21 | 12.78 / 9.09 |
+| 灯塔 · dark | 7.80 | 3.45 | 11.77 / 8.76 |
+| 灯塔 · light | 7.11 | 3.23 | 6.62 / 12.06 |
+| 青瓷 · dark | 6.00 | 3.47 | 9.42 / 7.15 |
+| 青瓷 · light | 4.79 | 3.13 | 5.27 / 3.92 |
+| 北境 · dark | 4.73 | 3.15 | 7.92 / 5.50 |
 
 ### 12.6 加一点 css(可选)
 
@@ -609,6 +623,24 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 默认理由:刻度是图表的一部分,放大后更容易重叠;真有需求再做 (b)。
 改变主题格式:**否**。
 
+**Q21. 设置文件里任一字段类型不对时,整份设置被默认值覆盖(既有行为)。**
+现状:`Settings::load` 把整个文件一次性反序列化成 `Settings`,任何一个字段类型不对(例如手改成 `"themeId": null`、`"preferredMode": 1`)都会失败并回退 `Settings::default()`;默认值的 `migratedV2` 是 `false`,于是紧接着就 `save` —— 原来的定价表、Agent 启停、自定义 Agent 等全部被默认值覆盖。改造前就是这样(任何字段都会触发),本分支只是多了 `themeId` / `preferredMode` 两个可能被手改坏的字段;正常使用下它们只由应用写入。
+选项:(a) 保持现状(**默认**);(b) 只对主题字段宽松读取(类型不对当作缺字段:`themeId` 回 `otr`,`preferredMode` 由 `theme` 推导);(c) 整份设置宽松读取:先解析成 JSON 值再逐字段取,坏的字段单独用默认值;(d) 读不懂时先把原文件备份成 `settings.json.bak-<时间>` 再写默认值(可与 (b)/(c) 叠加)。
+默认理由:这是设置模块的通用行为,不属于主题接口,改动面超出本轮的最小修复;若要修,推荐 (c) + (d)。
+改变主题格式:**否**(只涉及应用设置文件的读取)。
+
+**Q22. 用户主题可以起一个与内置主题一模一样的展示名。**
+现状:下拉框显示「名称」+(内置时)「 · 内置」。名称内容不受限,用户主题可以直接叫「OTR 默认 · 内置」,与真正的内置项看起来完全相同(本轮已把双向文本控制符算作控制字符拒绝,避免用它们打乱后缀的显示顺序,但把后缀直接写进名字仍然可以)。后果只是认错主题:主题只能改外观,托盘「恢复默认主题」始终可用。
+选项:(a) 保持现状(**默认**);(b) 下拉框用 `<optgroup>` 分「内置 / 主题目录」两组,用户主题后面显示文件名;(c) 校验时拒绝与内置主题同名、或名字里含「内置」的用户主题;(d) 用户主题一律追加「 · 自定义」后缀。
+默认理由:危害小,且是界面设计问题;若要改,(b) 信息量最大、不影响任何现有主题文件。
+改变主题格式:(c) 会收紧 `name` 的合法范围(已有主题可能从合法变成报错),其余选项**否**。
+
+**Q23. 要不要把高对比示例主题「灯塔 Beacon」收编为内置主题。**
+现状:Q9 确认只内置默认主题,Q18 (d) 也提过「另做一个高对比内置主题」。本轮按指南做出了 `examples/themes/beacon.json`(两种模式、所有文字 ≥ 7:1、色盲友好图表色),目前用户需要手动复制到主题目录。
+选项:(a) 保持为示例主题(**默认**);(b) 收编为内置主题(例如 id `otr-high-contrast`,追加进 `BUILTIN_THEMES`,默认主题不变);(c) 收编,并在系统开启高对比度(`prefers-contrast: more` / Windows 对比度主题)时在设置页提示可切换。
+默认理由:内置主题要承担长期兼容(id 进保留列表、组件每次改动都要回归它);先作为示例收集反馈,收编只是在 `builtin.ts` 追加一个清单(同样经 `normalizeBuiltin` 校验),随时可做。
+改变主题格式:**否**((b) / (c) 只是多一个保留 id)。
+
 ## 14. 受限自定义 CSS(`css` 字段)
 
 ### 14.1 格式
@@ -624,7 +656,7 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 
 - **键** = 钩子名(§14.2),可选地加一个状态后缀:`hover` / `active` / `focus` / `disabled` / `selected`。每个键最多 24 条声明,整张表最多 64 个键。
 - **属性** = §14.3 白名单里的 CSS 属性名(小写,前后空白会被去掉)。
-- **值** = 字符串,最长 256 字符,按该属性的语法校验后重新格式化。
+- **值** = 字符串,最长 256 字符(`font-family` / `box-shadow` / `text-shadow` 走与对应 token 相同的语法,最长 200),按该属性的语法校验后重新格式化。
 
 应用把每个键翻译成一个选择器:`card` → `[data-theme-part~="card"]`,`card:hover` → `[data-theme-part~="card"]:hover`,`card:focus` → `…:focus-visible`,`card:disabled` → `…:disabled`,`card:selected` → `…[data-theme-state~="selected"]`。主题里不存在选择器这个概念,也就没有「选择器清洗」的问题。
 
@@ -728,7 +760,7 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 - 组件里不能再写 `text-[13px]`、`leading-[1.1]` 这类任意值(它们不乘倍率);自检脚本会扫描 `src/` 并对 `tailwind.config.js` 的每一档做检查。
 - `--otr-font-scale` / `--otr-line-scale` 是应用自己的变量:主题不能用 `var()` 引用,也不能直接写;首帧缓存里出现也会被丢掉。
 
-`<颜色>` 的写法:`#rgb` / `#rrggbb` / `#rrggbbaa`、`rgb()` / `rgba()` / `hsl()` / `hsla()`(纯数字参数)、`transparent`、`currentColor`,以及 **本主题体系的变量**:`hsl(var(--<语义色或 stat 色>))`、`hsl(var(--primary) / 0.3)`、`var(--chart-1…16)`、`var(--agent-<id>)`。语义色变量是 HSL 三元组,所以必须包在 `hsl()` 里;`--chart-N` / `--agent-*` 是 `#rrggbb`,直接用。这里的颜色**允许透明度**(与 token 不同),因为渐变、阴影、描边天然需要。
+`<颜色>` 的写法:`#rgb` / `#rrggbb` / `#rrggbbaa`、`rgb()` / `rgba()` / `hsl()` / `hsla()`(纯数字参数)、`transparent`、`currentColor`,以及 **本主题体系的变量**:`hsl(var(--<语义色或 stat 色>))`、`hsl(var(--primary) / 0.3)`、`var(--chart-1…16)`、`var(--agent-<id>)`。语义色变量是 HSL 三元组,所以必须包在 `hsl()` 里;`--chart-N` / `--agent-*` 是 `#rrggbb`,直接用(`var(--agent-<id>)` 只能引用由 `a-z 0-9 -` 组成的 id:分词器不收 `.` `_`;内置与设置页生成的 `custom-*` id 都满足)。这里的颜色**允许透明度**(与 token 不同),因为渐变、阴影、描边天然需要。
 
 ### 14.4 明确禁止
 
@@ -742,7 +774,7 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 - **结构注入**:`;`、`{`、`}`、`!important`、`/* */` 注释、`\` 转义、`<`、`>`、控制字符、非 ASCII 字符(`font-family` 除外)。这些字符不在分词器的字符集里,整条值直接拒绝。
 - **任意选择器**:键只能是钩子名 [+ 一个状态];`body`、`*`、`card, body`、`card > x`、`card:nth-child(1)`、`card::before`、`card:visited` 都是「未知钩子 / 未知状态」。
 - **颜色关键字**(`red`、`inherit`、`initial`、`unset`)与 `lab()` / `lch()` / `oklch()` 等新色彩空间:与 token 一致,不接受。
-- **超限**:值 > 256 字符、一个键 > 24 条声明、整表 > 64 个键(多出的丢弃)、渐变 > 4 个或 > 16 个色标、模糊 > 40px、边框 > 8px。
+- **超限**:值 > 256 字符(`font-family` / `box-shadow` / `text-shadow` > 200)、一个键 > 24 条声明、整表 > 64 个键(多出的丢弃)、渐变 > 4 个或 > 16 个色标、模糊 > 40px、边框 > 8px。
 
 ### 14.5 校验、诊断与注入方式
 
@@ -756,7 +788,7 @@ token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、�
 [警告] tokens.css.body: 未知钩子,已忽略(钩子目录见 docs/theme_interface.md §14.2)
 ```
 
-**自检**:`npm run test:theme`(`scripts/theme-css-selftest.mjs`)对同一份代码跑一千二百余条断言:分词器字符集、每个白名单属性 × 十几种注入串、`var()` 越权、键 / 选择器、限额、诊断路径、合并、序列化输出形状(含字号 / 行高只输出倍率变量)、缓存清洗、端到端(清单 → 解析 → 文本)、字号 / 行高的越界与注入用例,以及 JSON Schema(颜色 token、钩子、属性列表、字号 / 行高正则)、`tailwind.config.js`、`index.css` 兜底变量、Rust 复位脚本与代码的一致性。
+**自检**:`npm run test:theme`(`scripts/theme-css-selftest.mjs`)对同一份代码跑一千四百余条断言:分词器字符集、每个白名单属性 × 十几种注入串、`var()` 越权(含应用自己的 `--otr-*`)、新色彩语法 / URL 变体 / 数学函数 / 深层嵌套 / Unicode 空白与双向控制符、键 / 选择器、限额(含一张塞满的表的耗时上界)、诊断路径、合并、序列化输出形状(含字号 / 行高只输出倍率变量)、缓存清洗与首帧恢复(假 DOM)、端到端(清单 → 解析 → 文本)、字号 / 行高的越界与注入用例,以及 JSON Schema(全部 token 列表、钩子、属性列表、字号 / 行高正则、各项限值)、`tailwind.config.js`、`index.css` 兜底变量、Rust 复位脚本与代码的一致性。
 
 **注入**(`applyResolvedTheme`,`src/theme/apply.ts`):解析后的表(`ResolvedTheme.css`)由 `serializeThemeCss` 变成文本 —— 选择器由钩子名生成,属性只出白名单,每个值在序列化前**再归一化一遍**(幂等),再过一次字符集检查。文本放进**唯一一个** `<style id="otr-theme-css">`:不存在则创建,存在则整体替换 `textContent`,主题没有 css 时移除;每次都 `appendChild` 到 `<head>` 末尾,保证在 Vite 注入的样式之后。切换主题 / 模式 / 重新扫描都会走这一步,不会残留上一个主题的规则。首帧防闪的 localStorage 缓存里存的是**表**而不是文本,读回时整张重新校验(`sanitizeCss`)后再序列化。CSP 的 `style-src 'self' 'unsafe-inline'` 本来就允许内联样式;本功能没有改动 CSP。
 

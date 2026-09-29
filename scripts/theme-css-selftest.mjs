@@ -31,6 +31,7 @@ const {
   selectorForKey,
   sanitizeCss,
   validateManifest,
+  parseThemeFile,
   resolveTheme,
   decide,
   parseColor,
@@ -394,7 +395,7 @@ const INJECTIONS = [
   "#fff\\0027",
   "-moz-element(#x)",
   "attr(x)",
-  "#fff‮",
+  "#fff\u202e",
   "x".repeat(300),
 ];
 for (const prop of CSS_PROPERTIES) {
@@ -804,6 +805,256 @@ function run(raw, path = "tokens.css") {
     const mismatch = samples.filter((v) => re.test(v) !== normalizeDeclaration(prop, v).ok);
     check(`schema: ${prop} pattern agrees with code`, mismatch.length === 0, mismatch.join(" "));
   }
+}
+
+// ---------------------------------------------------------------------------
+// 12. 全分支审查补充(round 4):清单结构、文本字段、JSON 报错、首帧缓存、schema 限值、更多绕过串
+// ---------------------------------------------------------------------------
+{
+  const base = { apiVersion: 1, id: "t", name: "T" };
+  // modes 里不是对象的模式:告警且**不算提供**(以前会被当成 `{}`,「已忽略」的模式反而出现在可选模式里)
+  for (const bad of [null, "dark", 1, [], true]) {
+    const r = validateManifest({ ...base, modes: { dark: bad } });
+    check(`mode ${JSON.stringify(bad)} alone → no modes → error`, r.manifest === null && r.diagnostics.some((d) => d.level === "error" && d.path === "modes"), JSON.stringify(r.diagnostics));
+    const r2 = validateManifest({ ...base, modes: { dark: bad, light: {} } });
+    check(`mode ${JSON.stringify(bad)} next to a valid one is dropped`, r2.manifest !== null && Object.keys(r2.manifest.modes).join() === "light" && r2.diagnostics.some((d) => d.path === "modes.dark" && d.level === "warning"), JSON.stringify(r2.diagnostics));
+  }
+  const empty = validateManifest({ ...base, modes: { dark: {} } });
+  check("mode {} still means 'provided, all defaults'", empty.manifest !== null && Object.keys(empty.manifest.modes).join() === "dark" && empty.diagnostics.length === 0);
+
+  // 文本字段:C1 控制字符与双向文本控制符(会把「· 内置」「(无效)」之类的后缀搅乱)按控制字符处理
+  for (const ch of ["\u0085", "\u009f", "\u061c", "\u200e", "\u200f", "\u202a", "\u202e", "\u2066", "\u2069"]) {
+    const n = validateManifest({ ...base, name: `Evil${ch}Theme`, modes: { dark: {} } });
+    check(`name with U+${ch.charCodeAt(0).toString(16).padStart(4, "0")} rejected`, n.manifest === null && n.diagnostics.some((d) => d.path === "name"));
+    const a = validateManifest({ ...base, author: `x${ch}`, modes: { dark: {} } });
+    check(`author with U+${ch.charCodeAt(0).toString(16).padStart(4, "0")} dropped`, a.manifest !== null && a.manifest.author === undefined && a.diagnostics.some((d) => d.path === "author"));
+  }
+  const cjk = validateManifest({ ...base, name: "青瓷 Celadon · 深浅", author: "作者 🎨", modes: { dark: {} } });
+  check("ordinary CJK / emoji names still fine", cjk.manifest?.name === "青瓷 Celadon · 深浅" && cjk.manifest?.author === "作者 🎨" && cjk.diagnostics.length === 0, JSON.stringify(cjk.diagnostics));
+
+  // JSON 语法错误:引擎报错会带原文片段,截断到 160 字符并去掉控制字符
+  const prefix = "不是合法 JSON:";
+  for (const text of [`{"a": ${"x".repeat(5000)}}`, `{"a": "b\u0001c"}`, `{"a": \u0007\u202e}`, "{", ""]) {
+    const r = parseThemeFile(text);
+    const msg = r.diagnostics[0]?.message ?? "";
+    check(`json error for ${JSON.stringify(text.slice(0, 16))} is bounded`, r.manifest === null && msg.startsWith(prefix) && msg.length <= prefix.length + 161 && !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(msg), JSON.stringify(msg).slice(0, 120));
+  }
+  check("BOM is still accepted", parseThemeFile(`\ufeff${JSON.stringify({ ...base, modes: { dark: {} } })}`).manifest !== null);
+}
+
+// 首帧缓存(bootTheme / resetThemeDom):用一个最小的假 DOM 跑应用里的真实代码
+{
+  const store = new Map();
+  const props = new Map();
+  const els = new Map();
+  const html = {
+    classList: { set: new Set(), toggle(c, on) { if (on) this.set.add(c); else this.set.delete(c); } },
+    style: { colorScheme: "", setProperty: (k, v) => props.set(k, v), removeProperty: (k) => props.delete(k) },
+    dataset: {},
+  };
+  const prevDoc = globalThis.document;
+  const prevLs = globalThis.localStorage;
+  globalThis.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
+  globalThis.document = {
+    documentElement: html,
+    getElementById: (id) => els.get(id) ?? null,
+    createElement: (tag) => ({ tagName: tag.toUpperCase(), id: "", textContent: "", remove() { els.delete(this.id); } }),
+    head: { appendChild: (el) => els.set(el.id, el) },
+  };
+  try {
+    store.set("token-show-theme", "light");
+    store.set(THEME_CACHE_KEY, JSON.stringify({
+      id: "cached",
+      mode: "light",
+      vars: {
+        "--background": "0 0% 100%",
+        "--agent-custom.bot": "#123456",
+        "--agent-my_agent": "#654321",
+        "--otr-font-scale": "3",
+        "--Background": "x",
+        "bad key": "x",
+        "--card": 42,
+      },
+      css: {
+        header: { color: "#fff" },
+        card: { color: "#fff; } body { display: none", position: "fixed", opacity: "0.5" },
+        "card, body": { color: "#fff" },
+        badge: { "font-size": "3em" },
+      },
+    }));
+    T.bootTheme();
+    check("boot: mode from token-show-theme", !html.classList.set.has("dark") && html.style.colorScheme === "light");
+    check("boot: cached vars restored", props.get("--background") === "0 0% 100%" && html.dataset.theme === "cached");
+    check("boot: agent vars with . and _ restored (ids allow them)", props.get("--agent-custom.bot") === "#123456" && props.get("--agent-my_agent") === "#654321");
+    check("boot: --otr-* never restored from cache", !props.has("--otr-font-scale"));
+    check("boot: junk keys / non-string values dropped", !props.has("--Background") && !props.has("bad key") && !props.has("--card"));
+    const styleText = els.get(THEME_STYLE_ID)?.textContent ?? "";
+    check("boot: cached css re-validated", styleText.includes('[data-theme-part~="header"]') && styleText.includes("opacity: 0.5") && !/position|display|body|3em|--otr-font-scale: 3/.test(styleText), JSON.stringify(styleText));
+    // 缓存模式与记忆的模式不一致 → 只切模式、不用缓存
+    props.clear();
+    els.clear();
+    store.set("token-show-theme", "dark");
+    T.bootTheme();
+    check("boot: cache for another mode is ignored", html.classList.set.has("dark") && props.size === 0 && els.size === 0);
+    // 应用一个主题再复位:变量、受控 <style>、缓存都清掉
+    const { manifest } = validateManifest({ apiVersion: 1, id: "x", name: "X", modes: { dark: { css: { card: { opacity: "0.9" } } } } });
+    T.applyResolvedTheme(resolveTheme(manifest, "dark", "user"));
+    check("apply: vars + style + cache written", props.size > 40 && els.has(THEME_STYLE_ID) && store.has(THEME_CACHE_KEY) && html.dataset.theme === "x");
+    T.resetThemeDom();
+    check("reset: everything the theme wrote is gone", props.size === 0 && !els.has(THEME_STYLE_ID) && !store.has(THEME_CACHE_KEY) && html.dataset.theme === undefined);
+    // 被篡改的缓存(不是 JSON / 缺字段)不会抛异常
+    for (const junk of ["{", "null", '{"id":1}', '{"id":"a","mode":"sepia","vars":{}}', '{"id":"a","mode":"dark","vars":null}']) {
+      store.set(THEME_CACHE_KEY, junk);
+      let ok = true;
+      try { T.bootTheme(); } catch { ok = false; }
+      check(`boot survives junk cache ${junk}`, ok && props.size === 0);
+    }
+  } finally {
+    globalThis.document = prevDoc;
+    globalThis.localStorage = prevLs;
+  }
+}
+
+// schema 与代码:其余 token 组、限值
+{
+  const schema = JSON.parse(fs.readFileSync(path.join(repoRoot, "docs", "theme.schema.json"), "utf8"));
+  const tok = schema.definitions.tokens.properties;
+  for (const [group, list] of [["stat", T.STAT_TOKENS], ["font", T.FONT_TOKENS], ["radius", T.RADIUS_TOKENS], ["shadow", T.SHADOW_TOKENS]]) {
+    const keys = Object.keys(tok[group]?.properties ?? {});
+    check(`schema: ${group} token list identical`, keys.join("|") === list.join("|"), `schema=${keys.join(",")} code=${list.join(",")}`);
+  }
+  check("schema: chart keys", Object.keys(tok.chart.properties).join("|") === "palette|agents|agentFallback");
+  check("schema: palette length = MAX_PALETTE_LENGTH", schema.definitions.colorList.maxItems === T.MAX_PALETTE_LENGTH && schema.definitions.colorList.minItems === 1);
+  check("schema: css key count = MAX_CSS_KEYS", tok.css.maxProperties === T.MAX_CSS_KEYS, String(tok.css.maxProperties));
+  check("schema: decls per key = MAX_CSS_DECLS", schema.definitions.cssBlock.maxProperties === T.MAX_CSS_DECLS);
+  check("schema: css value length = MAX_CSS_VALUE_LEN", schema.definitions.cssValue.maxLength === T.MAX_CSS_VALUE_LEN);
+  check("schema: token groups", Object.keys(tok).join("|") === "colors|stat|chart|font|radius|shadow|css");
+  check("schema: top-level id pattern = ID rule", schema.properties.id.pattern === "^[a-z0-9][a-z0-9._-]{0,63}$" && tok.chart.properties.agents.propertyNames.pattern === schema.properties.id.pattern);
+  // 走字符串语法的三个属性上限是 200(与 token 相同),不是一般值的 256
+  const cb = schema.definitions.cssBlock.properties;
+  for (const prop of ["font-family", "box-shadow", "text-shadow"]) {
+    check(`schema: ${prop} maxLength 200`, cb[prop]?.maxLength === 200, JSON.stringify(cb[prop]));
+  }
+  check("code: font-family 200 ok / 201 rejected", normalizeDeclaration("font-family", "a".repeat(200)).ok && !normalizeDeclaration("font-family", "a".repeat(201)).ok);
+  // 恰好 len 个字符的合法阴影:n 层 "0 0 1px #000",多出来的字符补在最后一层的 1px 上(1.000px / 01px,值不变)
+  const shadowOf = (len) => {
+    const n = Math.floor((len + 2) / 14);
+    const extra = len - (14 * n - 2);
+    const last = extra === 0 ? "1px" : extra === 1 ? "01px" : `1.${"0".repeat(extra - 1)}px`;
+    return [...Array(n - 1).fill("0 0 1px #000"), `0 0 ${last} #000`].join(", ");
+  };
+  const s200 = shadowOf(200);
+  const s201 = shadowOf(201);
+  check("helper builds exact lengths", s200.length === 200 && s201.length === 201, `${s200.length}/${s201.length}`);
+  check("code: box-shadow 200 ok / 201 rejected", normalizeDeclaration("box-shadow", s200).ok && !normalizeDeclaration("box-shadow", s201).ok);
+  check("code: text-shadow 200 ok / 201 rejected", normalizeDeclaration("text-shadow", s200).ok && !normalizeDeclaration("text-shadow", s201).ok);
+}
+
+// 更多绕过串:应用自己的变量、新色彩语法、URL 变体、数学函数、深层嵌套、Unicode 混淆
+{
+  for (const [prop, v] of [
+    ["color", "hsl(var(--otr-font-scale))"],
+    ["color", "var(--otr-font-scale)"],
+    ["font-size", "var(--otr-font-scale)"],
+    ["line-height", "var(--otr-line-scale)"],
+    ["opacity", "var(--otr-font-scale)"],
+    ["color", "var(--agent-foo_bar)"],
+    ["color", "rgb(from #fff r g b)"],
+    ["color", "oklch(0.7 0.1 200)"],
+    ["color", "lch(50% 30 200)"],
+    ["color", "hwb(200 10% 10%)"],
+    ["color", "color(srgb 1 0 0)"],
+    ["color", "light-dark(#fff, #000)"],
+    ["color", "Url(x)"],
+    ["color", "URL(x)"],
+    ["background-image", "src(x)"],
+    ["background-image", "image(#fff)"],
+    ["background-image", "linear-gradient(#fff, #000) , url(x)"],
+    ["border-radius", "min(1px, 2px)"],
+    ["border-radius", "clamp(1px, 2px, 3px)"],
+    ["letter-spacing", "max(1px, 2px)"],
+    ["font-size", "min(1.1em, 1.2em)"],
+    ["opacity", "1e0"],
+    ["font-weight", "1e3"],
+    ["background-image", "linear-gradient(1e3deg, #fff, #000)"],
+    ["background-image", "linear-gradient(#fff 99999999999999999999px, #000)"],
+    ["color", "rgb(".repeat(40) + ")".repeat(40)],
+    ["color", "#f\u00a0ff"],
+    ["color", "#f\u3000ff"],
+    ["color", "＃fff"],
+    ["color", "#ｆｆｆ"],
+    ["color", "#fff\u200b"],
+    ["color", "#f\ufeffff"],
+    ["color", "rgb(0\u00a00 0)"],
+    ["font-family", "a\u202eb"],
+    ["font-family", "a\u2028b"],
+    ["font-family", "a\u00a0b"],
+    ["font-family", '"a\\"b"'],
+    ["font-family", '"</style><script>"'],
+    ["font-family", "a; b"],
+    ["font-family", "a{b}"],
+    ["font-family", "a/*b*/"],
+    ["font-family", "a\nb"],
+    ["box-shadow", "0 0 4px rgba(0,0,0,.5)</style>"],
+    ["box-shadow", "0 0 \u00000\u0000"],
+    ["box-shadow", "0 0 4px rgba(0,0,0,0.5;x)"],
+    ["text-shadow", "0 0 1px rgb(0 0 0) \;"],
+  ]) {
+    rejects(prop, v);
+  }
+  // 首尾的 Unicode 空白(NBSP、全角空格、BOM)按 String.prototype.trim 去掉,输出是重新格式化的值
+  accepts("color", "#fff\u00a0", "#ffffff");
+  accepts("color", "\u3000#fff", "#ffffff");
+  accepts("color", "#fff\ufeff", "#ffffff");
+  // 全角 / 其它文字的「字母」只在 font-family 里允许,输出里也原样只是字母
+  accepts("font-family", "Ｆｏｎｔ, \"思源黑体\"", 'Ｆｏｎｔ, "思源黑体"');
+  // 性能上界:64 个键 × 24 条 × 接近上限的值,整张表校验 + 序列化应当很快
+  const big = {};
+  const parts = THEME_PARTS.slice(0, 32);
+  for (const p of parts) {
+    for (const st of ["", ":hover"]) {
+      const block = {};
+      for (const prop of CSS_PROPERTIES.slice(0, 24)) block[prop] = `linear-gradient(${Array.from({ length: 16 }, () => "#abcdef 10%").join(", ")})`.slice(0, 250);
+      big[`${p}${st}`] = block;
+    }
+  }
+  const t0 = performance.now();
+  const out = validateCss(big, "tokens.css", () => undefined);
+  const text = serializeThemeCss(out);
+  const ms = performance.now() - t0;
+  check("validate + serialize a maxed-out table in < 1500ms", ms < 1500, `${ms.toFixed(0)}ms`);
+  check("maxed-out table output is well-formed", typeof text === "string" && !/[;{}]\s*[;{}]/.test(text.replace(/;\n\}/g, "")));
+}
+
+// 示例主题:零诊断,并且写全了文档承诺的 token(README / §12.5 的说法由这里守住)
+{
+  const dir = path.join(repoRoot, "examples", "themes");
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
+  check("examples: at least five themes", files.length >= 5, files.join(","));
+  let dual = 0;
+  for (const f of files) {
+    const { manifest, diagnostics } = parseThemeFile(fs.readFileSync(path.join(dir, f), "utf8"), { reservedIds: ["otr"] });
+    check(`example ${f}: loads with zero diagnostics`, manifest !== null && diagnostics.length === 0, JSON.stringify(diagnostics));
+    if (!manifest) continue;
+    check(`example ${f}: id matches file name`, `${manifest.id}.json` === f);
+    const modes = Object.keys(manifest.modes);
+    if (modes.length === 2) dual++;
+    for (const mode of modes) {
+      const own = (g) => ({ ...manifest.tokens?.[g], ...manifest.modes[mode]?.[g] });
+      const miss = [
+        ...T.COLOR_TOKENS.filter((k) => own("colors")[k] === undefined).map((k) => `colors.${k}`),
+        ...T.STAT_TOKENS.filter((k) => own("stat")[k] === undefined).map((k) => `stat.${k}`),
+        ...["palette", "agents", "agentFallback"].filter((k) => own("chart")[k] === undefined).map((k) => `chart.${k}`),
+        ...T.FONT_TOKENS.filter((k) => own("font")[k] === undefined).map((k) => `font.${k}`),
+        ...T.RADIUS_TOKENS.filter((k) => own("radius")[k] === undefined).map((k) => `radius.${k}`),
+        ...T.SHADOW_TOKENS.filter((k) => own("shadow")[k] === undefined).map((k) => `shadow.${k}`),
+      ];
+      check(`example ${f} (${mode}): complete token set`, miss.length === 0, miss.join(" "));
+      const agents = own("chart").agents ?? {};
+      check(`example ${f} (${mode}): brand colors for every built-in agent`, ["dsh", "claude-code", "codex", "zcode", "opencode", "pi", "cursor"].every((a) => agents[a]));
+    }
+  }
+  check("examples: at least one dual-mode theme", dual >= 1);
 }
 
 // ---------------------------------------------------------------------------

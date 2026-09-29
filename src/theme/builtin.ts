@@ -7,7 +7,7 @@
  * (index.css 那份是 JS 跑起来之前的兜底,改一处务必同步另一处)。
  */
 
-import type { ThemeManifest, ThemeTokens, ThemeMode } from "./types";
+import type { ThemeManifest, ThemeTokens } from "./types";
 import { validateManifest } from "./validate";
 
 /** 与深浅模式无关的公共 token */
@@ -187,7 +187,3 @@ export const OTR_THEME: ThemeManifest = normalizeBuiltin(OTR_RAW);
 
 /** 随应用打包的主题,按展示顺序排列;第一个必须是默认主题 */
 export const BUILTIN_THEMES: readonly ThemeManifest[] = [OTR_THEME];
-
-export function builtinModeTokens(mode: ThemeMode): ThemeTokens {
-  return OTR_THEME.modes[mode] ?? OTR_DARK;
-}

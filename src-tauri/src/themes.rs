@@ -10,6 +10,7 @@
 //! - 单文件超过 [`MAX_THEME_FILE_BYTES`] 只报错不读,主题总数上限 [`MAX_THEMES`];
 //! - 只认两种布局:`themes/<name>.json` 与 `themes/<name>/theme.json`;隐藏项跳过。
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -116,48 +117,53 @@ fn candidates(dir: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
+/// 读出文件内容,最多读 `limit + 1` 字节:先看元数据只是为了尽早报错,真正的上限在读取本身 ——
+/// 检查与读取之间文件被换大(或换成别的东西)也读不进超过上限的内容。
+/// `Ok(Err(size))` 表示超限(`size` 是已知的下限,仅用于提示)。
+fn read_bounded(path: &Path, limit: u64) -> std::io::Result<Result<Vec<u8>, u64>> {
+    let file = std::fs::File::open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "不是普通文件"));
+    }
+    if meta.len() > limit {
+        return Ok(Err(meta.len()));
+    }
+    let mut buf = Vec::with_capacity(meta.len() as usize);
+    file.take(limit + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > limit {
+        return Ok(Err(buf.len() as u64));
+    }
+    Ok(Ok(buf))
+}
+
 fn read_one(name: String, path: PathBuf) -> ThemeFile {
     let path_str = path.to_string_lossy().to_string();
-    let size = match std::fs::metadata(&path) {
-        Ok(m) => m.len(),
-        Err(e) => {
-            return ThemeFile {
-                path: path_str,
-                name,
-                contents: None,
-                error: Some(format!("无法读取:{e}")),
-            }
-        }
+    let fail = |error: String| ThemeFile {
+        path: path_str.clone(),
+        name: name.clone(),
+        contents: None,
+        error: Some(error),
     };
-    if size > MAX_THEME_FILE_BYTES {
-        return ThemeFile {
-            path: path_str,
-            name,
-            contents: None,
-            error: Some(format!(
+    let bytes = match read_bounded(&path, MAX_THEME_FILE_BYTES) {
+        Ok(Ok(b)) => b,
+        Ok(Err(size)) => {
+            return fail(format!(
                 "文件 {} KiB,超过 {} KiB 上限,未读取",
                 size / 1024,
                 MAX_THEME_FILE_BYTES / 1024
-            )),
-        };
-    }
-    match std::fs::read_to_string(&path) {
+            ))
+        }
+        Err(e) => return fail(format!("无法读取:{e}")),
+    };
+    match String::from_utf8(bytes) {
         Ok(text) => ThemeFile {
             path: path_str,
             name,
             contents: Some(text),
             error: None,
         },
-        Err(e) => ThemeFile {
-            path: path_str,
-            name,
-            contents: None,
-            error: Some(if e.kind() == std::io::ErrorKind::InvalidData {
-                "不是 UTF-8 文本".to_string()
-            } else {
-                format!("无法读取:{e}")
-            }),
-        },
+        Err(_) => fail("不是 UTF-8 文本".to_string()),
     }
 }
 
@@ -250,6 +256,27 @@ mod tests {
         let ok = found.iter().find(|f| f.name == "ok").unwrap();
         assert_eq!(ok.contents.as_deref(), Some("{}"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 上限按读到的字节算:恰好等于上限的文件能读,多一个字节就不读(与大小检查的边界一致)
+    #[test]
+    fn size_limit_is_enforced_by_the_read_itself() {
+        let dir = temp("bounded");
+        let exact = vec![b' '; MAX_THEME_FILE_BYTES as usize];
+        std::fs::write(dir.join("exact.json"), &exact).unwrap();
+        let path = dir.join("exact.json");
+        assert_eq!(
+            read_bounded(&path, MAX_THEME_FILE_BYTES).unwrap().map(|b| b.len()),
+            Ok(MAX_THEME_FILE_BYTES as usize)
+        );
+        // 元数据说小、实际读到的更多(检查之后文件被写大)同样拒绝:用更小的上限模拟
+        assert!(read_bounded(&path, 16).unwrap().is_err());
+        // 目录不是普通文件
+        assert!(read_bounded(&dir, MAX_THEME_FILE_BYTES).is_err());
+        let found = discover(&dir);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].contents.as_ref().map(|c| c.len()), Some(MAX_THEME_FILE_BYTES as usize));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
