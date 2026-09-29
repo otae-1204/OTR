@@ -1,7 +1,7 @@
 # OTR 主题接口(Theme API)设计文档
 
 > 版本:主题格式 `apiVersion = 1`;对应 OTR 0.2.x。
-> 相关代码:`src/theme/`(前端)、`src-tauri/src/themes.rs`(后端)、`docs/theme.schema.json`(JSON Schema)、`scripts/theme-lint.mjs`(校验脚本)。
+> 相关代码:`src/theme/`(前端)、`src-tauri/src/themes.rs`(后端)、`docs/theme.schema.json`(JSON Schema)、`scripts/theme-lint.mjs`(校验脚本)、`scripts/theme-contrast.mjs`(对比度检查)、`examples/themes/`(示例主题)。
 
 ## 1. 背景与现状分析
 
@@ -40,19 +40,21 @@ CSP(`tauri.conf.json`)已经是 `style-src 'self' 'unsafe-inline'; img-src 'self
 | `background` / `foreground` | `--background` / `--foreground` | 页面底色 / 正文 | `240 5% 12%` / `0 0% 93%` |
 | `card` / `cardForeground` | `--card` / `--card-foreground` | 卡片底色 / 文字 | `240 5% 16%` / `0 0% 93%` |
 | `popover` / `popoverForeground` | `--popover` / `--popover-foreground` | 浮层 | `240 5% 14%` / `0 0% 93%` |
-| `primary` / `primaryForeground` | `--primary` / `--primary-foreground` | 主色(图标、选中态、开关)/ 其上的文字 | `210 100% 56%` / `0 0% 100%` |
+| `primary` / `primaryForeground` | `--primary` / `--primary-foreground` | 主色(图标、选中态、「启动时最小化到托盘」开关、主按钮;也直接当**小号文字色**用:链接、角标)/ 主按钮上的文字,**同时也是设置页开关的滑块颜色**(见 §12.2) | `210 100% 56%` / `0 0% 100%` |
 | `secondary` / `secondaryForeground` | `--secondary` / `--secondary-foreground` | 次级底色 | `240 5% 20%` / `0 0% 93%` |
 | `muted` / `mutedForeground` | `--muted` / `--muted-foreground` | 弱化底色(分段控件轨道、进度条空轨)/ 次要文字、图表刻度 | `240 5% 20%` / `240 5% 65%` |
 | `accent` / `accentForeground` | `--accent` / `--accent-foreground` | 强调底色 | `240 5% 20%` / `0 0% 93%` |
-| `destructive` / `destructiveForeground` | `--destructive` / `--destructive-foreground` | 危险操作(全量重扫按钮) | `0 62% 45%` / `0 0% 100%` |
+| `destructive` / `destructiveForeground` | `--destructive` / `--destructive-foreground` | 危险操作的**文字**与描边(全量重扫按钮、删除按钮 hover)、检查更新 / 汇率 / 价格拉取失败的错误文字 | `0 62% 45%` / `0 0% 100%` |
 | `border` / `input` / `ring` | `--border` / `--input` / `--ring` | 边框、输入框边框、焦点环;图表网格线也用 `border` | `240 5% 24%` ×2 / `210 100% 56%` |
 | `overlay` | `--overlay` | hover 高亮叠加的**基色**,界面按 5% 透明度叠加(`hover:bg-overlay/5`) | `0 0% 100%`(亮色下是黑) |
-| `success` / `warning` / `danger` | `--success` / `--warning` / `--danger` | 状态色**填充**:额度进度条、缓存命中率条、⚠ 图标、错误点 | emerald-500 / amber-500 / red-500 |
-| `successText` / `warningText` / `dangerText` | `--success-text` / `--warning-text` / `--danger-text` | 状态色**文字**(放在浅色底上;默认亮色更深、暗色更浅) | emerald-400 / amber-400 / red-500 |
-| `info` | `--info` | 信息色(目前用于「请求次数」指标的默认值) | sky-500 |
-| `notice` | `--notice` | 「有新版本」小红点与角标 | orange-500 |
+| `success` / `warning` / `danger` | `--success` / `--warning` / `--danger` | 状态色**填充**:额度进度条、缓存命中率条、设置页开关的「开」态轨道。注意 `success` / `warning` **也被直接当文字色用**(额度剩余百分比、「缓存命中率」标题、设置保存成功提示、定价表里「手动」来源标签、Agent 卡的 ⚠ 图标),要在 `card` 上可读;`danger` 只作填充 | emerald-500 / amber-500 / red-500 |
+| `successText` / `warningText` / `dangerText` | `--success-text` / `--warning-text` / `--danger-text` | 状态色**文字**:放在 `card` 上,或放在同色 10–15% 淡底的角标上(默认亮色更深、暗色更浅) | emerald-400 / amber-400 / red-500 |
+| `info` | `--info` | 信息色。**界面目前没有引用**(预留);「请求次数」指标用的是 `stat.calls`,只是默认值恰好相同 | sky-500 |
+| `notice` | `--notice` | 「有新版本」小红点,以及角标的**文字**(底色是它自己的 15%) | orange-500 |
 
 Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-text` / `text-danger-text` / `bg-notice` / `hover:bg-overlay/5` 等(见 `tailwind.config.js`)。
+
+**目前界面没有引用的 token**:`cardForeground`、`popover` / `popoverForeground`、`secondary` / `secondaryForeground`、`accent` / `accentForeground`、`input`、`destructiveForeground`、`info`。它们会被校验、写成 CSS 变量,但当前没有组件使用 —— 例如卡片上的文字用的是 `foreground` 而不是 `cardForeground`。主题里写上它们无害(以后组件用到时自动生效),但改它们现在看不到变化(见待确认问题 Q12)。
 
 ### 3.2 `stat` —— 统计卡六项指标的强调色
 
@@ -64,6 +66,8 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 | `cacheWrite` | `--stat-cache-write` | amber-500 `#f59e0b` |
 | `calls` | `--stat-calls` | sky-500 `#0ea5e9` |
 | `cost` | `--stat-cost` | green-500 `#22c55e`(会话明细表的成本列也用它) |
+
+这六个颜色都是**文字色**:统计卡里 11px 的指标标签(底色是 `background` 40% 叠在 `card` 上),`cost` 还用于会话表的成本数字。选色时按正文对比度要求。
 
 ### 3.3 `chart` —— 图表调色板(JS 直接消费,归一化成 `#rrggbb`)
 
@@ -100,7 +104,7 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 
 | 字段 | 必填 | 类型 | 说明 |
 |---|---|---|---|
-| `$schema` | 否 | string | 可指向 `docs/theme.schema.json`,给编辑器补全用;应用忽略 |
+| `$schema` | 否 | string | 可指向 `docs/theme.schema.json`(在线地址见 §12.2),给编辑器补全用;应用忽略 |
 | `apiVersion` | **是** | integer | 主题格式版本,当前必须是 `1` |
 | `id` | **是** | string | 唯一 id:`^[a-z0-9][a-z0-9._-]{0,63}$`。不能用内置主题的 id(`otr`) |
 | `name` | **是** | string | 展示名,1–64 字符 |
@@ -117,7 +121,7 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 <!-- theme-example:start -->
 ```json
 {
-  "$schema": "https://github.com/otae-1204/OTR/docs/theme.schema.json",
+  "$schema": "https://raw.githubusercontent.com/otae-1204/OTR/main/docs/theme.schema.json",
   "apiVersion": 1,
   "id": "ocean",
   "name": "Ocean",
@@ -237,7 +241,9 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 
 **内置主题**同样跑一遍校验(`normalizeBuiltin`),写坏了会在开发期直接抛错。
 
-**命令行校验**:`node scripts/theme-lint.mjs <文件>`,用的是应用里同一份代码。
+**命令行校验**:`node scripts/theme-lint.mjs <文件>`,用的是应用里同一份代码。可选的对比度检查:`node scripts/theme-contrast.mjs <文件>`(见 §12.3)。
+
+**编码**:文件须是 UTF-8;开头的 BOM 会被忽略(Windows 记事本 / PowerShell 5.1 常会写出 BOM)。
 
 ## 8. 回退策略
 
@@ -306,7 +312,7 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 | `lib.rs` | 注册模块与命令 |
 | `settings.rs` | `Settings.theme_id`(JSON `themeId`,默认 `"otr"`);旧文件缺字段自动补默认;附单测 |
 
-其它:`docs/theme.schema.json`(JSON Schema,编辑器补全)、`scripts/theme-lint.mjs`(命令行校验)。
+其它:`docs/theme.schema.json`(JSON Schema,编辑器补全)、`scripts/theme-lint.mjs`(命令行校验)、`scripts/theme-contrast.mjs`(按界面真实用法算前景/背景对比度)、`examples/themes/`(示例主题,见 §12.5)。
 
 ## 12. 主题作者指南(Author guide)
 
@@ -317,6 +323,8 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
    - `themes/<任意名字>.json`
    - `themes/<任意名字>/theme.json`
 3. 回到设置页点「重新扫描」,下拉框里就会出现你的主题;选中即生效,不用重启。
+
+文件用 UTF-8 保存(带不带 BOM 都行)。设置页提示里写的 `theme.json` 泛指主题文件:单文件布局下文件名随意,只要扩展名是 `.json`;目录布局下文件名必须是 `theme.json`。
 
 ### 12.2 怎么写
 
@@ -351,8 +359,12 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 - **字体**:`font.sans` 是逗号分隔的字体族,例如 `"\"JetBrains Mono\", \"PingFang SC\", sans-serif"`。只能用系统已安装的字体;不能引用文件或网址。
 - **圆角**:`"0.5rem"`、`"8px"`、`"0"`;上限 128px / 8rem。
 - **阴影**:每层 `[inset] 偏移x 偏移y [模糊] [扩散] [颜色]`,多层用逗号;颜色可以带透明度,例如 `"0 4px 12px rgba(0,0,0,0.35)"`;`"none"` 表示无阴影。
+- **单模式主题的 token 放哪**:建议把带颜色的组(`colors`、`stat`、`chart`、`shadow`)都写在那个模式里,只把 `font`、`radius` 放顶层 `tokens`。这些颜色是针对这一种底色调的,以后补另一个模式时不会被误继承;将来若取消 `modes` 层(Q1),迁移也只是把 `modes.<模式>` 合并进 `tokens`。
+- **哪些颜色会被当文字**(按正文 4.5:1 选色):`foreground`(放在 `background`、`card` 上)、`mutedForeground`(`background`、`card`、`muted` 上)、`primary`(`card` 上的链接与角标)、`primaryForeground`(`primary` 上)、`destructive`、`success`、`warning`、三个 `*Text`、`notice`、`stat` 的六个颜色。图形类(`ring`、进度条、`chart.palette`、`chart.agents`)按 3:1。逐项说明见 §3.1 / §3.2,`scripts/theme-contrast.mjs` 会把这些组合算一遍。
+- **开关滑块**:设置页里那排开关(额度来源、Agent 启用)的滑块颜色是 `primaryForeground`,轨道「开」是 `success`、「关」是 `mutedForeground` 的 30%。如果主色很亮、`primaryForeground` 取了深色(暗色霓虹风常见),「关」态的深色滑块会几乎看不见。`shadow.base` 只用在开关滑块上,可以用它给滑块描一圈浅色边来补救,例如 `"0 0 0 1px rgba(238, 236, 255, 0.7), 0 1px 4px 0 rgba(0, 0, 0, 0.6)"`(见待确认问题 Q11)。「启动时最小化到托盘」开关不一样:滑块是 `background` 色,轨道「开」是 `primary`、「关」是 `muted`。
+- **hover 叠加色**:`overlay` 不必是纯黑 / 纯白;暖色主题用深褐、冷色主题用带色相的浅色,hover 时更协调(界面固定按 5% 叠加)。
 
-完整的 token 名单见 §3;想要编辑器补全,在文件里加 `"$schema": "https://github.com/otae-1204/OTR/docs/theme.schema.json"`(或指向本仓库 `docs/theme.schema.json` 的本地路径)。§4.1 有一个两种模式齐全的完整示例可以直接抄。
+完整的 token 名单见 §3;想要编辑器补全,在文件里加 `"$schema": "https://raw.githubusercontent.com/otae-1204/OTR/main/docs/theme.schema.json"`(或指向本仓库 `docs/theme.schema.json` 的本地路径;注意 schema 里的 `$id` 只是标识,不是可下载地址)。§4.1 有一个两种模式齐全的完整示例,§12.5 有两个单模式示例,都可以直接抄。
 
 ### 12.3 怎么验证
 
@@ -361,8 +373,13 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
    node scripts/theme-lint.mjs path/to/theme.json
    ```
    通过时打印 `✓ 通过`,并列出每个模式解析后的关键颜色与调色板;有 `[错误]` 表示应用会拒绝加载,有 `[警告]` 表示那一项会回退默认值。退出码 0 / 1。
-2. **应用内**:设置页的主题一行下方会列出每个用户主题的错误与警告(带字段路径,如 `modes.dark.colors.prmary: 未知字段,已忽略`);无效主题在下拉框里灰显。
-3. **肉眼核对清单**:仪表盘的 Hero 卡、四张 Agent 卡、趋势图(线色与图例)、模型占比环、会话表;额度页的进度条(绿 / 橙 / 红);设置页的开关、角标、错误提示;两种模式都切一遍;hover 一下卡片与按钮看叠加色。
+2. **对比度**(可选,同样要先 `npm install`):
+   ```bash
+   node scripts/theme-contrast.mjs path/to/theme.json
+   ```
+   按界面里真实的前景 / 背景组合(包括 `bg-success/10` 这类半透明底,按浏览器方式混合)计算 WCAG 对比度:文字按 4.5:1,图形 / 控件按 3:1;标「参考」的项只打印不计入。有不达标项时退出码为 1。
+3. **应用内**:设置页的主题一行下方会列出每个用户主题的错误与警告(带字段路径,如 `modes.dark.colors.prmary: 未知字段,已忽略`);无效主题在下拉框里灰显。
+4. **肉眼核对清单**:仪表盘的 Hero 卡、四张 Agent 卡、趋势图(线色与图例)、模型占比环、会话表;额度页的进度条(绿 / 橙 / 红);设置页的开关、角标、错误提示;两种模式都切一遍;hover 一下卡片与按钮看叠加色。
 
 ### 12.4 常见错误
 
@@ -373,6 +390,20 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 | 字体没生效 | 字体族里有括号、斜杠等白名单外字符,或引号不成对 |
 | 明明改了文件但没变化 | 没点「重新扫描」;或另一个文件用了同一个 `id`(按文件名排序靠前的那个生效) |
 | 选了主题后模式按钮灰了 | 主题只提供了一个模式,这是预期行为 |
+| 改了 `cardForeground` / `popover` / `secondary` / `accent` 等没有任何变化 | 这些 token 目前界面没有引用(§3.1);卡片文字要改 `foreground` |
+| 选回别的主题后还是亮色 / 暗色 | 单模式主题会把深浅模式切过去并保存;选回双模式主题时不会自动恢复,手动切回即可(见 Q14) |
+| 「不是合法 JSON」但内容看着没错 | JSON 不允许注释和末尾多余的逗号 |
+
+### 12.5 示例主题
+
+`examples/themes/` 里有两个完全按本指南制作的第三方主题,安装方法见该目录的 `README.md`:
+
+| 文件 | id / 名称 | 模式 | 风格 |
+|---|---|---|---|
+| `warm-paper.json` | `warm-paper` / 暖纸 Warm Paper | 只有 `light` | 米白纸张底、墨褐正文、陶土色主色、大地色图表;衬线字体、较大圆角、暖褐阴影 |
+| `neon-night.json` | `neon-night` / 霓虹夜 Neon Night | 只有 `dark` | 近黑紫底、青色霓虹主色(深色按钮文字)、品红焦点环;等宽字体、近直角、发光阴影,`shadow.base` 给开关滑块描浅色边 |
+
+两者都覆盖了全部 28 个 `colors`、6 个 `stat`、`chart` 的三项,以及 `font` / `radius` / `shadow`;布局按 §12.2「单模式主题的 token 放哪」。`theme-lint.mjs` 零错误零警告,`theme-contrast.mjs` 全部文字组合 ≥ 4.5:1。都做成单模式,是为了不论 Q1 最终怎么定都能直接沿用。
 
 ## 13. 待确认问题(Open questions)
 
@@ -420,5 +451,35 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 
 **Q9. 是否随应用附带第二个内置主题(如高对比)。**
 选项:(a) 只内置默认主题(**默认**);(b) 加一个高对比 / 无障碍内置主题;(c) 把示例主题作为内置。
-默认理由:本次只搭接口;示例主题将按本指南另行制作,验证接口后再决定是否收编为内置。
+默认理由:本次只搭接口;示例主题将按本指南另行制作,验证接口后再决定是否收编为内置。(示例主题已制作,见 §12.5。)
 改变主题格式:**否**。
+
+**Q10. 状态「填充色」`success` / `warning` 被直接当文字色用,是否改成对应的 `*Text`。**
+现状:额度剩余百分比、「缓存命中率」标题、设置保存成功提示、定价表「手动」来源标签、Agent 卡 ⚠ 图标用的是 `text-success` / `text-warning`(改造前就是 `text-emerald-500` / `text-amber-500`),而错误文字用的是 `text-danger-text`。结果是作者必须让 `success` / `warning` 同时当填充色和文字色都合适;默认主题亮色下这几处文字只有约 2.2–2.5:1。
+选项:(a) 保持现状,在文档里写明这两个填充色也要当文字可读(**默认**);(b) 把这几处组件改成 `text-success-text` / `text-warning-text`(默认主题亮色下这几处会变深一档,不再逐位相同);(c) 新增专门的 token(如 `successLabel`)。
+默认理由:不改组件、默认外观逐位不变;示例主题已按"两用"选色,证明可行。(b) 是可读性更好的方向,但改变默认主题外观,需要主人拍板。
+改变主题格式:**否**((a)(b) 不变;(c) 是新增可选 token)。
+
+**Q11. 设置页开关的滑块颜色绑在 `primaryForeground` 上。**
+现状:改造前滑块是 `bg-white`,改造时映射成了 `bg-primary-foreground`(默认主题里两者都是白色);但滑块并不在 `primary` 上,而是在 `success`(开)/ `mutedForeground` 30%(关)上。主色亮、`primaryForeground` 取深色的主题,「关」态滑块几乎看不见(霓虹夜示例约 1.8:1,靠 `shadow.base` 描边补救)。
+选项:(a) 保持现状,文档写明并建议用 `shadow.base` 描边(**默认**);(b) 滑块改用 `background` 或 `card`(与「启动时最小化到托盘」开关一致;默认主题暗色下滑块会变成深灰,外观变化);(c) 新增 `switchThumb` token,缺省为白色;(d) 固定白色,不受主题控制。
+默认理由:不改组件、默认外观不变,且已有可行的补救写法。(c) 最干净,可作为加法随时引入。
+改变主题格式:**否**((c) 是新增可选 token)。
+
+**Q12. 当前没有被界面引用的 token 怎么处理。**
+现状:`cardForeground`、`popover` / `popoverForeground`、`secondary` / `secondaryForeground`、`accent` / `accentForeground`、`input`、`destructiveForeground`、`info` 会被校验并写成 CSS 变量,但没有组件使用;作者改了看不到变化(尤其 `cardForeground`,卡片文字实际用的是 `foreground`)。
+选项:(a) 保留为"预留 token",文档注明目前未引用(**默认**);(b) 让组件真正用起来(如卡片内文字改用 `text-card-foreground`),已写了这些值的主题会随之变化;(c) 在下一个 `apiVersion` 删掉用不上的;(d) 校验时对这些 token 给出提示性 warning。
+默认理由:shadcn 风格的完整语义色表便于以后扩展组件,写了也无害;(b) 属于组件改动,可逐个做。注意 (d) 会让"零警告"的主题出现警告,不建议。
+改变主题格式:(a)(b)(d) **否**;(c) **是**(删除 token 需升 `apiVersion`)。
+
+**Q13. `$schema` 的正式在线地址。**
+现状:原文档与 schema 的 `$id` 写的是 `https://github.com/otae-1204/OTR/docs/theme.schema.json`,这个地址在 GitHub 上是 404,编辑器加载不到 schema。文档与示例主题已改为 `https://raw.githubusercontent.com/otae-1204/OTR/main/docs/theme.schema.json`(合并到 `main` 后可用),schema 文件里的 `$id` 未改。
+选项:(a) 用 `main` 分支的 raw 地址(**默认**);(b) 按版本 tag 固定(如 `.../v0.3.0/docs/theme.schema.json`),每个 `apiVersion` 一个稳定地址;(c) 发布到 GitHub Pages / 自有域名;以上任一都可顺手把 schema 的 `$id` 改成同一地址。
+默认理由:零维护、立刻可用;`apiVersion` 只做加法时 `main` 上的 schema 对旧主题也适用。若以后出现 `apiVersion = 2`,再改成 (b)。
+改变主题格式:**否**(`$schema` 只给编辑器用,应用忽略)。
+
+**Q14. 选了单模式主题后,深浅模式要不要"记住原来的偏好"。**
+现状:选中只有亮色的主题时,模式被切到亮色并**写回设置**;之后选回双模式主题(如默认主题)时停留在亮色,不会回到用户原来的暗色。
+选项:(a) 保持现状(**默认**);(b) 单独记住用户的"偏好模式",选回支持该模式的主题时自动恢复;(c) 不写回设置,只在运行时临时切换。
+默认理由:行为简单可预期,设置页有提示,手动切回只需一次点击;这个问题与 Q1 直接相关 —— 若 Q1 选 (b)/(c),模式本身就归主题管,这里自然消失,不值得先做 (b)。
+改变主题格式:**否**(只影响应用设置与切换逻辑)。

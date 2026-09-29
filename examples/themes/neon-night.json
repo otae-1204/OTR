@@ -1,0 +1,88 @@
+{
+  "$schema": "https://raw.githubusercontent.com/otae-1204/OTR/main/docs/theme.schema.json",
+  "apiVersion": 1,
+  "id": "neon-night",
+  "name": "霓虹夜 Neon Night",
+  "version": "1.0.0",
+  "author": "OTR 示例主题",
+  "description": "只有暗色的示例主题:近黑紫底、青色霓虹主色、品红焦点环、高饱和图表,等宽字体、直角与发光阴影。",
+  "homepage": "https://github.com/otae-1204/OTR",
+  "tokens": {
+    "font": {
+      "sans": "\"JetBrains Mono\", \"Cascadia Code\", Menlo, Consolas, \"PingFang SC\", \"Microsoft YaHei\", monospace",
+      "mono": "\"JetBrains Mono\", \"Cascadia Mono\", Menlo, Consolas, monospace"
+    },
+    "radius": { "md": "2px", "lg": "4px", "xl": "6px" }
+  },
+  "modes": {
+    "dark": {
+      "colors": {
+        "background": "#0a0913",
+        "foreground": "#eeecff",
+        "card": "#12101f",
+        "cardForeground": "#eeecff",
+        "popover": "#171429",
+        "popoverForeground": "#eeecff",
+        "primary": "#22d3ee",
+        "primaryForeground": "#041017",
+        "secondary": "#1d1a33",
+        "secondaryForeground": "#eeecff",
+        "muted": "#1d1a33",
+        "mutedForeground": "#a8a4cc",
+        "accent": "#1d1a33",
+        "accentForeground": "#eeecff",
+        "destructive": "#ff4d6d",
+        "destructiveForeground": "#14020a",
+        "border": "#2e2a52",
+        "input": "#3a3566",
+        "ring": "#ff4fd8",
+        "overlay": "#9ff4ff",
+        "success": "#2ef08a",
+        "warning": "#ffc53d",
+        "danger": "#ff4d6d",
+        "info": "#4da3ff",
+        "notice": "#ff4fd8",
+        "successText": "#7dffb6",
+        "warningText": "#ffd97a",
+        "dangerText": "#ff7c95"
+      },
+      "stat": {
+        "input": "#4da3ff",
+        "output": "#c084fc",
+        "cacheRead": "#2dd4bf",
+        "cacheWrite": "#ffc53d",
+        "calls": "#22d3ee",
+        "cost": "#a3e635"
+      },
+      "chart": {
+        "palette": [
+          "#22d3ee",
+          "#ff4fd8",
+          "#a3e635",
+          "#ffc53d",
+          "#a78bfa",
+          "#fb7185",
+          "#4da3ff",
+          "#fb923c",
+          "#2dd4bf"
+        ],
+        "agents": {
+          "dsh": "#a78bfa",
+          "claude-code": "#ff9e4a",
+          "codex": "#4da3ff",
+          "zcode": "#39f28f",
+          "opencode": "#22d3ee",
+          "pi": "#ff4fd8",
+          "cursor": "#c9cbe0"
+        },
+        "agentFallback": ["#ff4fd8", "#fb923c", "#a3e635", "#a78bfa", "#2dd4bf", "#ffc53d"]
+      },
+      "shadow": {
+        "sm": "0 0 0 1px rgba(34, 211, 238, 0.30), 0 0 14px -2px rgba(34, 211, 238, 0.45)",
+        "base": "0 0 0 1px rgba(238, 236, 255, 0.70), 0 1px 4px 0 rgba(0, 0, 0, 0.60)",
+        "md": "0 0 0 1px rgba(34, 211, 238, 0.55), 0 0 20px -2px rgba(34, 211, 238, 0.55)",
+        "lg": "0 0 0 1px rgba(255, 79, 216, 0.40), 0 12px 32px -8px rgba(0, 0, 0, 0.85)"
+      }
+    }
+  }
+}

@@ -444,7 +444,8 @@ export function parseThemeFile(
   }
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    // Windows 上的记事本 / PowerShell 5.1 常写出带 BOM 的 UTF-8,JSON.parse 不认,先去掉
+    raw = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
   } catch (err) {
     return {
       manifest: null,

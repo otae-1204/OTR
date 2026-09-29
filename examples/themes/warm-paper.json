@@ -1,0 +1,88 @@
+{
+  "$schema": "https://raw.githubusercontent.com/otae-1204/OTR/main/docs/theme.schema.json",
+  "apiVersion": 1,
+  "id": "warm-paper",
+  "name": "暖纸 Warm Paper",
+  "version": "1.0.0",
+  "author": "OTR 示例主题",
+  "description": "只有亮色的示例主题:米白纸张底色、墨褐正文、陶土色主色、大地色图表,衬线字体与柔和的暖色阴影。",
+  "homepage": "https://github.com/otae-1204/OTR",
+  "tokens": {
+    "font": {
+      "sans": "Charter, \"Bitstream Charter\", \"Sitka Text\", Cambria, \"Noto Serif\", \"Songti SC\", \"Noto Serif CJK SC\", \"Source Han Serif SC\", \"Microsoft YaHei\", serif",
+      "mono": "\"Courier Prime\", \"Courier New\", Courier, ui-monospace, monospace"
+    },
+    "radius": { "md": "0.5rem", "lg": "0.875rem", "xl": "1.125rem" }
+  },
+  "modes": {
+    "light": {
+      "colors": {
+        "background": "#f3ecdf",
+        "foreground": "#2b2219",
+        "card": "#fcf8f0",
+        "cardForeground": "#2b2219",
+        "popover": "#fcf8f0",
+        "popoverForeground": "#2b2219",
+        "primary": "#a2461d",
+        "primaryForeground": "#fffaf2",
+        "secondary": "#ebe2d1",
+        "secondaryForeground": "#2b2219",
+        "muted": "#ebe2d1",
+        "mutedForeground": "#685746",
+        "accent": "#ebe2d1",
+        "accentForeground": "#2b2219",
+        "destructive": "#a3202b",
+        "destructiveForeground": "#fffaf2",
+        "border": "#ddd0b9",
+        "input": "#d3c4aa",
+        "ring": "#a2461d",
+        "overlay": "#3d2a17",
+        "success": "#3b7526",
+        "warning": "#8f5d00",
+        "danger": "#b3261e",
+        "info": "#235b94",
+        "notice": "#b1360f",
+        "successText": "#2e5f1d",
+        "warningText": "#7a4e00",
+        "dangerText": "#9f1d17"
+      },
+      "stat": {
+        "input": "#235b94",
+        "output": "#7a3c93",
+        "cacheRead": "#12707a",
+        "cacheWrite": "#8a5500",
+        "calls": "#9e3158",
+        "cost": "#2f6b33"
+      },
+      "chart": {
+        "palette": [
+          "#235b94",
+          "#b4532a",
+          "#3f7d3a",
+          "#7a3c93",
+          "#a87400",
+          "#12707a",
+          "#a3345f",
+          "#6b705c",
+          "#8a6b4f"
+        ],
+        "agents": {
+          "dsh": "#6d4bb3",
+          "claude-code": "#c15f3c",
+          "codex": "#235b94",
+          "zcode": "#3f7d3a",
+          "opencode": "#12707a",
+          "pi": "#a3345f",
+          "cursor": "#6f6559"
+        },
+        "agentFallback": ["#a3345f", "#b4532a", "#5b7a1e", "#7a3c93", "#12707a", "#a87400"]
+      },
+      "shadow": {
+        "sm": "0 1px 2px 0 rgba(74, 52, 30, 0.10)",
+        "base": "0 1px 3px 0 rgba(74, 52, 30, 0.22), 0 1px 2px -1px rgba(74, 52, 30, 0.16)",
+        "md": "0 6px 14px -4px rgba(74, 52, 30, 0.22), 0 2px 4px -2px rgba(74, 52, 30, 0.12)",
+        "lg": "0 14px 28px -8px rgba(74, 52, 30, 0.28), 0 4px 8px -4px rgba(74, 52, 30, 0.14)"
+      }
+    }
+  }
+}
