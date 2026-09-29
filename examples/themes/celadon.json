@@ -1,0 +1,158 @@
+{
+  "$schema": "https://raw.githubusercontent.com/otae-1204/OTR/main/docs/theme.schema.json",
+  "apiVersion": 1,
+  "id": "celadon",
+  "name": "青瓷 Celadon",
+  "version": "1.0.0",
+  "author": "OTR 示例主题",
+  "description": "深浅双模式示例主题:亮色是粉青釉面、暗色是夜色中的深釉,玉色主色、青花蓝焦点环、朱砂与赭石点缀;人文无衬线字体、圆润的大圆角、卡片一角的釉光与更疏朗的表格行距。",
+  "homepage": "https://github.com/otae-1204/OTR",
+  "tokens": {
+    "font": {
+      "sans": "\"Gill Sans\", \"Gill Sans Nova\", Seravek, \"Segoe UI\", \"Noto Sans\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "mono": "\"IBM Plex Mono\", \"Cascadia Mono\", Menlo, Consolas, monospace"
+    },
+    "radius": { "md": "0.5rem", "lg": "1rem", "xl": "1.375rem" },
+    "chart": {
+      "palette": ["#3f9a7e", "#4a78c8", "#d0614a", "#b0802a", "#a36aa8", "#2f93a3", "#c9607f", "#7f8f3a", "#7d8a86"],
+      "agents": {
+        "dsh": "#9a6bb0",
+        "claude-code": "#c8703a",
+        "codex": "#4a78c8",
+        "zcode": "#3f9a7e",
+        "opencode": "#2f93a3",
+        "pi": "#c9607f",
+        "cursor": "#878f8b"
+      },
+      "agentFallback": ["#c9607f", "#b0802a", "#7f8f3a", "#a36aa8", "#2f93a3", "#d0614a"]
+    },
+    "css": {
+      "page-title": { "font-size": "1.1em", "font-weight": "500", "letter-spacing": "0.08em" },
+      "card-title": { "letter-spacing": "0.04em" },
+      "table-row": { "line-height": "1.15" },
+      "agent-card:selected": {
+        "background-image": "linear-gradient(180deg, hsl(var(--primary) / 0.12) 0%, hsl(var(--primary) / 0) 65%)"
+      }
+    }
+  },
+  "modes": {
+    "light": {
+      "colors": {
+        "background": "#e8eee9",
+        "foreground": "#1b2a25",
+        "card": "#f6f9f6",
+        "cardForeground": "#1b2a25",
+        "popover": "#fbfdfb",
+        "popoverForeground": "#1b2a25",
+        "primary": "#2b715b",
+        "primaryForeground": "#f6fbf8",
+        "secondary": "#dde6df",
+        "secondaryForeground": "#1b2a25",
+        "muted": "#dde6df",
+        "mutedForeground": "#4f635b",
+        "accent": "#d3e3d9",
+        "accentForeground": "#1b2a25",
+        "destructive": "#a33a3a",
+        "destructiveForeground": "#fbf6f5",
+        "border": "#c7d5cc",
+        "input": "#b3c5ba",
+        "ring": "#3461b5",
+        "overlay": "#1f4a3a",
+        "success": "#2e764a",
+        "warning": "#8a5f10",
+        "danger": "#a8392f",
+        "info": "#3461b5",
+        "notice": "#9d431d",
+        "successText": "#1f6640",
+        "warningText": "#7a5208",
+        "dangerText": "#9a322a",
+        "successLabel": "#23704a",
+        "warningLabel": "#80570c",
+        "dangerLabel": "#9a322a",
+        "switchThumb": "#f6fbf8",
+        "switchThumbOff": "#4f635b"
+      },
+      "stat": {
+        "input": "#3461b5",
+        "output": "#8a4f8f",
+        "cacheRead": "#2a7664",
+        "cacheWrite": "#8d6214",
+        "calls": "#1f7486",
+        "cost": "#4d7629"
+      },
+      "shadow": {
+        "sm": "0 1px 2px 0 rgba(31, 58, 48, 0.08)",
+        "base": "0 1px 3px 0 rgba(31, 58, 48, 0.22), 0 1px 2px -1px rgba(31, 58, 48, 0.14)",
+        "md": "0 8px 18px -8px rgba(31, 74, 58, 0.32), 0 2px 5px -2px rgba(31, 58, 48, 0.12)",
+        "lg": "0 16px 32px -12px rgba(31, 58, 48, 0.30), 0 4px 10px -4px rgba(31, 58, 48, 0.12)"
+      },
+      "css": {
+        "card": {
+          "background-image": "radial-gradient(circle at top left, rgba(126, 184, 160, 0.16), rgba(126, 184, 160, 0) 55%)"
+        },
+        "header": {
+          "background-image": "linear-gradient(180deg, rgba(246, 249, 246, 0.92) 0%, rgba(232, 238, 233, 0.6) 100%)"
+        }
+      }
+    },
+    "dark": {
+      "colors": {
+        "background": "#0e1614",
+        "foreground": "#dde8e3",
+        "card": "#15201d",
+        "cardForeground": "#dde8e3",
+        "popover": "#1a2723",
+        "popoverForeground": "#dde8e3",
+        "primary": "#7cc7ad",
+        "primaryForeground": "#0b1a15",
+        "secondary": "#22302b",
+        "secondaryForeground": "#dde8e3",
+        "muted": "#22302b",
+        "mutedForeground": "#9fb3aa",
+        "accent": "#273a33",
+        "accentForeground": "#dde8e3",
+        "destructive": "#f08a7e",
+        "destructiveForeground": "#1a0c0a",
+        "border": "#2d3e38",
+        "input": "#3a4f47",
+        "ring": "#8aa8e6",
+        "overlay": "#bfe8d6",
+        "success": "#6fcf97",
+        "warning": "#e5b95c",
+        "danger": "#f08f86",
+        "info": "#8aa8e6",
+        "notice": "#f0a07a",
+        "successText": "#9be0b8",
+        "warningText": "#f0cf86",
+        "dangerText": "#f5a39b",
+        "successLabel": "#7fd6a3",
+        "warningLabel": "#e8c070",
+        "dangerLabel": "#f5a39b",
+        "switchThumb": "#0b1a15",
+        "switchThumbOff": "#dde8e3"
+      },
+      "stat": {
+        "input": "#8aa8e6",
+        "output": "#c9a0cf",
+        "cacheRead": "#7cc7ad",
+        "cacheWrite": "#e5b95c",
+        "calls": "#78c2d0",
+        "cost": "#a6cf7e"
+      },
+      "shadow": {
+        "sm": "0 1px 2px 0 rgba(0, 0, 0, 0.35)",
+        "base": "0 1px 3px 0 rgba(0, 0, 0, 0.55), 0 1px 2px -1px rgba(0, 0, 0, 0.40)",
+        "md": "0 8px 20px -8px rgba(0, 0, 0, 0.70), 0 0 0 1px rgba(124, 199, 173, 0.28)",
+        "lg": "0 16px 36px -12px rgba(0, 0, 0, 0.80), 0 0 0 1px rgba(124, 199, 173, 0.16)"
+      },
+      "css": {
+        "card": {
+          "background-image": "radial-gradient(circle at top left, rgba(124, 199, 173, 0.09), rgba(124, 199, 173, 0) 55%)"
+        },
+        "header": {
+          "background-image": "linear-gradient(180deg, rgba(21, 32, 29, 0.9) 0%, rgba(14, 22, 20, 0.6) 100%)"
+        }
+      }
+    }
+  }
+}

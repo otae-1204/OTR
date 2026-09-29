@@ -1,0 +1,158 @@
+{
+  "$schema": "https://raw.githubusercontent.com/otae-1204/OTR/main/docs/theme.schema.json",
+  "apiVersion": 1,
+  "id": "beacon",
+  "name": "灯塔 Beacon",
+  "version": "1.0.0",
+  "author": "OTR 示例主题",
+  "description": "高对比无障碍示例主题,深浅两种模式:文字对比度全部 ≥ 7:1(WCAG AAA),醒目的焦点环,Okabe-Ito / Paul Tol 色盲友好图表色(模拟红 / 绿 / 蓝色盲下仍可区分),小字号放大 10–15%,选中态用实色块而不只靠颜色深浅。",
+  "homepage": "https://github.com/otae-1204/OTR",
+  "tokens": {
+    "font": {
+      "sans": "\"Atkinson Hyperlegible\", Verdana, \"Segoe UI\", Tahoma, \"Noto Sans\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "mono": "\"Cascadia Mono\", Consolas, \"DejaVu Sans Mono\", Menlo, monospace"
+    },
+    "radius": { "md": "0.25rem", "lg": "0.375rem", "xl": "0.5rem" },
+    "css": {
+      "card-title": { "font-weight": "700" },
+      "mini-stat": { "font-size": "1.15em" },
+      "badge": { "font-size": "1.1em", "font-weight": "600", "border": "1px solid currentColor" },
+      "segmented-button:selected": {
+        "background-color": "hsl(var(--primary))",
+        "color": "hsl(var(--primary-foreground))"
+      },
+      "chip:selected": { "border-color": "hsl(var(--ring))" },
+      "table-row:hover": { "background-color": "hsl(var(--primary) / 0.14)" }
+    }
+  },
+  "modes": {
+    "dark": {
+      "colors": {
+        "background": "#000000",
+        "foreground": "#ffffff",
+        "card": "#0f0f0f",
+        "cardForeground": "#ffffff",
+        "popover": "#141414",
+        "popoverForeground": "#ffffff",
+        "primary": "#ffd83d",
+        "primaryForeground": "#000000",
+        "secondary": "#242424",
+        "secondaryForeground": "#ffffff",
+        "muted": "#242424",
+        "mutedForeground": "#d6d6d6",
+        "accent": "#242424",
+        "accentForeground": "#ffffff",
+        "destructive": "#ff8a8a",
+        "destructiveForeground": "#000000",
+        "border": "#808080",
+        "input": "#a6a6a6",
+        "ring": "#3de8ff",
+        "overlay": "#ffffff",
+        "success": "#3ddc84",
+        "warning": "#ffb000",
+        "danger": "#ff7a7a",
+        "info": "#6cc4ff",
+        "notice": "#ffab5c",
+        "successText": "#86f7b4",
+        "warningText": "#ffd36b",
+        "dangerText": "#ffa3a3",
+        "successLabel": "#5ff0a0",
+        "warningLabel": "#ffc233",
+        "dangerLabel": "#ff9c9c",
+        "switchThumb": "#000000",
+        "switchThumbOff": "#ffffff"
+      },
+      "stat": {
+        "input": "#56b4e9",
+        "output": "#e69ee0",
+        "cacheRead": "#3fd6a5",
+        "cacheWrite": "#f5a524",
+        "calls": "#f0e442",
+        "cost": "#b8e986"
+      },
+      "chart": {
+        "palette": ["#e69f00", "#56b4e9", "#009e73", "#f0e442", "#0072b2", "#d55e00", "#cc79a7", "#bbbbbb"],
+        "agents": {
+          "dsh": "#cc79a7",
+          "claude-code": "#e69f00",
+          "codex": "#56b4e9",
+          "zcode": "#009e73",
+          "opencode": "#f0e442",
+          "pi": "#d55e00",
+          "cursor": "#bbbbbb"
+        },
+        "agentFallback": ["#0072b2", "#d55e00", "#cc79a7", "#009e73", "#e69f00", "#56b4e9"]
+      },
+      "shadow": {
+        "sm": "0 0 0 1px rgba(255, 255, 255, 0.55)",
+        "base": "0 0 0 1px rgba(255, 255, 255, 0.85)",
+        "md": "0 0 0 2px rgba(255, 216, 61, 0.95)",
+        "lg": "0 0 0 1px rgba(255, 255, 255, 0.9), 0 10px 28px -6px rgba(0, 0, 0, 0.9)"
+      }
+    },
+    "light": {
+      "colors": {
+        "background": "#f0f0f0",
+        "foreground": "#000000",
+        "card": "#ffffff",
+        "cardForeground": "#000000",
+        "popover": "#ffffff",
+        "popoverForeground": "#000000",
+        "primary": "#0037b3",
+        "primaryForeground": "#ffffff",
+        "secondary": "#e3e3e3",
+        "secondaryForeground": "#000000",
+        "muted": "#e3e3e3",
+        "mutedForeground": "#3b3b3b",
+        "accent": "#e3e3e3",
+        "accentForeground": "#000000",
+        "destructive": "#a3001b",
+        "destructiveForeground": "#ffffff",
+        "border": "#6b6b6b",
+        "input": "#4d4d4d",
+        "ring": "#c2006d",
+        "overlay": "#000000",
+        "success": "#006b3c",
+        "warning": "#8a5a00",
+        "danger": "#b3001e",
+        "info": "#00558c",
+        "notice": "#7d2e00",
+        "successText": "#00522d",
+        "warningText": "#5c3b00",
+        "dangerText": "#9e0018",
+        "successLabel": "#005c33",
+        "warningLabel": "#6b4400",
+        "dangerLabel": "#9e0018",
+        "switchThumb": "#ffffff",
+        "switchThumbOff": "#000000"
+      },
+      "stat": {
+        "input": "#00558c",
+        "output": "#7a2e78",
+        "cacheRead": "#005c46",
+        "cacheWrite": "#7a4a00",
+        "calls": "#5c5200",
+        "cost": "#2f5c00"
+      },
+      "chart": {
+        "palette": ["#332288", "#9a900c", "#1d96db", "#bb5566", "#228833", "#c972a2", "#000000", "#882255"],
+        "agents": {
+          "dsh": "#c972a2",
+          "claude-code": "#bb5566",
+          "codex": "#332288",
+          "zcode": "#228833",
+          "opencode": "#1d96db",
+          "pi": "#882255",
+          "cursor": "#000000"
+        },
+        "agentFallback": ["#9a900c", "#882255", "#c972a2", "#228833", "#1d96db", "#bb5566"]
+      },
+      "shadow": {
+        "sm": "0 0 0 1px rgba(0, 0, 0, 0.55)",
+        "base": "0 0 0 1px rgba(0, 0, 0, 0.85)",
+        "md": "0 0 0 2px rgba(0, 55, 179, 0.95)",
+        "lg": "0 0 0 1px rgba(0, 0, 0, 0.9), 0 10px 24px -6px rgba(0, 0, 0, 0.3)"
+      }
+    }
+  }
+}
