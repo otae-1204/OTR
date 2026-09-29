@@ -1,0 +1,564 @@
+#!/usr/bin/env node
+/**
+ * 受限自定义 CSS(`css` 字段)校验器的自检用例。
+ *
+ *   node scripts/theme-css-selftest.mjs        (或 npm run test:theme)
+ *
+ * 仓库没有前端测试框架,这里用最朴素的断言跑一遍 src/theme/css.ts 的关键行为:
+ * 分词器的字符集、属性白名单、值语法、var() 越权、钩子/状态键、限额、序列化输出的形状,
+ * 以及各种注入尝试(分号 / 花括号 / url() / @import / expression() / !important / 注释 / 引号 …)
+ * 全部被丢弃。跑的是应用里同一份代码(通过 esbuild 打包导入)。退出码:有失败为 1。
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { loadThemeModule, repoRoot } from "./lib/load-theme.mjs";
+
+const T = await loadThemeModule("theme-selftest");
+const {
+  THEME_PARTS,
+  THEME_STATES,
+  CSS_PROPERTIES,
+  tokenize,
+  normalizeDeclaration,
+  validateCss,
+  mergeCss,
+  serializeThemeCss,
+  selectorForKey,
+  sanitizeCss,
+  validateManifest,
+  resolveTheme,
+} = T;
+
+let pass = 0;
+let fail = 0;
+const failures = [];
+
+function check(name, ok, detail) {
+  if (ok) {
+    pass++;
+  } else {
+    fail++;
+    failures.push(`${name}${detail !== undefined ? ` — ${detail}` : ""}`);
+  }
+}
+
+/** 断言某条声明被接受,且归一化结果等于 expected(省略 expected 时只看接受) */
+function accepts(prop, value, expected) {
+  const r = normalizeDeclaration(prop, value);
+  if (!r.ok) return check(`accepts ${prop}: ${value}`, false, r.reason);
+  // 归一化必须幂等:序列化时会把值再归一化一遍
+  const again = normalizeDeclaration(prop, r.value);
+  check(`idempotent ${prop}: ${r.value}`, again.ok && again.value === r.value, again.ok ? `→ ${JSON.stringify(again.value)}` : again.reason);
+  if (expected !== undefined) {
+    check(`accepts ${prop}: ${value} → ${expected}`, r.value === expected, `got ${JSON.stringify(r.value)}`);
+  } else {
+    check(`accepts ${prop}: ${value}`, true);
+  }
+}
+
+/** 断言某条声明被拒绝 */
+function rejects(prop, value) {
+  const r = normalizeDeclaration(prop, value);
+  check(`rejects ${prop}: ${JSON.stringify(value)}`, !r.ok, `accepted as ${JSON.stringify(r.ok ? r.value : null)}`);
+}
+
+// ---------------------------------------------------------------------------
+// 1. 分词器:字符集与括号
+// ---------------------------------------------------------------------------
+for (const bad of [
+  "red;",
+  "#fff; position: fixed",
+  "#fff }",
+  "#fff } body { display: none",
+  "#fff !important",
+  "#fff /* c */",
+  '"#fff"',
+  "'#fff'",
+  "#fff\\",
+  "#fff<script>",
+  "#fff@import",
+  "#fff*",
+  "#fff:hover",
+  "#fff\u0000",
+  "#fff\n",
+  "＃fff", // 全角
+  "rgb(0,0,0",
+  "rgb 0,0,0)",
+  "(0)",
+  "#",
+  "--",
+]) {
+  check(`tokenize rejects ${JSON.stringify(bad)}`, tokenize(bad) === null);
+}
+check("tokenize accepts nested fn", Array.isArray(tokenize("linear-gradient(to right, rgb(0 0 0 / 50%), #fff 10%)")));
+check("tokenize lowercases ident", tokenize("SOLID")?.[0]?.v === "solid");
+check("tokenize number unit", (() => {
+  const t = tokenize("-1.5PX");
+  return t?.[0]?.t === "num" && t[0].v === -1.5 && t[0].unit === "px";
+})());
+
+// ---------------------------------------------------------------------------
+// 2. 属性白名单
+// ---------------------------------------------------------------------------
+for (const p of [
+  "position", "display", "width", "height", "min-width", "max-height", "margin", "padding",
+  "z-index", "transform", "content", "animation", "transition", "background", "font-size",
+  "line-height", "filter", "outline", "pointer-events", "visibility", "overflow", "inset",
+  "top", "left", "float", "clip-path", "mask", "mask-image", "border-image", "list-style",
+  "cursor", "user-select", "-webkit-text-fill-color", "-webkit-appearance", "appearance",
+  "background-size", "background-position", "background-attachment", "grid-template-columns",
+  "flex", "order", "gap", "will-change", "contain", "isolation",
+]) {
+  rejects(p, "1px");
+}
+check("CSS_PROPERTIES has no layout props", !CSS_PROPERTIES.some((p) => /^(position|display|width|height|margin|padding|z-index|transform|content|animation)$/.test(p)));
+check("CSS_PROPERTIES is non-empty whitelist", CSS_PROPERTIES.length >= 30 && CSS_PROPERTIES.includes("background-image"));
+
+// 属性名大小写 / 前后空白由 validateCss 归一化,normalizeDeclaration 本身只认小写
+rejects("Color", "#fff");
+rejects("__proto__", "#fff");
+rejects("constructor", "#fff");
+
+// ---------------------------------------------------------------------------
+// 3. 颜色
+// ---------------------------------------------------------------------------
+accepts("color", "#FFF", "#ffffff");
+accepts("color", "#abcdef", "#abcdef");
+accepts("color", "#abcdef80", "rgb(171 205 239 / 0.502)");
+accepts("color", "rgb(255, 0, 0)", "#ff0000");
+accepts("color", "rgba(0, 0, 0, .5)", "rgb(0 0 0 / 0.5)");
+accepts("color", "rgb(0 0 0 / 50%)", "rgb(0 0 0 / 0.5)");
+accepts("color", "hsl(210 100% 56%)");
+accepts("color", "hsl(210deg, 100%, 56%)");
+accepts("color", "transparent", "transparent");
+accepts("color", "currentColor", "currentColor");
+accepts("color", "CURRENTCOLOR", "currentColor");
+rejects("color", "red");
+rejects("color", "inherit");
+rejects("color", "#fff #000");
+rejects("color", "rgb(0, 0, 0, 0, 0)");
+rejects("color", "rgb(var(--primary))");
+rejects("color", "color-mix(in srgb, #fff, #000)");
+rejects("color", "lab(50% 0 0)");
+rejects("color", "url(#fff)");
+rejects("color", "attr(data-x)");
+rejects("color", "env(safe-area-inset-top)");
+rejects("color", "1e999");
+rejects("color", "");
+rejects("color", "   ");
+rejects("color", 42);
+rejects("color", null);
+rejects("color", ["#fff"]);
+
+// ---------------------------------------------------------------------------
+// 4. var() 只能引用本主题体系的变量
+// ---------------------------------------------------------------------------
+accepts("color", "hsl(var(--primary))", "hsl(var(--primary))");
+accepts("color", "hsl(var(--primary) / 0.4)", "hsl(var(--primary) / 0.4)");
+accepts("color", "hsl(var(--primary) / 40%)", "hsl(var(--primary) / 0.4)");
+accepts("color", "hsl(var(--stat-cache-read))", "hsl(var(--stat-cache-read))");
+accepts("color", "hsl(var(--success-text))");
+accepts("background-color", "var(--chart-1)", "var(--chart-1)");
+accepts("background-color", "var(--chart-16)");
+accepts("color", "var(--agent-dsh)", "var(--agent-dsh)");
+accepts("color", "var(--agent-custom-codebuddy)");
+accepts("border-radius", "var(--radius-lg)", "var(--radius-lg)");
+accepts("box-shadow", "var(--shadow-md)", "var(--shadow-md)");
+accepts("box-shadow", "var(--shadow)", "var(--shadow)");
+accepts("font-family", "var(--font-mono)", "var(--font-mono)");
+rejects("color", "var(--primary)"); // 三元组不能直接当颜色
+rejects("color", "hsl(var(--chart-1))"); // hex 不能塞进 hsl
+rejects("color", "var(--chart-17)");
+rejects("color", "var(--chart-0)");
+rejects("color", "var(--foo)");
+rejects("color", "var(--tw-ring-color)");
+rejects("color", "var(--radius-lg)");
+rejects("color", "var(--primary, red)");
+rejects("color", "hsl(var(--primary), 50%)");
+rejects("color", "hsl(var(--primary) / var(--x))");
+rejects("border-radius", "var(--primary)");
+rejects("box-shadow", "var(--radius-lg)");
+rejects("box-shadow", "0 0 0 1px var(--chart-1)");
+rejects("font-family", "var(--font-serif)");
+rejects("font-family", "var(--font-mono), monospace");
+rejects("opacity", "var(--x)");
+rejects("color", "var(--agent-a.b)"); // 变量名里不能有点
+rejects("color", "var()");
+rejects("color", "var(primary)");
+
+// ---------------------------------------------------------------------------
+// 5. background-image:只允许 linear/radial-gradient
+// ---------------------------------------------------------------------------
+accepts(
+  "background-image",
+  "linear-gradient(180deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0) 60%)",
+  "linear-gradient(180deg, rgb(255 255 255 / 0.5) 0%, rgb(255 255 255 / 0) 60%)",
+);
+accepts("background-image", "linear-gradient(to right, #fff, #000)", "linear-gradient(to right, #ffffff, #000000)");
+accepts("background-image", "linear-gradient(to bottom left, #fff 0, #000 100%)");
+accepts("background-image", "linear-gradient(#fff, #000)", "linear-gradient(#ffffff, #000000)");
+accepts("background-image", "linear-gradient(0.25turn, #fff, #000)");
+accepts("background-image", "linear-gradient(135deg, hsl(var(--primary) / 0.2), transparent)");
+accepts("background-image", "radial-gradient(circle at top left, #fff, #000)", "radial-gradient(circle at top left, #ffffff, #000000)");
+accepts("background-image", "radial-gradient(#fff, #000)");
+accepts("background-image", "radial-gradient(ellipse farthest-corner at 20% 30%, #fff 0%, #000 100%)");
+accepts("background-image", "radial-gradient(120px 80px at center, #fff, #000)");
+accepts("background-image", "linear-gradient(#fff, #000), radial-gradient(#111, #222)");
+accepts("background-image", "none", "none");
+rejects("background-image", "url(https://evil.example/x.png)");
+rejects("background-image", "url('x.png')");
+rejects("background-image", "image-set(url(x.png) 1x)");
+rejects("background-image", "-webkit-image-set(url(x.png) 1x)");
+rejects("background-image", "conic-gradient(#fff, #000)");
+rejects("background-image", "repeating-linear-gradient(#fff, #000)");
+rejects("background-image", "linear-gradient(#fff)"); // 至少两个色标
+rejects("background-image", "linear-gradient(to nowhere, #fff, #000)");
+rejects("background-image", "linear-gradient(to top top, #fff, #000)");
+rejects("background-image", "linear-gradient(999deg, #fff, #000)");
+rejects("background-image", "linear-gradient(red, blue)");
+rejects("background-image", "linear-gradient(#fff, url(x))");
+rejects("background-image", "linear-gradient(#fff, var(--foo))");
+rejects("background-image", "linear-gradient(#fff 0% 50% 100%, #000)");
+rejects("background-image", "linear-gradient(#fff, #000) url(x)");
+rejects("background-image", "element(#x)");
+rejects("background-image", "paint(foo)");
+rejects("background-image", "cross-fade(#fff, #000)");
+rejects("background-image", "linear-gradient(#fff, #000), linear-gradient(#fff, #000), linear-gradient(#fff, #000), linear-gradient(#fff, #000), linear-gradient(#fff, #000)");
+{
+  const many = `linear-gradient(${Array.from({ length: 17 }, () => "#fff").join(", ")})`;
+  rejects("background-image", many);
+}
+
+// ---------------------------------------------------------------------------
+// 6. 边框 / 圆角 / 阴影 / 其它
+// ---------------------------------------------------------------------------
+accepts("border", "1px solid #fff", "1px solid #ffffff");
+accepts("border", "solid #fff 2px", "2px solid #ffffff");
+accepts("border", "none", "none");
+accepts("border", "dashed", "dashed");
+accepts("border-top", "1px solid hsl(var(--border))");
+rejects("border", "1px solid red");
+rejects("border", "20px solid #fff");
+rejects("border", "1px 2px solid #fff");
+rejects("border", "1px solid #fff #000");
+rejects("border", "1px groove #fff");
+rejects("border", "1px solid #fff; position: fixed");
+accepts("border-color", "#fff #000", "#ffffff #000000");
+accepts("border-width", "1px 0 2px 0", "1px 0 2px 0");
+rejects("border-width", "1px 0 2px 0 1px");
+rejects("border-width", "-1px");
+rejects("border-width", "1");
+accepts("border-style", "solid dashed");
+rejects("border-style", "ridge");
+accepts("border-radius", "8px", "8px");
+accepts("border-radius", "0", "0");
+accepts("border-radius", "0px", "0");
+accepts("border-radius", "999px", "999px");
+rejects("border-radius", "9999px"); // 上限 1000px;想要药丸形用 50% 或 999px
+rejects("border-radius", "1001px");
+accepts("border-radius", "50%", "50%");
+accepts("border-radius", "0.5rem 1rem", "0.5rem 1rem");
+rejects("border-radius", "8px / 4px");
+rejects("border-radius", "-4px");
+rejects("border-radius", "101%");
+rejects("border-radius", "8vw");
+rejects("border-radius", "calc(1px + 2px)");
+accepts("border-top-left-radius", "4px 8px");
+rejects("border-top-left-radius", "4px 8px 1px");
+accepts("box-shadow", "0 8px 20px -8px rgba(0,0,0,.35)", "0 8px 20px -8px rgb(0 0 0 / 0.35)");
+accepts("box-shadow", "inset 0 1px 0 #fff, 0 0 0 1px #000");
+accepts("box-shadow", "none", "none");
+rejects("box-shadow", "0 0 0 1px red");
+rejects("box-shadow", "0 0 0 1px url(x)");
+accepts("box-shadow", "0 0", "0 0"); // 两个偏移量就是合法的 box-shadow
+rejects("box-shadow", "0");
+rejects("box-shadow", "0 0 0 0 0 #fff");
+rejects("box-shadow", "0 0 200px #fff"); // 单个长度上限 128px
+rejects("box-shadow", "0 0 0 1px hsl(var(--primary))"); // 阴影颜色必须是字面量
+accepts("text-shadow", "0 1px 2px rgba(0,0,0,.5)");
+rejects("text-shadow", "inset 0 1px 2px #000");
+rejects("text-shadow", "0 1px 2px 3px #000");
+accepts("opacity", "0.5", "0.5");
+accepts("opacity", "50%", "0.5");
+accepts("opacity", "1", "1");
+accepts("opacity", "0", "0");
+rejects("opacity", "1.5");
+rejects("opacity", "-0.1");
+rejects("opacity", "150%");
+rejects("opacity", "0.5 0.5");
+accepts("font-weight", "600", "600");
+accepts("font-weight", "bold", "bold");
+rejects("font-weight", "650.5");
+rejects("font-weight", "0");
+rejects("font-weight", "1001");
+rejects("font-weight", "heavy");
+accepts("font-style", "italic", "italic");
+rejects("font-style", "oblique 10deg");
+accepts("font-family", '"Inter",  sans-serif', '"Inter", sans-serif');
+accepts("font-family", "Charter, serif");
+rejects("font-family", 'url("x")');
+rejects("font-family", '"Inter"; src: url(x)');
+rejects("font-family", '"Inter" sans-serif"');
+rejects("font-family", "@import");
+accepts("letter-spacing", "0.02em", "0.02em");
+accepts("letter-spacing", "-0.5px", "-0.5px");
+accepts("letter-spacing", "normal", "normal");
+rejects("letter-spacing", "1em");
+rejects("letter-spacing", "9px");
+rejects("letter-spacing", "0.1");
+accepts("text-transform", "uppercase", "uppercase");
+rejects("text-transform", "full-width");
+accepts("text-decoration-line", "underline line-through", "underline line-through");
+accepts("text-decoration-line", "none", "none");
+rejects("text-decoration-line", "underline underline");
+rejects("text-decoration-line", "blink");
+accepts("text-decoration-style", "wavy");
+accepts("text-decoration-color", "#f00", "#ff0000");
+accepts("backdrop-filter", "blur(8px)", "blur(8px)");
+accepts("backdrop-filter", "blur(8px) saturate(1.5)", "blur(8px) saturate(1.5)");
+accepts("backdrop-filter", "saturate(180%) brightness(0.9) contrast(1.1)");
+accepts("backdrop-filter", "none", "none");
+rejects("backdrop-filter", "blur(80px)");
+rejects("backdrop-filter", "blur(8)");
+rejects("backdrop-filter", "url(#svg-filter)");
+rejects("backdrop-filter", "drop-shadow(0 0 2px #000)");
+rejects("backdrop-filter", "invert(1)");
+rejects("backdrop-filter", "saturate(5)");
+rejects("backdrop-filter", "blur(1px) blur(1px) blur(1px) blur(1px)");
+accepts("background-clip", "text", "text");
+rejects("background-clip", "url(x)");
+accepts("outline-color", "hsl(var(--ring))");
+
+// 通用注入尝试:对每个白名单属性都试一遍
+const INJECTIONS = [
+  "#fff; position: fixed",
+  "#fff } * { display: none }",
+  "#fff !important",
+  "#fff/**/",
+  "url(javascript:alert(1))",
+  "expression(alert(1))",
+  "image-set('x.png' 1x)",
+  "@import 'x.css'",
+  "#fff</style><script>alert(1)</script>",
+  "#fff\\0027",
+  "-moz-element(#x)",
+  "attr(x)",
+  "#fff‮",
+  "x".repeat(300),
+];
+for (const prop of CSS_PROPERTIES) {
+  for (const inj of INJECTIONS) rejects(prop, inj);
+}
+
+// ---------------------------------------------------------------------------
+// 7. 键(钩子[:状态])与选择器
+// ---------------------------------------------------------------------------
+check("parts include core hooks", ["app", "header", "card", "stat-card", "agent-card", "chart", "tooltip", "table", "button", "segmented", "badge", "progress", "settings-section", "switch", "input"].every((p) => THEME_PARTS.includes(p)));
+check("states", THEME_STATES.join(",") === "hover,active,focus,disabled,selected");
+check("selector card", selectorForKey("card") === '[data-theme-part~="card"]');
+check("selector card:hover", selectorForKey("card:hover") === '[data-theme-part~="card"]:hover');
+check("selector card:focus", selectorForKey("card:focus") === '[data-theme-part~="card"]:focus-visible');
+check("selector card:selected", selectorForKey("card:selected") === '[data-theme-part~="card"][data-theme-state~="selected"]');
+check("selector segmented-button:disabled", selectorForKey("segmented-button:disabled") === '[data-theme-part~="segmented-button"]:disabled');
+for (const bad of [
+  "div", "body", "*", "html", ":root", "card, body", "card body", "card>x", "card:visited", "card:hover:focus",
+  "card:", ":hover", "card:nth-child(1)", "card:not(.x)", "card:hover{", "card]", "card\"", "Card", "card ",
+  " card", "card:HOVER", "[data-theme-part]", "card:hover,body", "card:has(x)", "card::before", "__proto__",
+  "constructor", "", "-card", "card--x:hover:hover",
+]) {
+  check(`selector rejects ${JSON.stringify(bad)}`, selectorForKey(bad) === null);
+}
+for (const part of THEME_PARTS) {
+  check(`part name shape ${part}`, /^[a-z][a-z0-9-]*$/.test(part) && selectorForKey(part) !== null);
+}
+
+// ---------------------------------------------------------------------------
+// 8. validateCss:结构、诊断路径、限额、大小写归一化
+// ---------------------------------------------------------------------------
+function run(raw, path = "tokens.css") {
+  const warns = [];
+  const out = validateCss(raw, path, (p, m) => warns.push({ path: p, message: m }));
+  return { out, warns };
+}
+{
+  const { out, warns } = run({
+    card: { "background-image": "linear-gradient(#fff, #000)", position: "fixed", color: "red", " Color ": "#000" },
+    "card:hover": { "box-shadow": "0 0 0 1px #fff" },
+    "card:visited": { color: "#fff" },
+    body: { display: "none" },
+    "card:selected": "not an object",
+    badge: { color: "#fff; }" },
+  });
+  check("validateCss keeps valid decls", out?.card?.["background-image"] === "linear-gradient(#ffffff, #000000)");
+  check("validateCss normalizes prop name case/space", out?.card?.color === "#000000");
+  check("validateCss keeps hover block", out?.["card:hover"]?.["box-shadow"] === "0 0 0 1px rgb(255 255 255 / 1)");
+  check("validateCss drops unknown state", out?.["card:visited"] === undefined);
+  check("validateCss drops unknown part", out?.body === undefined);
+  check("validateCss drops non-object block", out?.["card:selected"] === undefined);
+  check("validateCss drops block that ends up empty", out?.badge === undefined);
+  const paths = warns.map((w) => w.path);
+  check("warn path for bad prop", paths.includes("tokens.css.card.position"), paths.join(" | "));
+  check("warn path for bad value", paths.includes("tokens.css.card.color"));
+  check("warn path for bad state", paths.includes("tokens.css.card:visited"));
+  check("warn path for unknown part", paths.includes("tokens.css.body"));
+  check("warn path for non-object block", paths.includes("tokens.css.card:selected"));
+  check("warn path for injected value", paths.includes("tokens.css.badge.color"));
+  check("warn count", warns.length === 6, String(warns.length));
+  check("warn message hints for position", warns.find((w) => w.path.endsWith(".position"))?.message.includes("不支持的属性"));
+}
+{
+  const { out, warns } = run("card { color: red }");
+  check("validateCss rejects string", out === undefined && warns.length === 1);
+}
+{
+  const { out, warns } = run(["card"]);
+  check("validateCss rejects array", out === undefined && warns.length === 1);
+}
+{
+  const { out } = run(undefined);
+  check("validateCss undefined passthrough", out === undefined);
+}
+{
+  const { out, warns } = run({});
+  check("validateCss empty object → empty table", out !== undefined && Object.keys(out).length === 0 && warns.length === 0);
+}
+{
+  const raw = {};
+  for (const p of THEME_PARTS) {
+    raw[p] = { color: "#fff" };
+    raw[`${p}:hover`] = { color: "#000" };
+    raw[`${p}:active`] = { color: "#000" };
+  }
+  const { out, warns } = run(raw);
+  check("validateCss caps keys at 64", Object.keys(out).length === 64 && warns.some((w) => w.message.includes("64")));
+}
+{
+  const many = {};
+  CSS_PROPERTIES.slice(0, 26).forEach((p) => {
+    many[p] = "#fff";
+  });
+  const { warns } = run({ card: many });
+  check("validateCss caps decls at 24", warns.some((w) => w.message.includes("24")));
+}
+{
+  const { out, warns } = run({ card: { color: "#" + "f".repeat(300) } });
+  check("validateCss caps value length", out?.card === undefined && warns.length === 1);
+}
+{
+  // 原型污染尝试:键不在钩子目录里,直接丢弃
+  const raw = JSON.parse('{"__proto__": {"color": "#fff"}, "constructor": {"color": "#fff"}, "card": {"__proto__": "#fff", "color": "#fff"}}');
+  const { out } = run(raw);
+  check("validateCss ignores __proto__ keys", Object.keys(out).length === 1 && Object.keys(out.card).length === 1 && ({}).color === undefined);
+}
+
+// ---------------------------------------------------------------------------
+// 9. 合并 / 序列化 / 缓存清洗
+// ---------------------------------------------------------------------------
+{
+  const merged = mergeCss(
+    { card: { color: "#000000", opacity: "0.9" }, badge: { color: "#111111" } },
+    { card: { color: "#ffffff" }, "card:hover": { opacity: "1" } },
+  );
+  check("mergeCss per-property", merged.card.color === "#ffffff" && merged.card.opacity === "0.9");
+  check("mergeCss keeps untouched key", merged.badge.color === "#111111");
+  check("mergeCss adds new key", merged["card:hover"].opacity === "1");
+  check("mergeCss undefined passthrough", mergeCss(undefined, undefined) === undefined && mergeCss({ a: {} }, undefined)?.a !== undefined);
+}
+{
+  const text = serializeThemeCss({
+    card: { "background-image": "linear-gradient(#ffffff, #000000)", "backdrop-filter": "blur(8px)", "background-clip": "text" },
+    "card:hover": { "box-shadow": "var(--shadow-lg)" },
+    "agent-card:selected": { "border-color": "hsl(var(--primary) / 0.6)" },
+  });
+  const expected = [
+    '[data-theme-part~="card"] {',
+    "  background-image: linear-gradient(#ffffff, #000000);",
+    "  -webkit-backdrop-filter: blur(8px);",
+    "  backdrop-filter: blur(8px);",
+    "  -webkit-background-clip: text;",
+    "  background-clip: text;",
+    "}",
+    '[data-theme-part~="card"]:hover {',
+    "  box-shadow: var(--shadow-lg);",
+    "}",
+    '[data-theme-part~="agent-card"][data-theme-state~="selected"] {',
+    "  border-color: hsl(var(--primary) / 0.6);",
+    "}",
+  ].join("\n");
+  check("serialize shape", text === expected, JSON.stringify(text));
+  check("serialize empty", serializeThemeCss(undefined) === "" && serializeThemeCss({}) === "");
+  // 序列化对「被篡改的表」也不会输出结构字符
+  const tampered = serializeThemeCss({
+    "card, body": { color: "#fff" },
+    card: { position: "fixed", color: "#fff; } body { display: none", "background-image": "url(x)", opacity: "0.5" },
+    "__proto__": { color: "#fff" },
+  });
+  check("serialize drops tampered entries", tampered === '[data-theme-part~="card"] {\n  opacity: 0.5;\n}', JSON.stringify(tampered));
+  const lines = text.split("\n");
+  check("serialize lines are well-formed", lines.every((l) => /^(\[data-theme-part~="[a-z0-9-]+"\](:[a-z-]+|\[data-theme-state~="selected"\])? \{|  [a-z-]+: [^;{}<>!@\\]*;|\})$/.test(l)));
+}
+{
+  const cleaned = sanitizeCss({
+    card: { color: "#ffffff", position: "fixed" },
+    body: { color: "#fff" },
+    "card:hover": { color: "url(x)" },
+  });
+  check("sanitizeCss cleans tampered cache", Object.keys(cleaned).length === 1 && cleaned.card.color === "#ffffff" && cleaned.card.position === undefined);
+  check("sanitizeCss rejects non-object", sanitizeCss("x") === undefined && sanitizeCss(null) === undefined);
+}
+
+// ---------------------------------------------------------------------------
+// 10. 端到端:validateManifest + resolveTheme
+// ---------------------------------------------------------------------------
+{
+  const { manifest, diagnostics } = validateManifest({
+    apiVersion: 1,
+    id: "t",
+    name: "T",
+    tokens: {
+      css: {
+        card: { "background-image": "linear-gradient(#fff, #000)", color: "#111", position: "fixed" },
+        "card-title": { "letter-spacing": "0.02em" },
+      },
+    },
+    modes: {
+      dark: { css: { card: { color: "#eee" }, header: { "backdrop-filter": "blur(12px)" } } },
+      light: { css: { card: { color: "#222", "box-shadow": "url(x)" } } },
+    },
+  });
+  check("e2e manifest loads", manifest !== null);
+  check("e2e diagnostics are warnings only", diagnostics.every((d) => d.level === "warning") && diagnostics.length === 2, JSON.stringify(diagnostics));
+  check("e2e diagnostic paths", diagnostics.map((d) => d.path).sort().join("|") === "modes.light.css.card.box-shadow|tokens.css.card.position");
+  const dark = resolveTheme(manifest, "dark", "user");
+  const light = resolveTheme(manifest, "light", "user");
+  check("e2e dark merge", dark.css.card.color === "#eeeeee" && dark.css.card["background-image"] === "linear-gradient(#ffffff, #000000)" && dark.css.header["backdrop-filter"] === "blur(12px)");
+  check("e2e light merge", light.css.card.color === "#222222" && light.css.header === undefined && light.css["card-title"]["letter-spacing"] === "0.02em");
+  check("e2e serialize dark", serializeThemeCss(dark.css).includes('[data-theme-part~="header"]'));
+  // 老主题(没有 css)→ 空表、空文本;内置主题同样
+  const { manifest: plain } = validateManifest({ apiVersion: 1, id: "p", name: "P", modes: { dark: {} } });
+  const r = resolveTheme(plain, "dark", "user");
+  check("e2e no css → empty", Object.keys(r.css).length === 0 && serializeThemeCss(r.css) === "");
+  const builtin = resolveTheme(T.OTR_THEME, "light", "builtin");
+  check("builtin has no css", Object.keys(builtin.css).length === 0);
+}
+
+// ---------------------------------------------------------------------------
+// 11. docs/theme.schema.json 与代码保持同步(钩子目录、状态、属性白名单)
+// ---------------------------------------------------------------------------
+{
+  const schema = JSON.parse(fs.readFileSync(path.join(repoRoot, "docs", "theme.schema.json"), "utf8"));
+  const cssDef = schema.definitions?.tokens?.properties?.css;
+  const keyPattern = cssDef?.propertyNames?.pattern ?? "";
+  const keyRe = new RegExp(keyPattern);
+  check("schema: css key pattern accepts every part/state", THEME_PARTS.every((p) => keyRe.test(p) && THEME_STATES.every((st) => keyRe.test(`${p}:${st}`))));
+  check("schema: css key pattern rejects junk", !keyRe.test("body") && !keyRe.test("card:visited") && !keyRe.test("card, body"));
+  const partsInPattern = (keyPattern.match(/^\^\(([^)]*)\)/)?.[1] ?? "").split("|");
+  check("schema: parts list identical", partsInPattern.join("|") === THEME_PARTS.join("|"), `schema=${partsInPattern.length} code=${THEME_PARTS.length}`);
+  const blockProps = Object.keys(schema.definitions?.cssBlock?.properties ?? {});
+  check("schema: property whitelist identical", blockProps.slice().sort().join("|") === CSS_PROPERTIES.slice().sort().join("|"), `schema=${blockProps.length} code=${CSS_PROPERTIES.length}`);
+}
+
+// ---------------------------------------------------------------------------
+console.log(`theme-css-selftest: ${pass} 通过,${fail} 失败`);
+for (const f of failures) console.log(`  ✗ ${f}`);
+process.exit(fail > 0 ? 1 : 0);

@@ -26,6 +26,7 @@ function MiniStat({
 }) {
   return (
     <div
+      data-theme-part="mini-stat"
       className="flex flex-col gap-1 rounded-xl border border-border/40 bg-background/40 p-3"
       title={title}
     >
@@ -78,10 +79,13 @@ export function StatCard({
   const hitPct = (hit * 100).toFixed(1);
 
   return (
-    <section className="rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm">
+    <section
+      data-theme-part="card stat-card"
+      className="rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm"
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <div data-theme-part="card-title" className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <ActivityIcon className="h-3.5 w-3.5 text-primary" />
             <span>{title}</span>
           </div>
@@ -94,7 +98,7 @@ export function StatCard({
               {totals ? fmtTokens(totals.totalTokens) : "--"}
             </span>
             {totals ? (
-              <span className="rounded-md bg-muted/40 px-1.5 py-0.5 text-xs text-muted-foreground">
+              <span data-theme-part="badge" className="rounded-md bg-muted/40 px-1.5 py-0.5 text-xs text-muted-foreground">
                 {totals.calls.toLocaleString()} 次请求
               </span>
             ) : null}
@@ -108,6 +112,7 @@ export function StatCard({
         <div className="flex flex-col items-end gap-1.5">
           {summary ? (
             <span
+              data-theme-part="badge"
               className="rounded-md bg-muted/40 px-1.5 py-0.5 text-xs text-muted-foreground"
               title="数据最后一次写入的时间(不是本次查询时间)"
             >
@@ -134,8 +139,9 @@ export function StatCard({
           </span>
           <span className="font-semibold tabular-nums">{hitPct}%</span>
         </div>
-        <div className="relative mt-1 h-1.5 overflow-hidden rounded-full bg-muted/60">
+        <div data-theme-part="progress" className="relative mt-1 h-1.5 overflow-hidden rounded-full bg-muted/60">
           <div
+            data-theme-part="progress-fill"
             className="absolute inset-y-0 left-0 rounded-full bg-success transition-all duration-500"
             style={{ width: `${(hit * 100).toFixed(1)}%` }}
           />

@@ -84,8 +84,11 @@ export function SessionTable({
   }, [agentId, from, to, refreshKey]);
 
   return (
-    <section className="rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm">
-      <div className="flex items-center gap-1.5 text-sm font-semibold">
+    <section
+      data-theme-part="card table-card"
+      className="rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm"
+    >
+      <div data-theme-part="card-title" className="flex items-center gap-1.5 text-sm font-semibold">
         <ClockIcon className="h-4 w-4 text-primary" />
         <span>会话明细</span>
         <span className="ml-1 text-xs font-normal text-muted-foreground">
@@ -100,8 +103,8 @@ export function SessionTable({
           <EmptyState message="筛选范围内暂无会话记录" />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-sm">
-              <thead>
+            <table data-theme-part="table" className="w-full min-w-[720px] text-sm">
+              <thead data-theme-part="table-head">
                 <tr className="border-b border-border/60 text-left text-xs text-muted-foreground">
                   <th className="py-2 pr-3 font-medium">最后活跃</th>
                   <th className="py-2 pr-3 font-medium">Agent</th>
@@ -123,6 +126,7 @@ export function SessionTable({
                   return (
                     <tr
                       key={s.sessionId ? `${s.agent}:${s.sessionId}` : `row-${i}`}
+                      data-theme-part="table-row"
                       className="border-b border-border/40 transition-colors last:border-0 hover:bg-muted/30"
                     >
                       <td

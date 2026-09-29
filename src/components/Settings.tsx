@@ -56,6 +56,7 @@ function Badge({
 }) {
   return (
     <span
+      data-theme-part="badge"
       className={`rounded-md px-1.5 py-0.5 text-xs ${
         tone === "good"
           ? "bg-success/10 text-success-text"
@@ -87,11 +88,14 @@ function Toggle({
       aria-label={ariaLabel}
       disabled={disabled}
       onClick={onChange}
+      data-theme-part="switch"
+      data-theme-state={checked ? "selected" : undefined}
       className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 ${
         checked ? "bg-success" : "bg-muted-foreground/30"
       } disabled:cursor-not-allowed disabled:opacity-50`}
     >
       <span
+        data-theme-part="switch-thumb"
         className={`inline-block h-5 w-5 rounded-full bg-primary-foreground shadow transition-transform duration-200 ${
           checked ? "translate-x-5" : "translate-x-0.5"
         }`}
@@ -349,6 +353,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                     <button
                       type="button"
                       onClick={() => openGuide(p)}
+                      data-theme-part="button"
                       className="inline-flex h-6 shrink-0 items-center rounded-md border border-border bg-background px-2 text-[11px] font-medium transition-colors hover:border-primary/60 hover:text-primary"
                     >
                       教程
@@ -491,6 +496,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                         value={draftLabel}
                         onChange={(e) => setDraftLabel(e.target.value)}
                         placeholder="显示名,如 工作"
+                        data-theme-part="input"
                         className={FIELD_CLASS}
                       />
                       {PROVIDER_MODE[p] === "home" ? (
@@ -499,11 +505,13 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                             value={draftHome}
                             onChange={(e) => setDraftHome(e.target.value)}
                             placeholder="profile 目录"
+                            data-theme-part="input"
                             className="h-8 min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 font-mono text-xs outline-none focus:border-primary"
                           />
                           <button
                             type="button"
                             onClick={() => void browseHome()}
+                            data-theme-part="button"
                             className="inline-flex h-8 shrink-0 items-center rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-overlay/5"
                           >
                             浏览
@@ -517,6 +525,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                             value={draftCookie}
                             onChange={(e) => setDraftCookie(e.target.value)}
                             placeholder="百炼控制台 Cookie"
+                            data-theme-part="input"
                             className={FIELD_CLASS}
                           />
                           <input
@@ -525,6 +534,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                             value={draftKey}
                             onChange={(e) => setDraftKey(e.target.value)}
                             placeholder="Coding Plan API Key(可选)"
+                            data-theme-part="input"
                             className={FIELD_CLASS}
                           />
                         </>
@@ -536,6 +546,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                             value={draftCookie}
                             onChange={(e) => setDraftCookie(e.target.value)}
                             placeholder="控制台 Cookie(订阅额度)"
+                            data-theme-part="input"
                             className={FIELD_CLASS}
                           />
                           <input
@@ -544,6 +555,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                             value={draftKey}
                             onChange={(e) => setDraftKey(e.target.value)}
                             placeholder="API Key(按量余额,可选)"
+                            data-theme-part="input"
                             className={FIELD_CLASS}
                           />
                         </>
@@ -554,6 +566,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                           value={draftKey}
                           onChange={(e) => setDraftKey(e.target.value)}
                           placeholder="API Key"
+                          data-theme-part="input"
                           className={FIELD_CLASS}
                         />
                       )}
@@ -561,6 +574,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                           <button
                             type="button"
                             onClick={() => setOpenProvider(null)}
+                            data-theme-part="button"
                             className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-overlay/5"
                           >
                             取消
@@ -569,6 +583,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                             type="button"
                             disabled={!canAdd(p)}
                             onClick={() => void addAccount(p)}
+                            data-theme-part="button-primary"
                             className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
                           >
                             <PlusIcon className="h-3.5 w-3.5" />
@@ -623,12 +638,14 @@ function BuiltinSecret({
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        data-theme-part="input"
         className="h-8 min-w-[180px] flex-1 rounded-lg border border-border bg-background px-2.5 text-xs outline-none focus:border-primary"
       />
       <button
         type="button"
         onClick={onSave}
         disabled={!value.trim()}
+        data-theme-part="button-primary"
         className="inline-flex h-8 items-center rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
       >
         保存
@@ -637,6 +654,7 @@ function BuiltinSecret({
         type="button"
         onClick={onClear}
         disabled={!present}
+        data-theme-part="button"
         className="inline-flex h-8 items-center rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-30"
       >
         清除
@@ -683,7 +701,7 @@ function SectionCard({
 
   const head = (
     <>
-      <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+      <h3 data-theme-part="card-title" className="flex items-center gap-1.5 text-sm font-semibold">
         {icon}
         {title}
       </h3>
@@ -694,7 +712,10 @@ function SectionCard({
   );
 
   return (
-    <section className="overflow-hidden rounded-xl border border-border bg-card transition-all duration-300 hover:border-primary/60 hover:shadow-sm">
+    <section
+      data-theme-part="card settings-section"
+      className="overflow-hidden rounded-xl border border-border bg-card transition-all duration-300 hover:border-primary/60 hover:shadow-sm"
+    >
       {collapsible ? (
         <button
           type="button"
@@ -1202,7 +1223,7 @@ export function Settings({
 
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold">设置</h2>
+      <h2 data-theme-part="page-title" className="text-lg font-semibold">设置</h2>
 
       <SectionCard
         icon={<DatabaseIcon className="h-4 w-4 text-primary" />}
@@ -1325,6 +1346,7 @@ export function Settings({
               value={cName}
               onChange={(e) => setCName(e.target.value)}
               placeholder="名称,如 CodeBuddy"
+              data-theme-part="input"
               className="h-8 rounded-lg border border-border bg-background px-2.5 text-xs outline-none focus:border-primary"
             />
             <select
@@ -1332,6 +1354,7 @@ export function Settings({
               onChange={(e) =>
                 setCKind(e.target.value as CustomAgentConfig["kind"])
               }
+              data-theme-part="input"
               className="h-8 rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary"
             >
               {KIND_OPTIONS.map((k) => (
@@ -1344,6 +1367,7 @@ export function Settings({
               value={cDir}
               onChange={(e) => setCDir(e.target.value)}
               placeholder={"数据目录,如 C:\\Users\\you\\.codebuddy\\projects"}
+              data-theme-part="input"
               className="h-8 rounded-lg border border-border bg-background px-2.5 text-xs outline-none focus:border-primary"
             />
           </div>
@@ -1352,6 +1376,7 @@ export function Settings({
               type="button"
               onClick={addCustom}
               disabled={!settings}
+              data-theme-part="button-primary"
               className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
             >
               <PlusIcon className="h-3.5 w-3.5" />
@@ -1370,7 +1395,7 @@ export function Settings({
             <div className="text-sm font-medium">
               当前版本 {appVersion || "0.1.0"}
               {updateLatest ? (
-                <span className="ml-2 rounded-md bg-notice/15 px-1.5 py-0.5 text-xs font-medium text-notice">
+                <span data-theme-part="badge" className="ml-2 rounded-md bg-notice/15 px-1.5 py-0.5 text-xs font-medium text-notice">
                   可更新到 v{updateLatest}
                 </span>
               ) : null}
@@ -1389,6 +1414,7 @@ export function Settings({
             type="button"
             onClick={() => void checkUpdate()}
             disabled={updateState === "checking"}
+            data-theme-part="button"
             className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-overlay/5 disabled:opacity-50"
           >
             <RefreshIcon
@@ -1415,6 +1441,7 @@ export function Settings({
               type="button"
               onClick={() => void fetchModelsDev()}
               disabled={fetchState === "loading" || !settings}
+              data-theme-part="button-primary"
               className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
             >
               <RefreshIcon
@@ -1427,6 +1454,7 @@ export function Settings({
               <select
                 value={settings?.currency ?? "CNY"}
                 onChange={(e) => updateCurrency(e.target.value)}
+                data-theme-part="input"
                 className="h-7 rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary"
               >
                 <option value="CNY">¥ 人民币</option>
@@ -1442,6 +1470,7 @@ export function Settings({
                 value={settings?.exchangeRate ?? 7.2}
                 onChange={(e) => updateExchangeRate(e.target.value)}
                 onBlur={persistNow}
+                data-theme-part="input"
                 className="h-7 w-20 rounded-lg border border-border bg-background px-2 text-xs tabular-nums outline-none focus:border-primary"
               />
             </label>
@@ -1450,6 +1479,7 @@ export function Settings({
               onClick={() => void fetchFxRate()}
               disabled={fxState === "loading" || !settings}
               title="从 er-api / frankfurter 获取实时 USD→CNY 汇率"
+              data-theme-part="button"
               className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-overlay/5 disabled:opacity-50"
             >
               获取实时汇率
@@ -1475,8 +1505,8 @@ export function Settings({
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] text-xs">
-              <thead>
+            <table data-theme-part="table" className="w-full min-w-[640px] text-xs">
+              <thead data-theme-part="table-head">
                 <tr className="border-b border-border/60 text-left text-muted-foreground">
                   <th className="py-1.5 pr-2 font-medium">模型</th>
                   <th className="py-1.5 pr-2 text-right font-medium">输入 $/M</th>
@@ -1522,11 +1552,16 @@ export function Settings({
                         placeholder="0"
                         onChange={(e) => updatePrice(model, field, e.target.value)}
                         onBlur={persistNow}
+                        data-theme-part="input"
                         className="h-7 w-20 rounded-lg border border-border bg-background px-2 text-right tabular-nums outline-none focus:border-primary"
                       />
                     );
                     return (
-                      <tr key={model} className="border-b border-border/30">
+                      <tr
+                        key={model}
+                        data-theme-part="table-row"
+                        className="border-b border-border/30"
+                      >
                         <td className="max-w-[220px] py-1.5 pr-2" title={model}>
                           <div className="truncate">{model}</div>
                           <div
@@ -1555,6 +1590,7 @@ export function Settings({
                             title="高峰单价(输入);留空 = 无峰谷"
                             onChange={(e) => updatePeak(model, e.target.value)}
                             onBlur={persistNow}
+                            data-theme-part="input"
                             className="h-7 w-20 rounded-lg border border-border bg-background px-2 text-right tabular-nums outline-none focus:border-primary"
                           />
                         </td>
@@ -1603,6 +1639,7 @@ export function Settings({
             type="button"
             onClick={handleRefresh}
             disabled={busyAction !== "none"}
+            data-theme-part="button"
             className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-overlay/5 disabled:opacity-50"
           >
             <RefreshIcon
@@ -1643,6 +1680,7 @@ export function Settings({
               <select
                 value={selectedExists ? themeCtx.selectedId : "__missing__"}
                 onChange={(e) => applyThemeId(e.target.value)}
+                data-theme-part="input"
                 className="h-8 max-w-[220px] rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary"
                 title="选择主题;第三方主题放进下方目录后点「重新扫描」"
               >
@@ -1668,6 +1706,7 @@ export function Settings({
                 onClick={() => void reloadThemes()}
                 disabled={themeReloading}
                 title="重新扫描主题目录"
+                data-theme-part="button"
                 className="inline-flex h-8 items-center gap-1 rounded-lg border border-border bg-background px-2.5 text-xs font-medium transition-colors hover:bg-overlay/5 disabled:opacity-50"
               >
                 <RefreshIcon
@@ -1727,12 +1766,14 @@ export function Settings({
                 : ""}
             </div>
           </div>
-          <div className="flex items-center gap-1 rounded-xl bg-muted p-1">
+          <div data-theme-part="segmented" className="flex items-center gap-1 rounded-xl bg-muted p-1">
             <button
               type="button"
               onClick={() => applyTheme("dark")}
               disabled={!modeSupported("dark")}
               title={modeSupported("dark") ? undefined : "当前主题没有暗色模式"}
+              data-theme-part="segmented-button"
+              data-theme-state={theme === "dark" ? "selected" : undefined}
               className={`flex h-7 items-center gap-1 rounded-lg px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                 theme === "dark"
                   ? "bg-background shadow-sm text-foreground"
@@ -1747,6 +1788,8 @@ export function Settings({
               onClick={() => applyTheme("light")}
               disabled={!modeSupported("light")}
               title={modeSupported("light") ? undefined : "当前主题没有亮色模式"}
+              data-theme-part="segmented-button"
+              data-theme-state={theme === "light" ? "selected" : undefined}
               className={`flex h-7 items-center gap-1 rounded-lg px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                 theme === "light"
                   ? "bg-background shadow-sm text-foreground"
@@ -1772,11 +1815,14 @@ export function Settings({
                 startMinimized: !settings.startMinimized,
               })
             }
+            data-theme-part="switch"
+            data-theme-state={settings?.startMinimized ? "selected" : undefined}
             className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
               settings?.startMinimized ? "bg-primary" : "bg-muted"
             }`}
           >
             <span
+              data-theme-part="switch-thumb"
               className={`absolute top-0.5 h-4 w-4 rounded-full bg-background shadow transition-all ${
                 settings?.startMinimized ? "left-[18px]" : "left-0.5"
               }`}

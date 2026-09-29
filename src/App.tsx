@@ -244,9 +244,10 @@ export default function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div data-theme-part="app" className="min-h-screen bg-background text-foreground">
       <header
         data-tauri-drag-region
+        data-theme-part="header"
         className="fixed top-0 z-50 h-16 w-full border-b border-border/50 bg-background/80 backdrop-blur-md"
       >
         <div
@@ -265,11 +266,12 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-1 rounded-xl bg-muted p-1">
+          <div data-theme-part="segmented" className="flex items-center gap-1 rounded-xl bg-muted p-1">
             <button
               type="button"
               title="刷新数据"
               onClick={handleRefresh}
+              data-theme-part="segmented-button"
               className={`${TOOLBAR_BTN} ${TOOLBAR_BTN_IDLE}`}
             >
               <RefreshIcon
@@ -282,6 +284,8 @@ export default function App() {
               onClick={() =>
                 setView((v) => (v === "limits" ? "dashboard" : "limits"))
               }
+              data-theme-part="segmented-button"
+              data-theme-state={view === "limits" ? "selected" : undefined}
               className={`${TOOLBAR_BTN} ${
                 view === "limits" ? TOOLBAR_BTN_ACTIVE : TOOLBAR_BTN_IDLE
               }`}
@@ -294,6 +298,8 @@ export default function App() {
               onClick={() =>
                 setView((v) => (v === "settings" ? "dashboard" : "settings"))
               }
+              data-theme-part="segmented-button"
+              data-theme-state={view === "settings" ? "selected" : undefined}
               className={`relative ${TOOLBAR_BTN} ${
                 view === "settings" ? TOOLBAR_BTN_ACTIVE : TOOLBAR_BTN_IDLE
               }`}
@@ -310,19 +316,21 @@ export default function App() {
         </div>
       </header>
 
-      <main className="min-h-screen">
+      <main data-theme-part="main" className="min-h-screen">
         {view === "dashboard" ? (
           <div
             key="dashboard"
             className="mx-auto max-w-6xl animate-fade-in space-y-4 px-6 pb-10 pt-20"
           >
             {/* 筛选栏:Agent + 日期范围 */}
-            <div className="sticky top-16 z-40 -mx-6 space-y-2 border-b border-border/40 bg-background/90 px-6 pb-3 pt-2 backdrop-blur-md">
+            <div data-theme-part="filter-bar" className="sticky top-16 z-40 -mx-6 space-y-2 border-b border-border/40 bg-background/90 px-6 pb-3 pt-2 backdrop-blur-md">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-muted-foreground">Agent</span>
                 <button
                   type="button"
                   onClick={() => setAgentId(null)}
+                  data-theme-part="chip"
+                  data-theme-state={agentId === null ? "selected" : undefined}
                   className={`${CHIP} border ${
                     agentId === null
                       ? "border-primary/50 bg-primary/15 text-foreground"
@@ -338,6 +346,8 @@ export default function App() {
                     onClick={() =>
                       setAgentId(agentId === status.id ? null : status.id)
                     }
+                    data-theme-part="chip"
+                    data-theme-state={agentId === status.id ? "selected" : undefined}
                     className={`${CHIP} border ${
                       agentId === status.id
                         ? "border-primary/50 bg-primary/15 text-foreground"
@@ -362,6 +372,8 @@ export default function App() {
                     key={p}
                     type="button"
                     onClick={() => setPreset(p)}
+                    data-theme-part="chip"
+                    data-theme-state={preset === p ? "selected" : undefined}
                     className={`${CHIP} ${
                       preset === p
                         ? "bg-background shadow-sm text-foreground ring-1 ring-border"
@@ -378,6 +390,7 @@ export default function App() {
                       value={customFrom}
                       max={customTo}
                       onChange={(e) => setCustomFrom(e.target.value)}
+                      data-theme-part="input"
                       className="h-7 rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary"
                     />
                     ~
@@ -386,6 +399,7 @@ export default function App() {
                       value={customTo}
                       min={customFrom}
                       onChange={(e) => setCustomTo(e.target.value)}
+                      data-theme-part="input"
                       className="h-7 rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary"
                     />
                   </span>

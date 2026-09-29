@@ -40,6 +40,8 @@ export function AgentCard({
       type="button"
       onClick={() => onSelect(selected ? null : status.id)}
       title={selected ? "点击取消筛选" : "点击只看这个 Agent"}
+      data-theme-part="card agent-card"
+      data-theme-state={selected ? "selected" : undefined}
       className={`group rounded-xl border bg-card p-4 text-left transition-all duration-300 hover:border-primary/60 hover:shadow-sm ${
         selected
           ? "border-primary shadow-md"
@@ -80,8 +82,9 @@ export function AgentCard({
         </div>
       </div>
 
-      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted/60">
+      <div data-theme-part="progress" className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted/60">
         <div
+          data-theme-part="progress-fill"
           className="h-full rounded-full transition-all duration-500"
           style={{ width: `${pct}%`, backgroundColor: color }}
         />

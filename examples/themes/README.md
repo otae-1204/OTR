@@ -4,7 +4,7 @@
 
 | 文件 | id | 名称 | 模式 | 风格 |
 |---|---|---|---|---|
-| `warm-paper.json` | `warm-paper` | 暖纸 Warm Paper | 只有亮色 | 米白纸张底、墨褐正文、陶土色主色、大地色图表;衬线字体、较大圆角、暖褐色柔和阴影 |
+| `warm-paper.json` | `warm-paper` | 暖纸 Warm Paper | 只有亮色 | 米白纸张底、墨褐正文、陶土色主色、大地色图表;衬线字体、较大圆角、暖褐色柔和阴影;附带少量 `css` 演示(顶栏 / 卡片的纸张渐变、选中 Agent 卡的主色晕染、标题字距、角标描边、tooltip 毛玻璃) |
 | `neon-night.json` | `neon-night` | 霓虹夜 Neon Night | 只有暗色 | 近黑紫底、青色霓虹主色、品红焦点环、高饱和图表;等宽字体、近直角、发光阴影 |
 
 ## 安装
@@ -36,11 +36,14 @@
 
 ```bash
 node scripts/theme-lint.mjs examples/themes/*.json       # 格式校验:应为零错误、零警告
+node scripts/theme-lint.mjs --print-css examples/themes/warm-paper.json   # 顺便打印 css 表生成的样式
 node scripts/theme-contrast.mjs examples/themes/*.json   # 对比度:文字 ≥ 4.5:1,图形 ≥ 3:1
 ```
 
 ## 拿来改
 
 复制一份,**先改 `id`**(小写字母、数字、`-` `_` `.`;不能与其它主题重复,也不能是 `otr`)和 `name`,再改颜色。没写的 token 会回退到默认主题同模式的值,所以删掉不关心的部分也没关系。完整的 token 名单与各 token 在界面上的用处见设计文档 §3 与 §12。
+
+想加自定义样式(卡片渐变、标题字距之类),看设计文档 §12.6 与 §14:`css` 表只认公开的钩子名和白名单属性,暖纸主题里的那几条可以直接照抄。
 
 `$schema` 指向仓库 `main` 分支上的 `docs/theme.schema.json`,在 VS Code 等编辑器里可获得补全与校验;离线时可改成本地路径(例如在本仓库内用 `../../docs/theme.schema.json`)。应用本身忽略这个字段。

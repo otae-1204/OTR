@@ -22,7 +22,7 @@ export function EmptyState({
   children?: ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-dashed border-border px-6 py-10 text-center text-muted-foreground">
+    <div data-theme-part="empty-state" className="rounded-xl border border-dashed border-border px-6 py-10 text-center text-muted-foreground">
       {icon ? <div className="mb-2 flex justify-center">{icon}</div> : null}
       <p className="text-sm">{message}</p>
       {children ? <div className="mt-3">{children}</div> : null}

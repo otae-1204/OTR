@@ -70,6 +70,62 @@
       "maxLength": 200,
       "description": "逗号分隔的字体族;只允许字母/数字/空格/引号/逗号/连字符/下划线/点(含中文)"
     },
+    "cssValue": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "属性值。只允许字母、数字、空格、- + . % # ( ) , /(font-family 另允许引号与 Unicode 字母);没有分号、花括号、!important、url()、@import。"
+    },
+    "cssBlock": {
+      "type": "object",
+      "description": "一个钩子上的声明:属性 → 值(属性白名单如下,每个钩子最多 24 条)",
+      "additionalProperties": false,
+      "maxProperties": 24,
+      "properties": {
+        "color": { "$ref": "#/definitions/cssValue", "description": "文字色:#hex / rgb() / hsl() / transparent / currentColor / hsl(var(--语义色) [/ 透明度]) / var(--chart-N|--agent-id)" },
+        "background-color": { "$ref": "#/definitions/cssValue", "description": "背景色,同 color 的语法" },
+        "background-image": { "$ref": "#/definitions/cssValue", "description": "none,或最多 4 个 linear-gradient() / radial-gradient()(只含颜色、长度/百分比、角度、方位关键字),每个 2–16 个色标" },
+        "background-clip": { "$ref": "#/definitions/cssValue", "description": "border-box / padding-box / content-box / text(同时写出 -webkit- 前缀;配合渐变 + color: transparent 做渐变文字)" },
+        "border": { "$ref": "#/definitions/cssValue", "description": "[宽度 ≤ 8px] [none|solid|dashed|dotted|double] [颜色],任意顺序;或 none" },
+        "border-top": { "$ref": "#/definitions/cssValue", "description": "同 border" },
+        "border-right": { "$ref": "#/definitions/cssValue", "description": "同 border" },
+        "border-bottom": { "$ref": "#/definitions/cssValue", "description": "同 border" },
+        "border-left": { "$ref": "#/definitions/cssValue", "description": "同 border" },
+        "border-color": { "$ref": "#/definitions/cssValue", "description": "1–4 个颜色" },
+        "border-top-color": { "$ref": "#/definitions/cssValue", "description": "颜色" },
+        "border-right-color": { "$ref": "#/definitions/cssValue", "description": "颜色" },
+        "border-bottom-color": { "$ref": "#/definitions/cssValue", "description": "颜色" },
+        "border-left-color": { "$ref": "#/definitions/cssValue", "description": "颜色" },
+        "border-width": { "$ref": "#/definitions/cssValue", "description": "1–4 个长度,每个 ≤ 8px / 0.5rem" },
+        "border-top-width": { "$ref": "#/definitions/cssValue", "description": "长度 ≤ 8px" },
+        "border-right-width": { "$ref": "#/definitions/cssValue", "description": "长度 ≤ 8px" },
+        "border-bottom-width": { "$ref": "#/definitions/cssValue", "description": "长度 ≤ 8px" },
+        "border-left-width": { "$ref": "#/definitions/cssValue", "description": "长度 ≤ 8px" },
+        "border-style": { "$ref": "#/definitions/cssValue", "description": "1–4 个 none|solid|dashed|dotted|double" },
+        "border-top-style": { "$ref": "#/definitions/cssValue", "description": "none|solid|dashed|dotted|double" },
+        "border-right-style": { "$ref": "#/definitions/cssValue", "description": "同 border-top-style" },
+        "border-bottom-style": { "$ref": "#/definitions/cssValue", "description": "同 border-top-style" },
+        "border-left-style": { "$ref": "#/definitions/cssValue", "description": "同 border-top-style" },
+        "border-radius": { "$ref": "#/definitions/cssValue", "description": "1–4 个长度/百分比(≤ 1000px / 64rem / 100%),或 var(--radius-md|lg|xl)" },
+        "border-top-left-radius": { "$ref": "#/definitions/cssValue", "description": "1–2 个长度/百分比" },
+        "border-top-right-radius": { "$ref": "#/definitions/cssValue", "description": "1–2 个长度/百分比" },
+        "border-bottom-right-radius": { "$ref": "#/definitions/cssValue", "description": "1–2 个长度/百分比" },
+        "border-bottom-left-radius": { "$ref": "#/definitions/cssValue", "description": "1–2 个长度/百分比" },
+        "outline-color": { "$ref": "#/definitions/cssValue", "description": "颜色(焦点环)" },
+        "opacity": { "$ref": "#/definitions/cssValue", "description": "0–1 或 0–100%" },
+        "font-weight": { "$ref": "#/definitions/cssValue", "description": "normal / bold / lighter / bolder 或 1–1000 的整数" },
+        "font-style": { "$ref": "#/definitions/cssValue", "description": "normal / italic / oblique" },
+        "letter-spacing": { "$ref": "#/definitions/cssValue", "description": "normal 或长度(±8px / ±0.5em)" },
+        "text-transform": { "$ref": "#/definitions/cssValue", "description": "none / uppercase / lowercase / capitalize" },
+        "text-decoration-line": { "$ref": "#/definitions/cssValue", "description": "none 或 underline / overline / line-through(最多两个)" },
+        "text-decoration-style": { "$ref": "#/definitions/cssValue", "description": "solid / double / dotted / dashed / wavy" },
+        "text-decoration-color": { "$ref": "#/definitions/cssValue", "description": "颜色" },
+        "backdrop-filter": { "$ref": "#/definitions/cssValue", "description": "none,或最多 3 个 blur(≤ 40px) / saturate() / brightness() / contrast()(0–3 或 0–300%);同时写出 -webkit- 前缀" },
+        "font-family": { "$ref": "#/definitions/cssValue", "description": "与 font token 同样的字体族语法,或 var(--font-sans|--font-mono)" },
+        "box-shadow": { "$ref": "#/definitions/cssValue", "description": "与 shadow token 同样的语法(颜色须是字面量),或 var(--shadow|--shadow-sm|md|lg)" },
+        "text-shadow": { "$ref": "#/definitions/cssValue", "description": "逗号分隔的若干层:2–3 个长度 [颜色];不允许 inset" }
+      }
+    },
     "tokens": {
       "type": "object",
       "additionalProperties": false,
@@ -159,6 +215,12 @@
             "md": { "$ref": "#/definitions/shadow" },
             "lg": { "$ref": "#/definitions/shadow" }
           }
+        },
+        "css": {
+          "type": "object",
+          "description": "受限自定义 CSS(apiVersion 1 内新增的可选字段)。键 = 钩子名,可加一个状态后缀(:hover / :active / :focus / :disabled / :selected);值 = { 属性: 值 }。属性只认白名单、值按各自语法分词校验,不合法的条目丢弃并告警。钩子目录与语法见 docs/theme_interface.md §14。",
+          "propertyNames": { "pattern": "^(app|header|main|filter-bar|page-title|card|card-title|stat-card|mini-stat|agent-card|chart-card|table-card|limit-card|settings-section|chart|tooltip|legend|table|table-head|table-row|button|button-primary|segmented|segmented-button|chip|badge|progress|progress-fill|switch|switch-thumb|input|empty-state)(:(hover|active|focus|disabled|selected))?$" },
+          "additionalProperties": { "$ref": "#/definitions/cssBlock" }
         }
       }
     }

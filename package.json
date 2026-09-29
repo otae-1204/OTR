@@ -11,6 +11,7 @@
     "dev:renderer": "vite",
     "build:renderer": "vite build",
     "typecheck": "tsc --noEmit",
+    "test:theme": "node scripts/theme-css-selftest.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

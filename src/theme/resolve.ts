@@ -6,10 +6,12 @@
  *   2. 主题的公共 token(`tokens`)
  *   3. 主题的该模式 token(`modes[mode]`)
  *
- * `chart.palette` / `chart.agentFallback` 整组替换;`chart.agents` 按 Agent id 合并。
+ * `chart.palette` / `chart.agentFallback` 整组替换;`chart.agents` 按 Agent id 合并;
+ * `css` 按「钩子[:状态] → 属性」粒度合并。
  */
 
 import { OTR_THEME } from "./builtin";
+import { kebab, mergeCss } from "./css";
 import {
   COLOR_TOKENS,
   FONT_TOKENS,
@@ -23,10 +25,7 @@ import {
   type ThemeTokens,
 } from "./types";
 
-/** camelCase → kebab-case:cardForeground → card-foreground */
-export function kebab(s: string): string {
-  return s.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
-}
+export { kebab };
 
 function mergeTokens(base: ThemeTokens, over: ThemeTokens | undefined): ThemeTokens {
   if (!over) return base;
@@ -41,6 +40,7 @@ function mergeTokens(base: ThemeTokens, over: ThemeTokens | undefined): ThemeTok
     font: { ...base.font, ...over.font },
     radius: { ...base.radius, ...over.radius },
     shadow: { ...base.shadow, ...over.shadow },
+    css: mergeCss(base.css, over.css),
   };
 }
 
@@ -85,6 +85,7 @@ export function resolveTheme(
     mode,
     cssVars,
     chart: { palette, agents, agentFallback },
+    css: t.css ?? {},
   };
 }
 

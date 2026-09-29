@@ -115,8 +115,9 @@ function QuotaCell({ w, now }: { w: QuotaWindow; now: number }) {
       {left == null || used == null ? (
         <div className="h-1.5" />
       ) : (
-        <div className="h-1.5 overflow-hidden rounded-full bg-foreground/25">
+        <div data-theme-part="progress" className="h-1.5 overflow-hidden rounded-full bg-foreground/25">
           <div
+            data-theme-part="progress-fill"
             className={`h-full rounded-full transition-all ${remainingTone(used)}`}
             style={{ width: `${Math.min(100, left)}%` }}
           />
@@ -305,15 +306,15 @@ function AccountTitle({ data, now }: { data: ProviderLimits; now: number }) {
   }
   return (
     <div className="min-w-0">
-      <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+      <h3 data-theme-part="card-title" className="flex items-center gap-1.5 text-sm font-semibold">
         <span className="truncate">{name}</span>
         {data.planLabel ? (
-          <span className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+          <span data-theme-part="badge" className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
             {data.planLabel}
           </span>
         ) : null}
         {!data.configured ? (
-          <span className="shrink-0 rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning-text">
+          <span data-theme-part="badge" className="shrink-0 rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning-text">
             待配置
           </span>
         ) : null}
@@ -647,7 +648,7 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold">额度</h2>
+        <h2 data-theme-part="page-title" className="text-lg font-semibold">额度</h2>
         <div className="flex items-center gap-3">
           {lastFetched > 0 ? (
             <span
@@ -661,6 +662,7 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
             type="button"
             disabled={loading}
             onClick={() => void load(true)}
+            data-theme-part="button"
             className="flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium transition-colors hover:bg-overlay/5 disabled:opacity-50"
           >
             <RefreshIcon className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
@@ -710,6 +712,7 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
                   <div className="pointer-events-none absolute -bottom-1 left-4 right-4 z-10 h-0.5 rounded-full bg-primary" />
                 ) : null}
                 <section
+                  data-theme-part="card limit-card"
                   className={`${LIMIT_ROW_GRID} ${
                     merging
                       ? "border-primary bg-primary/5 shadow-sm"
@@ -819,7 +822,7 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
                     </>
                   )}
                   {merging ? (
-                    <span className="pointer-events-none absolute right-3 top-3.5 z-10 rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
+                    <span data-theme-part="badge" className="pointer-events-none absolute right-3 top-3.5 z-10 rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
                       松开合并
                     </span>
                   ) : null}

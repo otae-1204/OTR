@@ -23,13 +23,8 @@ function PieTooltip({ active, payload, total }: any) {
   const pct = total > 0 ? ((value / total) * 100).toFixed(1) : "0.0";
   return (
     <div
-      className="px-3 py-2 shadow-lg"
-      style={{
-        background: "hsl(var(--card))",
-        border: "1px solid hsl(var(--border))",
-        borderRadius: "var(--radius-lg)",
-        fontSize: 12,
-      }}
+      data-theme-part="tooltip"
+      className="rounded-lg border border-border bg-card px-3 py-2 text-xs shadow-lg"
     >
       <p className="mb-0.5 max-w-[220px] truncate font-medium text-foreground" title={name}>
         {name}
@@ -48,8 +43,9 @@ function HitRateBar({ totals }: { totals: Totals }) {
       title={`缓存命中率 = 缓存读 ÷ (未缓存输入 + 缓存读);缓存读高说明上下文复用得多,是省钱的好事`}
       className="flex items-center gap-2"
     >
-      <div className="relative h-1.5 w-24 overflow-hidden rounded-full bg-muted/60">
+      <div data-theme-part="progress" className="relative h-1.5 w-24 overflow-hidden rounded-full bg-muted/60">
         <div
+          data-theme-part="progress-fill"
           className="absolute inset-y-0 left-0 rounded-full bg-success"
           style={{ width: `${(hit * 100).toFixed(1)}%` }}
         />
@@ -140,8 +136,11 @@ export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps)
     total > 0 ? ((v / total) * 100).toFixed(1) : "0.0";
 
   return (
-    <section className="pie-card rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm">
-      <div className="flex items-center gap-1.5 text-sm font-semibold">
+    <section
+      data-theme-part="card chart-card"
+      className="pie-card rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm"
+    >
+      <div data-theme-part="card-title" className="flex items-center gap-1.5 text-sm font-semibold">
         <PieChartIcon className="h-4 w-4 text-primary" />
         <span>模型占比</span>
         <span className="ml-1 text-xs font-normal text-muted-foreground">
@@ -156,7 +155,7 @@ export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps)
       ) : (
         <>
         <div className="mt-3 flex flex-col items-center gap-4 lg:flex-row">
-          <div className="relative h-[200px] w-full max-w-[220px] shrink-0">
+          <div data-theme-part="chart" className="relative h-[200px] w-full max-w-[220px] shrink-0">
             <ResponsiveContainer width="100%" height="100%">
               {/* 注意:recharts 的 Pie 点击扇区后会给 path 加焦点框,由 .pie-card 的 CSS 去掉 */}
               <PieChart>
@@ -213,7 +212,7 @@ export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps)
           </div>
 
           <div className="w-full min-w-0 flex-1">
-            <ul className="space-y-1.5">
+            <ul data-theme-part="legend" className="space-y-1.5">
               {slices.map((s, i) => (
                 <li
                   key={s.name}

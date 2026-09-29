@@ -1,7 +1,7 @@
 # OTR 主题接口(Theme API)设计文档
 
 > 版本:主题格式 `apiVersion = 1`;对应 OTR 0.2.x。
-> 相关代码:`src/theme/`(前端)、`src-tauri/src/themes.rs`(后端)、`docs/theme.schema.json`(JSON Schema)、`scripts/theme-lint.mjs`(校验脚本)、`scripts/theme-contrast.mjs`(对比度检查)、`examples/themes/`(示例主题)。
+> 相关代码:`src/theme/`(前端;受限 css 在 `css.ts`)、`src-tauri/src/themes.rs`(后端)、`docs/theme.schema.json`(JSON Schema)、`scripts/theme-lint.mjs`(校验脚本)、`scripts/theme-contrast.mjs`(对比度检查)、`scripts/theme-css-selftest.mjs`(css 校验器自检)、`examples/themes/`(示例主题)。
 
 ## 1. 背景与现状分析
 
@@ -23,7 +23,7 @@ CSP(`tauri.conf.json`)已经是 `style-src 'self' 'unsafe-inline'; img-src 'self
 ## 2. 设计目标
 
 1. **一份 token 目录**:界面里所有可变的外观都对应一个有名字的 token;组件不再出现具体颜色。
-2. **纯数据主题**:主题 = 一个 JSON 文件,没有 JS、没有任意 CSS。第三方能写、能分享、应用能安全加载。
+2. **纯数据主题**:主题 = 一个 JSON 文件,没有 JS、没有任意 CSS(只有一张结构化、逐项白名单的 `css` 表,见 §14)。第三方能写、能分享、应用能安全加载。
 3. **内置默认外观也是一个主题**:走完全相同的格式、校验与解析路径;选回它时与改造前逐位一致。
 4. **永远能用**:任何一处失败(文件坏了、字段错了、主题被删了、JS 抛异常)都只影响那个 token 或那个主题,应用退回默认外观继续工作。
 5. **可演进**:新增 token 不破坏旧主题;格式真的要变时靠 `apiVersion` 明确表达。
@@ -31,7 +31,7 @@ CSP(`tauri.conf.json`)已经是 `style-src 'self' 'unsafe-inline'; img-src 'self
 
 ## 3. 主题可控内容(token 目录)
 
-主题通过五组 token 控制外观。**颜色值一律要求不透明**(`#rrggbb`、`rgb()`、`hsl()`、或裸 HSL 三元组 `"240 5% 12%"`;不接受颜色关键字),原因见 §7。
+主题通过六组 token(`colors` / `stat` / `chart` / `font` / `radius` / `shadow`)控制外观,外加一张可选的受限 `css` 表(§3.5、§14)。**颜色值一律要求不透明**(`#rrggbb`、`rgb()`、`hsl()`、或裸 HSL 三元组 `"240 5% 12%"`;不接受颜色关键字),原因见 §7。
 
 ### 3.1 `colors` —— 语义色(按模式给)
 
@@ -88,10 +88,14 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 | `radius.md` / `lg` / `xl` | `--radius-md` / `--radius-lg` / `--radius-xl` | `rounded-md`(角标)/ `rounded-lg`(按钮、输入框、图标底、图表 tooltip)/ `rounded-xl`(卡片、分段控件) | `0.375rem` / `0.75rem` / `0.875rem` |
 | `shadow.sm` / `base` / `md` / `lg` | `--shadow-sm` / `--shadow` / `--shadow-md` / `--shadow-lg` | `shadow-sm`(卡片 hover、分段选中)/ `shadow`(开关滑块)/ `shadow-md`(选中的 Agent 卡)/ `shadow-lg`(图表 tooltip) | Tailwind 3.4 默认值 |
 
-### 3.5 明确**不允许**主题控制的内容
+### 3.5 `css` —— 受限自定义样式(可选)
+
+token 表达不了的效果(卡片渐变底、毛玻璃顶栏、标题字距、选中态描边……)可以写在 `css` 表里:键是应用公开的**钩子名**(对应组件上的 `data-theme-part`,可加 `:hover` 等状态后缀),值是「白名单属性 → 受限值」。它可以放在公共 `tokens` 里,也可以放在 `modes.dark` / `modes.light` 里,叠加规则与 token 相同。选择器由应用生成,主题写不了选择器;属性、值逐项白名单,不合法的条目单独丢弃并告警。完整说明见 §14,写法见 §12.6。
+
+### 3.6 明确**不允许**主题控制的内容
 
 - **任何脚本**:清单是纯 JSON,不存在执行入口。
-- **任意 CSS**:不提供 `css` / `stylesheet` 字段。只能改上面列出的 token,不能改选择器、布局、动画、滚动条。
+- **任意 CSS**:没有自由文本的样式字段。`css` 表(§14)只是「钩子 → 白名单属性 → 受限值」:选择器由应用按钩子名生成,属性与值逐项白名单;改不了布局、尺寸、动画、滚动条,写不了任何选择器。
 - **间距、尺寸、断点、布局**(Tailwind spacing scale、`max-w-6xl`、栅格列数、图表高度):这些决定可用性与对齐,不开放(见待确认问题 Q3)。
 - **图标、图片、字体文件**:不能引用任何 `url()`;CSP 也会拦截。品牌 logo 不可替换。
 - **半透明的语义色**:界面自己会在语义色上叠透明度(`bg-primary/10`、`border-border/40`),token 带透明度会叠出错误结果,所以校验时拒绝。
@@ -114,7 +118,7 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 | `tokens` | 否 | tokens 对象 | 与模式无关的公共 token(字体、圆角、图表色……颜色也可以放这里) |
 | `modes` | **是** | `{ dark?: tokens, light?: tokens }` | 至少一个模式。`"dark": {}` 也合法,表示"提供暗色模式,值全部用默认" |
 
-`tokens` 对象的结构在两处完全相同(公共 / 按模式),五个组:`colors`、`stat`、`chart`、`font`、`radius`、`shadow`,每个组的键见 §3。**所有 token 都是可选的**。
+`tokens` 对象的结构在两处完全相同(公共 / 按模式),六个组:`colors`、`stat`、`chart`、`font`、`radius`、`shadow`,每个组的键见 §3;外加可选的 `css` 表(§14)。**所有 token 都是可选的**。
 
 ### 4.1 示例
 
@@ -228,6 +232,7 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
   - 新主题声明了更高的 `apiVersion` → 老应用拒绝(error:「主题需要更新的 OTR」),回退默认主题。语义未知时宁可不加载,不做"尽力而为"。
 - **什么时候升 `apiVersion`**:改变已有 token 的含义/取值格式、删除 token、改变叠加规则。届时 `validateManifest` 增加对旧版本的迁移分支,老文件继续可读。
 - 不设 `minAppVersion`:`apiVersion` + 未知字段忽略已经覆盖了实际需要(见待确认问题 Q5)。
+- **`css` 字段**就是「同一 `apiVersion` 内只做加法」的第一个实例:它是新增的可选字段,老主题没有它、行为不变;更早的应用版本遇到它按未知字段忽略并告警,其余 token 照常生效。钩子目录与属性白名单以后也只增不减(§14.2)。
 
 ## 7. 校验规则
 
@@ -235,13 +240,13 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 
 **error(整份拒绝,回退默认主题)**:不是 JSON 对象;`apiVersion` 缺失 / 非整数 / 高于支持版本 / 小于 1;`id` 缺失或不合法或占用内置 id;`name` 缺失或超长;`modes` 缺失或一个模式都没有;文件超过 256 KiB;不是合法 JSON(含 UTF-8 错误)。
 
-**warning(丢弃该项,回退默认值,其余生效)**:未知字段(任何层级);颜色解析失败或带透明度;字体族含白名单外字符或引号不成对;长度不是 `0` / `px` / `rem` / `em` 或超过上限(128px / 8rem);阴影不符合 `[inset] 2–4 个长度 [颜色]` 的层语法;调色板不是 1–16 个颜色的数组(空数组 / 全部无效也回退);`agents` 里的 id 不合法;`homepage` 不是 http(s)。
+**warning(丢弃该项,回退默认值,其余生效)**:未知字段(任何层级);颜色解析失败或带透明度;字体族含白名单外字符或引号不成对;长度不是 `0` / `px` / `rem` / `em` 或超过上限(128px / 8rem);阴影不符合 `[inset] 2–4 个长度 [颜色]` 的层语法;调色板不是 1–16 个颜色的数组(空数组 / 全部无效也回退);`agents` 里的 id 不合法;`homepage` 不是 http(s);`css` 表里未知的钩子或状态、白名单外的属性、不合语法的值(逐条报告,路径如 `modes.dark.css.card.position`,见 §14.5)。
 
-**值的归一化**:语义色与 `stat` 色 → `H S% L%` 三元组;图表色 → `#rrggbb`;阴影里的颜色 → `rgb(r g b / a)`;字体族 → 逗号后统一一个空格。写进 CSS 的永远是我们自己格式化出来的字符串。
+**值的归一化**:语义色与 `stat` 色 → `H S% L%` 三元组;图表色 → `#rrggbb`;阴影里的颜色 → `rgb(r g b / a)`;字体族 → 逗号后统一一个空格;`css` 里的值先分词再按属性语法重新拼出(颜色 → `#rrggbb` / `rgb(r g b / a)`,数字 → 最多三位小数 + 单位)。写进 CSS 的永远是我们自己格式化出来的字符串。
 
 **内置主题**同样跑一遍校验(`normalizeBuiltin`),写坏了会在开发期直接抛错。
 
-**命令行校验**:`node scripts/theme-lint.mjs <文件>`,用的是应用里同一份代码。可选的对比度检查:`node scripts/theme-contrast.mjs <文件>`(见 §12.3)。
+**命令行校验**:`node scripts/theme-lint.mjs <文件>`,用的是应用里同一份代码;加 `--print-css` 可打印 `css` 表最终生成的样式文本。可选的对比度检查:`node scripts/theme-contrast.mjs <文件>`(见 §12.3)。css 校验器自身的自检用例:`npm run test:theme`(`scripts/theme-css-selftest.mjs`,一千余条断言,覆盖各类注入尝试)。
 
 **编码**:文件须是 UTF-8;开头的 BOM 会被忽略(Windows 记事本 / PowerShell 5.1 常会写出 BOM)。
 
@@ -250,6 +255,7 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 | 情况 | 行为 |
 |---|---|
 | 单个 token 非法 | warning;该 token 用默认主题**同模式**的值 |
+| `css` 表里某个键 / 属性 / 值非法 | warning;只丢那一条,其余规则照常生效(内置主题没有 css,所以没有"回退值",只是不写) |
 | 主题没给某个 token | 用默认主题同模式的值(公共 `tokens` 里给了则用公共的) |
 | 主题不支持当前模式 | 自动切到它支持的第一个模式,设置页提示「该主题没有 X 模式」,并把切换后的模式写回设置 |
 | 设置里的 `themeId` 找不到(文件被删)| 应用默认主题;**不改设置值**(文件放回来就恢复);设置页显示「找不到主题 X,已回退默认主题」 |
@@ -259,15 +265,15 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 | JS 完全没跑起来 | `index.css` 的 `:root` / `.dark` 兜底值就是默认主题 |
 | 首帧 | 上次的变量缓存(`localStorage["otr-theme-cache"]`)与本机记忆的模式先应用,随后被设置文件的真相覆盖 |
 
-叠加顺序(单 token 粒度):默认主题公共 → 默认主题该模式 → 本主题公共 → 本主题该模式。`chart.palette` / `agentFallback` 整组替换,`chart.agents` 按 id 合并。
+叠加顺序(单 token 粒度):默认主题公共 → 默认主题该模式 → 本主题公共 → 本主题该模式。`chart.palette` / `agentFallback` 整组替换,`chart.agents` 按 id 合并,`css` 按「钩子[:状态] → 属性」粒度合并(§14.6)。
 
 ## 9. 安全
 
 主题文件来自用户目录,视为**不可信输入**。分层防御:
 
 1. **没有代码执行面**:清单只走 `JSON.parse`,不存在 `eval`、不存在动态 `import`、不存在 `<script>`。
-2. **没有任意 CSS**:不提供样式字段。每个 token 都有自己的白名单语法(§7),值经解析后**重新格式化**再写入,原始字符串不落地;`url(`、`@import`、`expression(`、`;`、`{`、`}`、`<` 根本进不了 CSS。
-3. **写入方式本身就受限**:`element.style.setProperty("--x", value)` 只能设置一个自定义属性的值,无法跳出到别的规则或选择器;即使某个值有问题,影响也只限于引用了该变量的属性。
+2. **没有任意 CSS**:每个 token 都有自己的白名单语法(§7),值经解析后**重新格式化**再写入,原始字符串不落地。`css` 字段也不是文本而是一张表(§14):选择器由应用按钩子名生成、属性只认白名单、值先分词(字符集只有字母数字、空格与 `-+.%#(),/`)再按属性语法逐 token 匹配、最后由我们重新拼出字符串。`url(`、`@import`、`expression(`、`image-set(`、`!important`、`;`、`{`、`}`、`<`、`@`、注释、引号、反斜杠在分词阶段就被整体拒绝,`var()` 只能引用本主题体系的变量(§14.4)。序列化前每个值再归一化一遍,所以哪怕 localStorage 缓存被改也进不来结构字符。校验不是正则黑名单,是分词 + 逐项白名单 + 自检用例(`npm run test:theme`)。
+3. **写入方式本身就受限**:token 走 `element.style.setProperty("--x", value)`,只能设置一个自定义属性的值,无法跳出到别的规则或选择器;`css` 表只经过**唯一一个**受控的 `<style id="otr-theme-css">`,内容整体替换、切换主题时移除,不用 `innerHTML`、不拼接用户字符串进选择器。CSP 的 `style-src 'self' 'unsafe-inline'` 本来就允许内联样式,本功能没有放宽任何策略。
 4. **CSP 兜底**:`img-src 'self' data:`、`font-src 'self' data:`、`connect-src` 白名单 —— 就算前三层都失守,也不能发起外链请求。
 5. **文件系统边界(Rust `themes.rs`)**:命令**没有参数**,前端无法指定路径,不存在路径穿越;只枚举固定目录、深度一层;**符号链接一律跳过**(文件或目录),读取范围不会离开主题目录;隐藏项跳过;单文件上限 256 KiB(超过只报错不读);最多 64 个主题;非 UTF-8 报错。
 6. **不联网**:`homepage` 只显示文本,不是链接;应用不会因为主题去访问任何地址。
@@ -289,10 +295,12 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 |---|---|
 | `theme/types.ts` | token 目录常量(`COLOR_TOKENS` 等)、`ThemeManifest` / `ThemeTokens` / `ResolvedTheme` / `ThemeEntry` / `ThemeDiagnostic` 类型、`THEME_API_VERSION`、大小上限 |
 | `theme/color.ts` | 颜色解析(`#hex` / `rgb()` / `hsl()` / 裸三元组)与 HSL/hex 归一化 |
-| `theme/validate.ts` | 清单校验与归一化;字体 / 长度 / 阴影的白名单语法 |
+| `theme/values.ts` | 字体族 / 长度 / 阴影的白名单语法(token 与 css 共用) |
+| `theme/css.ts` | 受限自定义 CSS:钩子目录 `THEME_PARTS` / 状态 `THEME_STATES`、分词器、属性白名单与值语法、`validateCss` / `mergeCss` / `serializeThemeCss` / `selectorForKey` / `sanitizeCss` |
+| `theme/validate.ts` | 清单校验与归一化(token 组 + `css` 表) |
 | `theme/builtin.ts` | 内置默认主题(经校验归一化);`BUILTIN_THEMES` |
-| `theme/resolve.ts` | 叠加合并 → `ResolvedTheme`(CSS 变量表 + 图表调色板);`pickAgentColor` |
-| `theme/apply.ts` | 写 DOM(class / color-scheme / CSS 变量)、localStorage 缓存、`bootTheme()` |
+| `theme/resolve.ts` | 叠加合并 → `ResolvedTheme`(CSS 变量表 + 图表调色板 + css 表);`pickAgentColor` |
+| `theme/apply.ts` | 写 DOM(class / color-scheme / CSS 变量 / 唯一受控 `<style id="otr-theme-css">`)、localStorage 缓存(含 css 表,读回时重新校验)、`bootTheme()` |
 | `theme/registry.ts` | 内置 + `api.listThemes()` → `ThemeEntry[]`(重复 id 处理) |
 | `theme/ThemeProvider.tsx` | React context:当前主题、条目列表、`selectTheme` / `setMode` / `reload` / `agentColor` / `chartPalette`;`decide()` 决定回退 |
 | `theme/index.ts` | 统一导出 |
@@ -300,7 +308,7 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 | `api/bindings.ts` | `Settings.themeId`;`api.listThemes` / `api.getThemesDir`;移除硬编码的 `AGENT_COLORS` / `agentColor` |
 | `index.css` | 新增状态色 / 指标色 / 字体 / 圆角 / 阴影变量(兜底值 = 默认主题);`body` 字体改用变量 |
 | `tailwind.config.js` | 新增 `overlay` / `success` / `warning` / `danger` / `info` / `notice` / `stat-*` 颜色,`borderRadius` / `boxShadow` / `fontFamily` 改为引用变量 |
-| `components/*.tsx`、`App.tsx` | 硬编码 Tailwind 色 → 语义 class;图表 / 卡片 / chip 改用 `useTheme().agentColor` 与 `chartPalette`;tooltip 圆角用 `var(--radius-lg)` |
+| `components/*.tsx`、`App.tsx` | 硬编码 Tailwind 色 → 语义 class;图表 / 卡片 / chip 改用 `useTheme().agentColor` 与 `chartPalette`;关键元素带 `data-theme-part` 钩子(选中态另带 `data-theme-state="selected"`),图表 tooltip 改用 `bg-card border-border rounded-lg` 类而非内联样式,以便钩子生效 |
 | `components/Settings.tsx` | 「外观与启动」区块:主题下拉框、主题目录路径、重新扫描、诊断列表;深浅模式按钮按主题支持情况禁用;切换时把 `themeId` / `theme` 写入设置 |
 
 后端(`src-tauri/src/`):
@@ -312,7 +320,7 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 | `lib.rs` | 注册模块与命令 |
 | `settings.rs` | `Settings.theme_id`(JSON `themeId`,默认 `"otr"`);旧文件缺字段自动补默认;附单测 |
 
-其它:`docs/theme.schema.json`(JSON Schema,编辑器补全)、`scripts/theme-lint.mjs`(命令行校验)、`scripts/theme-contrast.mjs`(按界面真实用法算前景/背景对比度)、`examples/themes/`(示例主题,见 §12.5)。
+其它:`docs/theme.schema.json`(JSON Schema,编辑器补全;`css` 的钩子键模式与属性名列表由自检脚本保证与代码一致)、`scripts/lib/load-theme.mjs`(脚本共用的 esbuild 打包导入)、`scripts/theme-lint.mjs`(命令行校验,`--print-css`)、`scripts/theme-contrast.mjs`(按界面真实用法算前景/背景对比度)、`scripts/theme-css-selftest.mjs`(css 校验器自检,`npm run test:theme`)、`examples/themes/`(示例主题,见 §12.5)。
 
 ## 12. 主题作者指南(Author guide)
 
@@ -363,6 +371,7 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 - **哪些颜色会被当文字**(按正文 4.5:1 选色):`foreground`(放在 `background`、`card` 上)、`mutedForeground`(`background`、`card`、`muted` 上)、`primary`(`card` 上的链接与角标)、`primaryForeground`(`primary` 上)、`destructive`、`success`、`warning`、三个 `*Text`、`notice`、`stat` 的六个颜色。图形类(`ring`、进度条、`chart.palette`、`chart.agents`)按 3:1。逐项说明见 §3.1 / §3.2,`scripts/theme-contrast.mjs` 会把这些组合算一遍。
 - **开关滑块**:设置页里那排开关(额度来源、Agent 启用)的滑块颜色是 `primaryForeground`,轨道「开」是 `success`、「关」是 `mutedForeground` 的 30%。如果主色很亮、`primaryForeground` 取了深色(暗色霓虹风常见),「关」态的深色滑块会几乎看不见。`shadow.base` 只用在开关滑块上,可以用它给滑块描一圈浅色边来补救,例如 `"0 0 0 1px rgba(238, 236, 255, 0.7), 0 1px 4px 0 rgba(0, 0, 0, 0.6)"`(见待确认问题 Q11)。「启动时最小化到托盘」开关不一样:滑块是 `background` 色,轨道「开」是 `primary`、「关」是 `muted`。
 - **hover 叠加色**:`overlay` 不必是纯黑 / 纯白;暖色主题用深褐、冷色主题用带色相的浅色,hover 时更协调(界面固定按 5% 叠加)。
+- **token 表达不了的效果**(卡片渐变底、毛玻璃顶栏、标题字距、选中态描边):用 `css` 表,见 §12.6。
 
 完整的 token 名单见 §3;想要编辑器补全,在文件里加 `"$schema": "https://raw.githubusercontent.com/otae-1204/OTR/main/docs/theme.schema.json"`(或指向本仓库 `docs/theme.schema.json` 的本地路径;注意 schema 里的 `$id` 只是标识,不是可下载地址)。§4.1 有一个两种模式齐全的完整示例,§12.5 有两个单模式示例,都可以直接抄。
 
@@ -372,7 +381,7 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
    ```bash
    node scripts/theme-lint.mjs path/to/theme.json
    ```
-   通过时打印 `✓ 通过`,并列出每个模式解析后的关键颜色与调色板;有 `[错误]` 表示应用会拒绝加载,有 `[警告]` 表示那一项会回退默认值。退出码 0 / 1。
+   通过时打印 `✓ 通过`,并列出每个模式解析后的关键颜色、调色板与 `css` 规则数;有 `[错误]` 表示应用会拒绝加载,有 `[警告]` 表示那一项会回退默认值(`css` 条目则是被丢弃)。退出码 0 / 1。加 `--print-css` 会把 `css` 表最终生成的样式文本打印出来,方便核对选择器与归一化后的值。
 2. **对比度**(可选,同样要先 `npm install`):
    ```bash
    node scripts/theme-contrast.mjs path/to/theme.json
@@ -393,6 +402,8 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 | 改了 `cardForeground` / `popover` / `secondary` / `accent` 等没有任何变化 | 这些 token 目前界面没有引用(§3.1);卡片文字要改 `foreground` |
 | 选回别的主题后还是亮色 / 暗色 | 单模式主题会把深浅模式切过去并保存;选回双模式主题时不会自动恢复,手动切回即可(见 Q14) |
 | 「不是合法 JSON」但内容看着没错 | JSON 不允许注释和末尾多余的逗号 |
+| `css` 里某条没生效,列表里是警告 | 钩子名 / 状态拼错(目录见 §14.2)、属性不在白名单、值里有不允许的东西(颜色关键字 `red`、`url()`、`var(--别的变量)`、`!important`);用 `--print-css` 看实际生成了什么 |
+| 加了 `css` 之后,选中态 / hover 的效果反而没了 | 主题规则与组件的基础 class 同权重且更靠后,会盖掉组件用普通 class 表达的状态(如 Agent 卡选中时的主色边框);给 `:selected` / `:hover` 再写一次即可(§14.6) |
 
 ### 12.5 示例主题
 
@@ -400,56 +411,84 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 
 | 文件 | id / 名称 | 模式 | 风格 |
 |---|---|---|---|
-| `warm-paper.json` | `warm-paper` / 暖纸 Warm Paper | 只有 `light` | 米白纸张底、墨褐正文、陶土色主色、大地色图表;衬线字体、较大圆角、暖褐阴影 |
+| `warm-paper.json` | `warm-paper` / 暖纸 Warm Paper | 只有 `light` | 米白纸张底、墨褐正文、陶土色主色、大地色图表;衬线字体、较大圆角、暖褐阴影;附带 8 条 `css` 演示(顶栏 / 卡片的纸张渐变、选中 Agent 卡的主色晕染、标题字距、角标描边、tooltip 毛玻璃),见 §12.6 |
 | `neon-night.json` | `neon-night` / 霓虹夜 Neon Night | 只有 `dark` | 近黑紫底、青色霓虹主色(深色按钮文字)、品红焦点环;等宽字体、近直角、发光阴影,`shadow.base` 给开关滑块描浅色边 |
 
-两者都覆盖了全部 28 个 `colors`、6 个 `stat`、`chart` 的三项,以及 `font` / `radius` / `shadow`;布局按 §12.2「单模式主题的 token 放哪」。`theme-lint.mjs` 零错误零警告,`theme-contrast.mjs` 全部文字组合 ≥ 4.5:1。都做成单模式,是为了不论 Q1 最终怎么定都能直接沿用。
+两者都覆盖了全部 28 个 `colors`、6 个 `stat`、`chart` 的三项,以及 `font` / `radius` / `shadow`;布局按 §12.2「单模式主题的 token 放哪」(暖纸的 `css` 也放在 `modes.light` 里,因为渐变里带颜色)。`theme-lint.mjs` 零错误零警告,`theme-contrast.mjs` 全部文字组合 ≥ 4.5:1。都做成单模式;Q1 已确认保留 `modes`,以后可以给它们补另一个模式。
+
+### 12.6 加一点 css(可选)
+
+先看 §14 的钩子目录(§14.2)和属性白名单(§14.3),然后在 `modes.<模式>`(带颜色时)或顶层 `tokens`(只有字距之类时)里加一个 `css` 对象:
+
+```json
+"css": {
+  "card": {
+    "background-image": "linear-gradient(180deg, rgba(255, 253, 248, 0.9) 0%, rgba(255, 253, 248, 0) 55%)"
+  },
+  "card:hover": { "box-shadow": "0 10px 24px -12px rgba(74, 52, 30, 0.35)" },
+  "agent-card:selected": {
+    "background-image": "linear-gradient(180deg, hsl(var(--primary) / 0.08), hsl(var(--primary) / 0))"
+  },
+  "card-title": { "letter-spacing": "0.02em" },
+  "header": { "backdrop-filter": "blur(12px)" }
+}
+```
+
+要点:
+
+- **键**是钩子名,可加一个状态:`:hover` / `:active` / `:focus` / `:disabled` / `:selected`(选中的 Agent 卡、分段按钮、chip、打开的开关)。一个键里写多条属性。
+- **颜色**写法与 token 一样(`#hex` / `rgb()` / `hsl()`),这里**允许透明度**(渐变和阴影经常需要);还可以引用本主题的语义色:`hsl(var(--primary))`、`hsl(var(--primary) / 0.3)`,以及 `var(--chart-1)`、`var(--agent-dsh)`。不能用颜色关键字(`red`)。
+- **渐变**只有 `linear-gradient()` / `radial-gradient()`,里面只能有颜色、长度 / 百分比、角度和 `to right` / `circle at center` 之类的方位词;至少两个色标。
+- **想让主题跟着 token 走**:`border-radius: var(--radius-lg)`、`box-shadow: var(--shadow-md)`、`font-family: var(--font-mono)`。
+- **改不了的**:字号、行高、间距、尺寸、位置、显示 / 隐藏、动画、`transform`、`content`、`url()`、外链字体。想要这些请提需求,不要绕(也绕不过去,见 §14.4)。
+- **注意覆盖**:主题规则会盖掉组件同一属性的基础 class,但组件的 `hover:` 之类伪类 class 仍然更强;组件用普通 class 表达的状态(Agent 卡选中时的主色边框、分段按钮选中时的浅底)会被盖掉,所以给 `card` 写了 `border-color` 之后,记得给 `agent-card:selected` 再写一个(§14.6)。
+- **验证**:`node scripts/theme-lint.mjs --print-css 你的主题.json`,每条不合法的声明都会带 JSON 路径列出来;应用设置页也会列出同样的诊断。
 
 ## 13. 待确认问题(Open questions)
 
 每个问题都给出选项、我采用的默认方案与理由,并标注是否会**实质性改变主题文件格式**。
 
-**Q1. 主题的粒度:一个主题同时含深浅两种模式,还是一个主题就是一种外观?**
+**Q1. 主题的粒度:一个主题同时含深浅两种模式,还是一个主题就是一种外观?** —— **已确认 (a)**:保留 `modes` 层与深浅切换,格式不变。
 选项:(a) 一个主题可含 `dark` / `light` 两个模式,用户仍可独立切换深浅(**默认**);(b) 一个主题只描述一种外观,深浅切换概念被主题选择取代;(c) 主题只描述一种外观,但清单可声明"配对主题"的 id。
 默认理由:现有 UI 已有深浅切换,用户习惯与 `settings.theme` 字段都保留;单模式主题也能表达(只写一个模式)。
 改变主题格式:**是**(选 b/c 会移除 `modes` 层)。
 
-**Q2. 内置默认主题的 id / 名称。**
+**Q2. 内置默认主题的 id / 名称。** —— **已确认(默认 (a))**。
 选项:(a) `otr` /「OTR 默认」(**默认**);(b) `default`;(c) `otr-dark` 与 `otr-light` 拆成两个内置主题。
 默认理由:`otr` 与产品同名、不会与通用词冲突;拆成两个会让"深浅切换"和"主题切换"打架。
 改变主题格式:**否**(只影响保留 id 列表)。
 
-**Q3. 是否开放间距 / 密度 token。**
+**Q3. 是否开放间距 / 密度 token。** —— **已确认(默认 (a),不开放)**。
 选项:(a) 不开放(**默认**);(b) 加一个 `density` 标量(如 0.9–1.1)整体缩放 padding;(c) 开放 Tailwind spacing 的几个关键档位。
 默认理由:间距牵涉对齐与可用性,现有布局用固定档位,开放后主题很容易把额度条、表格挤坏;需要时 (b) 是加法,不破坏旧主题。
 改变主题格式:**否**(以后加是新增可选字段)。
 
-**Q4. 是否允许主题携带受限的自定义 CSS。**
-选项:(a) 不允许(**默认**);(b) 允许一个 `css` 字段,只接受白名单属性(颜色 / 背景 / 边框 / 圆角 / 阴影)且选择器限于我们公开的 `data-*` 钩子;(c) 允许任意 CSS 但做正则清洗。
-默认理由:token 已覆盖现有界面的全部可变外观;(c) 的清洗不可靠,(b) 需要先设计稳定的 DOM 钩子,可作为 apiVersion 2 的议题。
-改变主题格式:**是**(新增字段,但语义上是新能力;旧应用会忽略并告警)。
+**Q4. 是否允许主题携带受限的自定义 CSS。** —— **已确认 (b),已实现**(§14):`css` 字段为结构化表而非自由文本,选择器限于 `data-theme-part` 钩子,属性与值逐项白名单,分词校验 + 自检用例。
+选项:(a) 不允许;(b) 允许一个 `css` 字段,只接受白名单属性(颜色 / 背景 / 边框 / 圆角 / 阴影)且选择器限于我们公开的 `data-*` 钩子(**已采用**);(c) 允许任意 CSS 但做正则清洗。
+实现说明:在 `apiVersion = 1` 内以新增可选字段的方式加入,老主题与老应用行为不变(老应用按未知字段忽略并告警)。
+改变主题格式:**否**(加法)。
 
-**Q5. 是否增加 `minAppVersion` 字段。**
+**Q5. 是否增加 `minAppVersion` 字段。** —— **已确认(默认 (a))**。
 选项:(a) 不加,靠 `apiVersion` + 未知字段忽略(**默认**);(b) 加可选 `minAppVersion`,低于时只告警仍加载;(c) 加且低于时拒绝加载。
 默认理由:token 只做加法时老应用忽略新 token 即可;真正的破坏性变化用 `apiVersion` 表达更明确。
 改变主题格式:**否**(以后加是新增可选字段)。
 
-**Q6. `settings.theme`(模式)字段是否改名为 `colorMode`。**
+**Q6. `settings.theme`(模式)字段是否改名为 `colorMode`。** —— **已确认(默认 (a))**。
 选项:(a) 保留 `theme` 表示模式、新增 `themeId`(**默认**);(b) 改名 `colorMode` 并做一次迁移;(c) 合并成 `appearance: { themeId, mode }`。
 默认理由:改动最小、旧设置文件零迁移;字段含义已在类型注释与本文说明。
 改变主题格式:**否**(只是应用设置文件)。
 
-**Q7. 用户主题的文件布局。**
+**Q7. 用户主题的文件布局。** —— **已确认(默认 (a))**。
 选项:(a) 同时支持 `themes/<name>.json` 与 `themes/<name>/theme.json`(**默认**);(b) 只支持单文件;(c) 只支持目录。
 默认理由:单文件最易分享;目录形式给以后放预览图 / 说明留位置;两者都只认一层深度,实现成本几乎为零。
 改变主题格式:**否**(清单内容不变)。
 
-**Q8. 主题被删除后设置里的 `themeId` 怎么处理。**
+**Q8. 主题被删除后设置里的 `themeId` 怎么处理。** —— **已确认(默认 (a))**。
 选项:(a) 保留原值,运行时回退并提示(**默认**);(b) 自动改回 `otr`;(c) 提示用户选择。
 默认理由:用户可能只是临时移走文件(或同步目录还没到),保留选择更友好;回退提示在设置页可见。
 改变主题格式:**否**。
 
-**Q9. 是否随应用附带第二个内置主题(如高对比)。**
+**Q9. 是否随应用附带第二个内置主题(如高对比)。** —— **已确认(默认 (a))**。
 选项:(a) 只内置默认主题(**默认**);(b) 加一个高对比 / 无障碍内置主题;(c) 把示例主题作为内置。
 默认理由:本次只搭接口;示例主题将按本指南另行制作,验证接口后再决定是否收编为内置。(示例主题已制作,见 §12.5。)
 改变主题格式:**否**。
@@ -481,5 +520,153 @@ Tailwind 侧对应的 class:`bg-success` / `text-success-text` / `text-warning-t
 **Q14. 选了单模式主题后,深浅模式要不要"记住原来的偏好"。**
 现状:选中只有亮色的主题时,模式被切到亮色并**写回设置**;之后选回双模式主题(如默认主题)时停留在亮色,不会回到用户原来的暗色。
 选项:(a) 保持现状(**默认**);(b) 单独记住用户的"偏好模式",选回支持该模式的主题时自动恢复;(c) 不写回设置,只在运行时临时切换。
-默认理由:行为简单可预期,设置页有提示,手动切回只需一次点击;这个问题与 Q1 直接相关 —— 若 Q1 选 (b)/(c),模式本身就归主题管,这里自然消失,不值得先做 (b)。
+默认理由:行为简单可预期,设置页有提示,手动切回只需一次点击;Q1 已确认 (a),所以这个问题保留。
 改变主题格式:**否**(只影响应用设置与切换逻辑)。
+
+**Q15. `css` 表是否开放字号 / 行高(`font-size` / `line-height`)。**
+现状:白名单刻意不含这两项 —— 顶栏高度、卡片网格、额度行的固定列宽都按当前字号排版,放开后主题很容易把额度条和表格挤坏;作者提的「标题更大一点」目前只能靠 `font-weight` / `letter-spacing` / `text-transform` 近似。
+选项:(a) 不开放(**默认**);(b) 只对 `page-title` / `card-title` / `badge` 这几个不参与栅格的钩子开放 `font-size`,限定在 10–24px / 0.625–1.5rem;(c) 全钩子开放但限幅(±20%)。
+默认理由:与 Q3「不开放间距 / 密度」一致,先看示例主题是否真的需要;(b) 是加法,随时可补。
+改变主题格式:**否**((b)(c) 是扩大白名单)。
+
+**Q16. 主题把界面弄坏时的兜底入口(「安全模式」)。**
+现状:`css` 表虽然改不了布局,但仍能把 `app` 的 `opacity` 设为 0、把 `color` 和 `background-color` 设成同色,让设置页看不见;token 其实早就能做到同样的事(`foreground = background`)。目前的兜底是删掉主题文件后「重新扫描」/ 重启,或改 `settings.json` 的 `themeId`。
+选项:(a) 保持现状,文档说明(**默认**);(b) 托盘菜单加「恢复默认主题」;(c) 启动时按住某个键 / 连续两次崩溃后自动回退默认主题;(d) 对 `app` / `main` / `settings-section` 这几个钩子禁用 `opacity` 与 `color`。
+默认理由:这是「不友好的主题」而非安全问题,用户能自救;(b) 成本最低、体验最好,建议下一步做。
+改变主题格式:**否**((d) 是缩小白名单,属于可能让现有主题出警告的收紧)。
+
+**Q17. `css` 规则与组件自身 class 的优先级策略。**
+现状:主题规则的选择器是单个属性选择器(权重 0,1,0),与 Tailwind 工具类同权重、声明更靠后 → 覆盖组件的基础样式;组件的 `hover:` 等伪类工具类(0,2,0)仍更强;组件用普通 class 表达的状态(Agent 卡选中时的 `border-primary`)会被同名属性的主题规则盖掉,需要作者用 `:selected` 再写一遍(§14.6)。
+选项:(a) 保持现状,文档说明(**默认**);(b) 主题基础规则改用 `:where()` 降到 0 权重,只在组件没写该属性时生效(渐变底 / 字距仍可用,但改不了 `bg-card` 之类已有的属性,能力大减);(c) 提升到 (0,2,0),连组件的 hover 工具类也一并盖掉(主题更「强」,但作者必须自己补全所有状态);(d) 把这几处状态 class 也改成 `data-theme-state` 驱动的 CSS,让组件状态与主题规则不再抢同一属性。
+默认理由:(a) 行为可预测、作者可控;(d) 是长期更干净的方向,但要改组件。
+改变主题格式:**否**(只影响应用生成的选择器)。
+
+## 14. 受限自定义 CSS(`css` 字段)
+
+### 14.1 格式
+
+`css` 是 `tokens` 对象里的一个可选字段(公共 `tokens.css`,或按模式 `modes.dark.css` / `modes.light.css`),结构是一张两层的表:
+
+```json
+"css": {
+  "<钩子>": { "<属性>": "<值>", "...": "..." },
+  "<钩子>:<状态>": { "<属性>": "<值>" }
+}
+```
+
+- **键** = 钩子名(§14.2),可选地加一个状态后缀:`hover` / `active` / `focus` / `disabled` / `selected`。每个键最多 24 条声明,整张表最多 64 个键。
+- **属性** = §14.3 白名单里的 CSS 属性名(小写,前后空白会被去掉)。
+- **值** = 字符串,最长 256 字符,按该属性的语法校验后重新格式化。
+
+应用把每个键翻译成一个选择器:`card` → `[data-theme-part~="card"]`,`card:hover` → `[data-theme-part~="card"]:hover`,`card:focus` → `…:focus-visible`,`card:disabled` → `…:disabled`,`card:selected` → `…[data-theme-state~="selected"]`。主题里不存在选择器这个概念,也就没有「选择器清洗」的问题。
+
+**为什么是结构化表而不是自由 CSS 文本 + 解析器**:(1) 选择器根本不在输入里,钩子名只是白名单里的一个词;(2) 每个属性的值语法可以单独收紧(渐变里只准颜色和长度、`var()` 只准本主题变量),不需要一个完整的 CSS 语法解析器,也不引入依赖;(3) 诊断能精确到 JSON 路径(`modes.dark.css.card.position`),作者一眼能看到哪条被丢;(4) JSON Schema 能给编辑器做钩子名与属性名补全;(5) 与 token 一样按「键 → 属性」叠加合并。自由文本能表达的东西(嵌套选择器、`@media`、动画)恰恰是我们不想开放的。
+
+### 14.2 钩子目录与稳定性承诺
+
+组件上的 `data-theme-part` 属性是主题可以依赖的**稳定接口**。一个元素可以同时属于多个钩子(空格分隔,如 `data-theme-part="card stat-card"`),选择器按词匹配;有状态的元素另带 `data-theme-state="selected"`。
+
+| 钩子 | 界面位置 | 状态 |
+|---|---|---|
+| `app` | 应用根容器(页面底色与正文色;Cookie 教程窗口的根也是它) | — |
+| `header` | 固定顶栏(logo、工具组) | — |
+| `main` | 顶栏下方的内容区 | — |
+| `filter-bar` | 仪表盘的筛选栏(Agent chip + 日期范围) | — |
+| `page-title` | 「额度」「设置」页的大标题 | — |
+| `card` | **所有**卡片容器(下面每种卡片都同时带 `card`) | hover |
+| `card-title` | 卡片标题行(统计卡的标题、趋势图 / 模型占比 / 会话明细的标题、设置分区标题、额度账号名) | — |
+| `stat-card` | 仪表盘 Hero 统计卡 | hover |
+| `mini-stat` | 统计卡里的六个指标小格 | — |
+| `agent-card` | Agent 卡片(整张是按钮) | hover / active / focus / **selected** |
+| `chart-card` | 趋势图卡、模型占比卡 | hover |
+| `table-card` | 会话明细卡 | hover |
+| `limit-card` | 额度页每一行账号卡 | hover |
+| `settings-section` | 设置页的每个分区卡 | hover |
+| `chart` | 图表绘图区容器(趋势图、环形图) | — |
+| `tooltip` | 图表浮层(趋势图 / 环形图) | — |
+| `legend` | 图例容器(趋势图底部、环形图右侧列表) | — |
+| `table` / `table-head` / `table-row` | 会话表与定价表的 `<table>` / `<thead>` / 数据行 `<tr>` | `table-row`: hover |
+| `button` | 描边按钮(刷新、重新扫描、保存路径、删除账号等) | hover / active / focus / disabled |
+| `button-primary` | 实心主色按钮(保存、添加) | hover / active / focus / disabled |
+| `segmented` | 分段控件轨道(顶栏工具组、趋势图「对比 / 堆叠」、深浅模式) | — |
+| `segmented-button` | 分段控件里的按钮 | hover / focus / disabled / **selected** |
+| `chip` | 筛选栏的 Agent / 日期范围 chip | hover / focus / **selected** |
+| `badge` | 小角标(「N 次请求」「更新于」、套餐名、「待配置」、「可更新」、「松开合并」、数据源状态) | — |
+| `progress` / `progress-fill` | 进度条轨道 / 填充(缓存命中率、Agent 占比、额度剩余) | — |
+| `switch` / `switch-thumb` | 开关轨道 / 滑块(额度来源、Agent 启用、启动最小化) | `switch`: hover / focus / disabled / **selected**(= 打开) |
+| `input` | 文本输入框、下拉框、日期框 | hover / focus / disabled |
+| `empty-state` | 「暂无数据」之类的虚线空状态框 | — |
+
+未列出状态的钩子也能写 `:hover` 等,只是通常没有意义(例如 `page-title:hover`)。
+
+**稳定性承诺**:
+
+- 同一 `apiVersion` 内,钩子名**不改名、不删除**;只会新增。新增的钩子在旧应用里只是「没人匹配」,不报错。
+- 钩子标记的是**语义**(「所有卡片」「主按钮」),不是具体 DOM 结构;界面重排时钩子会跟着元素走,但一个钩子对应的元素数量、嵌套层级可能变化。
+- 状态名同样只增不减;`selected` 的含义固定为「当前选中 / 打开」。
+- 不承诺元素的 Tailwind class、内联样式或子结构不变 —— 主题只能依赖钩子和 §14.3 的属性,这也是选择器不开放的原因。
+- 钩子目录的唯一事实来源是 `src/theme/css.ts` 的 `THEME_PARTS`;JSON Schema 与本表由自检脚本对照(`npm run test:theme`)。
+
+### 14.3 属性白名单与值语法
+
+值先经过分词器:允许的字符只有字母、数字、空格与 `- + . % # ( ) , /`;括号必须成对且前面有函数名。然后按属性语法逐 token 匹配,最后由应用**重新拼出**字符串(颜色 → `#rrggbb` 或 `rgb(r g b / a)`,数字 → 最多三位小数 + 单位,关键字 → 白名单里的原词)。
+
+| 属性 | 允许的值 |
+|---|---|
+| `color`、`background-color`、`border-color`(1–4 个)、`border-{top,right,bottom,left}-color`、`outline-color`、`text-decoration-color` | `<颜色>` |
+| `background-image` | `none`,或最多 4 个 `linear-gradient()` / `radial-gradient()`;每个 2–16 个色标(`<颜色> [位置]{0,2}`),线性可带角度(`deg/turn/rad/grad`)或 `to <边> [<边>]`,径向可带 `circle/ellipse/closest-*/farthest-*`、长度和 `at <位置>` |
+| `background-clip` | `border-box` / `padding-box` / `content-box` / `text`(同时写出 `-webkit-` 前缀,配合渐变 + `color: transparent` 做渐变文字) |
+| `border`、`border-{top,right,bottom,left}` | `[宽度] [样式] [颜色]` 任意顺序各至多一个,或 `none` |
+| `border-width`(1–4)、`border-*-width` | 长度 0–8px / 0–0.5rem/em |
+| `border-style`(1–4)、`border-*-style` | `none` / `solid` / `dashed` / `dotted` / `double` |
+| `border-radius`(1–4)、`border-*-*-radius`(1–2) | 长度或百分比:0–1000px / 0–64rem/em / 0–100%;`border-radius` 还可写 `var(--radius-md|lg|xl)` |
+| `box-shadow` | 与 `shadow` token 相同的语法(每层 `[inset] 2–4 个长度 [颜色]`,长度 ≤ 128px / 8rem,颜色可带透明度但须是字面量),或 `var(--shadow|--shadow-sm|md|lg)` |
+| `text-shadow` | 每层 `2–3 个长度 [颜色]`,不允许 `inset` |
+| `opacity` | 0–1 或 0–100% |
+| `font-family` | 与 `font` token 相同的字体族语法(这是唯一允许引号的属性,它不走分词器、走 token 的白名单),或 `var(--font-sans|--font-mono)` |
+| `font-weight` | `normal` / `bold` / `lighter` / `bolder` 或 1–1000 的整数 |
+| `font-style` | `normal` / `italic` / `oblique` |
+| `letter-spacing` | `normal` 或长度 ±8px / ±0.5rem/em |
+| `text-transform` | `none` / `uppercase` / `lowercase` / `capitalize` |
+| `text-decoration-line` | `none` 或最多两个 `underline` / `overline` / `line-through` |
+| `text-decoration-style` | `solid` / `double` / `dotted` / `dashed` / `wavy` |
+| `backdrop-filter` | `none`,或最多 3 个 `blur(≤ 40px)` / `saturate()` / `brightness()` / `contrast()`(0–3 或 0–300%);同时写出 `-webkit-` 前缀 |
+
+`<颜色>` 的写法:`#rgb` / `#rrggbb` / `#rrggbbaa`、`rgb()` / `rgba()` / `hsl()` / `hsla()`(纯数字参数)、`transparent`、`currentColor`,以及 **本主题体系的变量**:`hsl(var(--<语义色或 stat 色>))`、`hsl(var(--primary) / 0.3)`、`var(--chart-1…16)`、`var(--agent-<id>)`。语义色变量是 HSL 三元组,所以必须包在 `hsl()` 里;`--chart-N` / `--agent-*` 是 `#rrggbb`,直接用。这里的颜色**允许透明度**(与 token 不同),因为渐变、阴影、描边天然需要。
+
+### 14.4 明确禁止
+
+以下内容在分词或语法阶段就被拒绝,对应条目丢弃并告警,不会有「部分生效」:
+
+- **任何 URL 与外部资源**:`url()`、`image-set()` / `-webkit-image-set()`、`element()`、`paint()`、`cross-fade()`、`@import`、`@font-face`、外链字体。分词器不接受引号、`@`、`:`,`url(` 也不在任何属性的语法里。
+- **表达式与脚本残余**:`expression()`、`attr()`、`env()`、`calc()`、`color-mix()`、`conic-gradient()` / `repeating-*-gradient()`(未列入白名单的函数一律拒绝)。
+- **`var()` 越权引用**:只允许 §14.3 列出的本主题变量;`var(--tw-*)`、`var(--anything-else)`、带默认值的 `var(--x, red)` 都拒绝。
+- **破坏布局或可用性的属性**:`position`、`display`、`visibility`、`width` / `height` / `min-*` / `max-*`、`margin`、`padding`、`inset` / `top` / `left`、`z-index`、`transform`、`content`、`animation`、`transition`、`overflow`、`pointer-events`、`float`、`flex` / `grid` / `gap` / `order`、`font-size`、`line-height`、`filter`(只开放 `backdrop-filter`)、`clip-path`、`mask*`、`border-image`、`background`(简写)、`background-size` / `-position` / `-attachment`、`cursor`、`user-select`、`appearance`、`-webkit-text-fill-color`。属性名不在白名单就拒绝,不是靠列举黑名单。
+- **结构注入**:`;`、`{`、`}`、`!important`、`/* */` 注释、`\` 转义、`<`、`>`、控制字符、非 ASCII 字符(`font-family` 除外)。这些字符不在分词器的字符集里,整条值直接拒绝。
+- **任意选择器**:键只能是钩子名 [+ 一个状态];`body`、`*`、`card, body`、`card > x`、`card:nth-child(1)`、`card::before`、`card:visited` 都是「未知钩子 / 未知状态」。
+- **颜色关键字**(`red`、`inherit`、`initial`、`unset`)与 `lab()` / `lch()` / `oklch()` 等新色彩空间:与 token 一致,不接受。
+- **超限**:值 > 256 字符、一个键 > 24 条声明、整表 > 64 个键(多出的丢弃)、渐变 > 4 个或 > 16 个色标、模糊 > 40px、边框 > 8px。
+
+### 14.5 校验、诊断与注入方式
+
+**校验**(`validateCss`,`src/theme/css.ts`):`css` 不是对象 → 整个字段忽略并 warning;每个键 → `parseCssKey`(钩子 + 状态);每条声明 → `normalizeDeclaration`(属性白名单 → 分词 → 属性语法 → 重新拼出)。任一环节失败只丢**那一条**,其余照常;整个主题**不会**因为 `css` 出错而被拒绝(级别永远是 warning)。诊断带完整 JSON 路径与固定文案,例如:
+
+```
+[警告] modes.dark.css.card.position: 不支持的属性,已忽略
+[警告] modes.dark.css.card.background-image: 值不符合该属性的语法,已忽略
+[警告] tokens.css.card:visited: 未知状态「visited」(可用:hover / active / focus / disabled / selected),已忽略
+[警告] tokens.css.body: 未知钩子,已忽略(钩子目录见 docs/theme_interface.md §14.2)
+```
+
+**自检**:`npm run test:theme`(`scripts/theme-css-selftest.mjs`)对同一份代码跑一千余条断言:分词器字符集、每个白名单属性 × 十几种注入串、`var()` 越权、键 / 选择器、限额、诊断路径、合并、序列化输出形状、缓存清洗、端到端(清单 → 解析 → 文本),以及 JSON Schema 与代码的钩子 / 属性列表一致性。
+
+**注入**(`applyResolvedTheme`,`src/theme/apply.ts`):解析后的表(`ResolvedTheme.css`)由 `serializeThemeCss` 变成文本 —— 选择器由钩子名生成,属性只出白名单,每个值在序列化前**再归一化一遍**(幂等),再过一次字符集检查。文本放进**唯一一个** `<style id="otr-theme-css">`:不存在则创建,存在则整体替换 `textContent`,主题没有 css 时移除;每次都 `appendChild` 到 `<head>` 末尾,保证在 Vite 注入的样式之后。切换主题 / 模式 / 重新扫描都会走这一步,不会残留上一个主题的规则。首帧防闪的 localStorage 缓存里存的是**表**而不是文本,读回时整张重新校验(`sanitizeCss`)后再序列化。CSP 的 `style-src 'self' 'unsafe-inline'` 本来就允许内联样式;本功能没有改动 CSP。
+
+### 14.6 优先级与叠加
+
+- **叠加**:与 token 一样,公共 `tokens.css` → 该模式 `modes.<mode>.css`,按「键 → 属性」粒度合并;内置主题没有 css。
+- **与组件样式的关系**:主题规则的选择器权重是 (0,1,0),与 Tailwind 工具类相同;因为 `<style>` 在最后,同权重时**主题规则赢**。所以 `card { background-image }` 能盖在 `bg-card` 之上,`card { border-color }` 会盖掉 `border-border`。
+- **组件的伪类工具类更强**:`hover:border-primary/60`、`disabled:opacity-50` 是 (0,2,0),仍然生效;想连 hover 也接管,给 `card:hover` 再写一次(权重 (0,2,0) 且更靠后,主题赢)。
+- **陷阱**:组件用普通 class 表达的状态(Agent 卡选中时的 `border-primary`、分段按钮选中时的 `bg-background`、chip 选中时的 `bg-primary/15`)与主题的基础规则同权重,会被盖掉。给 `card` 写了 `border-color` 之后,请给 `agent-card:selected` 也写一个;给 `segmented-button` 写了 `background-color`,请给 `segmented-button:selected` 也写一个(策略见 Q17)。
+- **内联样式不受影响**:少数元素用内联样式(Agent 卡图标底色、进度条宽度、图表 SVG 里的颜色)—— 这些由 token(`chart.agents` 等)控制,`css` 表改不了,也不应该改。
+

@@ -79,7 +79,7 @@ function Steps({
 
 function Notes({ children }: { children: ReactNode }) {
   return (
-    <div className="mt-5 rounded-xl border border-border bg-card px-3.5 py-3">
+    <div data-theme-part="card" className="mt-5 rounded-xl border border-border bg-card px-3.5 py-3">
       <div className="text-xs font-medium">注意</div>
       <ul className="mt-1.5 list-disc space-y-1.5 pl-4 text-xs leading-relaxed text-muted-foreground">
         {children}
@@ -147,7 +147,7 @@ function StepFunGuide() {
 
 export function CookieGuide({ provider }: { provider: CookieGuideProvider }) {
   return (
-    <div className="min-h-screen overflow-auto bg-background px-5 py-5 text-foreground">
+    <div data-theme-part="app" className="min-h-screen overflow-auto bg-background px-5 py-5 text-foreground">
       {provider === "qwen" ? <QwenGuide /> : <StepFunGuide />}
     </div>
   );

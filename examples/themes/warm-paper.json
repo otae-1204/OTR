@@ -5,14 +5,18 @@
   "name": "暖纸 Warm Paper",
   "version": "1.0.0",
   "author": "OTR 示例主题",
-  "description": "只有亮色的示例主题:米白纸张底色、墨褐正文、陶土色主色、大地色图表,衬线字体与柔和的暖色阴影。",
+  "description": "只有亮色的示例主题:米白纸张底色、墨褐正文、陶土色主色、大地色图表,衬线字体与柔和的暖色阴影;附带少量 css 演示(卡片与顶栏的纸张渐变、标题字距)。",
   "homepage": "https://github.com/otae-1204/OTR",
   "tokens": {
     "font": {
       "sans": "Charter, \"Bitstream Charter\", \"Sitka Text\", Cambria, \"Noto Serif\", \"Songti SC\", \"Noto Serif CJK SC\", \"Source Han Serif SC\", \"Microsoft YaHei\", serif",
       "mono": "\"Courier Prime\", \"Courier New\", Courier, ui-monospace, monospace"
     },
-    "radius": { "md": "0.5rem", "lg": "0.875rem", "xl": "1.125rem" }
+    "radius": {
+      "md": "0.5rem",
+      "lg": "0.875rem",
+      "xl": "1.125rem"
+    }
   },
   "modes": {
     "light": {
@@ -75,13 +79,48 @@
           "pi": "#a3345f",
           "cursor": "#6f6559"
         },
-        "agentFallback": ["#a3345f", "#b4532a", "#5b7a1e", "#7a3c93", "#12707a", "#a87400"]
+        "agentFallback": [
+          "#a3345f",
+          "#b4532a",
+          "#5b7a1e",
+          "#7a3c93",
+          "#12707a",
+          "#a87400"
+        ]
       },
       "shadow": {
         "sm": "0 1px 2px 0 rgba(74, 52, 30, 0.10)",
         "base": "0 1px 3px 0 rgba(74, 52, 30, 0.22), 0 1px 2px -1px rgba(74, 52, 30, 0.16)",
         "md": "0 6px 14px -4px rgba(74, 52, 30, 0.22), 0 2px 4px -2px rgba(74, 52, 30, 0.12)",
         "lg": "0 14px 28px -8px rgba(74, 52, 30, 0.28), 0 4px 8px -4px rgba(74, 52, 30, 0.14)"
+      },
+      "css": {
+        "header": {
+          "background-image": "linear-gradient(180deg, rgba(252, 248, 240, 0.85) 0%, rgba(243, 236, 223, 0.55) 100%)",
+          "border-bottom-color": "#d9cbb2"
+        },
+        "card": {
+          "background-image": "linear-gradient(180deg, rgba(255, 253, 248, 0.9) 0%, rgba(255, 253, 248, 0) 55%)"
+        },
+        "card:hover": {
+          "box-shadow": "0 10px 24px -12px rgba(74, 52, 30, 0.35)"
+        },
+        "agent-card:selected": {
+          "background-image": "linear-gradient(180deg, hsl(var(--primary) / 0.08) 0%, hsl(var(--primary) / 0) 70%)"
+        },
+        "card-title": {
+          "letter-spacing": "0.02em"
+        },
+        "page-title": {
+          "letter-spacing": "0.04em"
+        },
+        "badge": {
+          "border": "1px solid rgba(74, 52, 30, 0.12)"
+        },
+        "tooltip": {
+          "box-shadow": "var(--shadow-lg)",
+          "backdrop-filter": "blur(6px)"
+        }
       }
     }
   }

@@ -13,12 +13,9 @@
  * 输出每个模式的检查表;有低于阈值的(非参考)项时退出码为 1。
  * 依赖 esbuild(vite 自带),先 `npm install`。
  */
-import { build } from "esbuild";
 import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadThemeModule } from "./lib/load-theme.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const files = process.argv.slice(2);
 if (files.length === 0) {
   console.error("用法:node scripts/theme-contrast.mjs <theme.json> [...]");
@@ -26,20 +23,7 @@ if (files.length === 0) {
 }
 
 // 与 theme-lint.mjs 相同:把 src/theme 打成临时 ESM 模块再导入
-const outDir = path.join(root, "node_modules", ".cache", "otr-theme-contrast");
-fs.mkdirSync(outDir, { recursive: true });
-const outfile = path.join(outDir, `theme-${process.pid}.mjs`);
-await build({
-  entryPoints: [path.join(root, "src", "theme", "index.ts")],
-  bundle: true,
-  format: "esm",
-  platform: "node",
-  outfile,
-  logLevel: "error",
-  external: ["react", "react/jsx-runtime", "@tauri-apps/api/core"],
-});
-const theme = await import(pathToFileURL(outfile).href);
-fs.rmSync(outfile, { force: true });
+const theme = await loadThemeModule("theme-contrast");
 
 const { parseThemeFile, resolveTheme, parseColor, BUILTIN_THEMES } = theme;
 const reserved = BUILTIN_THEMES.map((t) => t.id);

@@ -83,6 +83,12 @@ export type ShadowToken = (typeof SHADOW_TOKENS)[number];
 export const MAX_PALETTE_LENGTH = 16;
 
 /**
+ * 受限自定义 CSS:`{ "钩子[:状态]": { "属性": "值" } }`(校验后的值已归一化)。
+ * 钩子目录、状态、属性白名单与值语法见 css.ts / 文档 §14。
+ */
+export type ThemeCss = Record<string, Record<string, string>>;
+
+/**
  * 一组 token(公共或某个模式)。所有字段都可选:缺的回退。
  * 颜色值接受 `#rgb` / `#rrggbb` / `rgb()` / `hsl()` / 裸 HSL 三元组 `"240 5% 12%"`。
  */
@@ -100,6 +106,8 @@ export interface ThemeTokens {
   font?: Partial<Record<FontToken, string>>;
   radius?: Partial<Record<RadiusToken, string>>;
   shadow?: Partial<Record<ShadowToken, string>>;
+  /** 受限自定义 CSS(apiVersion 1 内新增的可选字段;老应用忽略并告警) */
+  css?: ThemeCss;
 }
 
 /** 校验通过后的主题清单(已剔除未知字段与非法 token) */
@@ -158,6 +166,8 @@ export interface ResolvedTheme {
     agents: Record<string, string>;
     agentFallback: string[];
   };
+  /** 该模式下叠加后的受限自定义 CSS(键 → 属性 → 归一化值);没有时为空对象 */
+  css: ThemeCss;
 }
 
 /** Rust `list_themes` 命令返回的一条记录 */

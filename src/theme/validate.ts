@@ -14,6 +14,12 @@ import {
   toHex,
   toHslTriplet,
 } from "./color";
+import { validateCss } from "./css";
+import {
+  normalizeFontFamily,
+  normalizeLength,
+  normalizeShadow,
+} from "./values";
 import {
   COLOR_TOKENS,
   FONT_TOKENS,
@@ -37,18 +43,6 @@ export const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const MAX_NAME_LEN = 64;
 const MAX_TEXT_LEN = 200;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/;
-
-/** 字体族:字母/数字/空格/引号/逗号/连字符/下划线/点(含 CJK 等 Unicode 字母)。
- *  括号、分号、斜杠、反斜杠、尖括号、@ 都不在白名单里,`url(`、`@import` 无从构造。 */
-const FONT_FAMILY_RE = /^[\p{L}\p{N} _"'.,\-]+$/u;
-
-/** CSS 长度:0 或 带 px/rem/em 单位的非负数 */
-const LENGTH_RE = /^(0|(\d+(\.\d+)?|\.\d+)(px|rem|em))$/;
-/** 阴影里的偏移量允许负数 */
-const SIGNED_LENGTH_RE = /^(0|-?(\d+(\.\d+)?|\.\d+)(px|rem|em))$/;
-
-const MAX_LENGTH_PX = 128;
-const MAX_LENGTH_REM = 8;
 
 class Diag {
   readonly list: ThemeDiagnostic[] = [];
@@ -106,6 +100,8 @@ function optionalText(
   return s;
 }
 
+export { normalizeFontFamily, normalizeLength, normalizeShadow };
+
 /** 语义色:必须不透明,归一化成 HSL 三元组 */
 export function normalizeSemanticColor(v: unknown): string | null {
   const c = parseColor(v);
@@ -118,90 +114,6 @@ export function normalizeChartColor(v: unknown): string | null {
   const c = parseColor(v);
   if (!c || !isOpaque(c)) return null;
   return toHex(c);
-}
-
-export function normalizeFontFamily(v: unknown): string | null {
-  if (typeof v !== "string") return null;
-  const s = v.trim();
-  if (!s || s.length > MAX_TEXT_LEN || !FONT_FAMILY_RE.test(s)) return null;
-  const items = s.split(",").map((x) => x.trim());
-  if (items.some((x) => !x)) return null;
-  // 引号必须成对且只包一整个族名
-  for (const item of items) {
-    const q = item[0] === '"' || item[0] === "'" ? item[0] : null;
-    if (q) {
-      if (item.length < 3 || item[item.length - 1] !== q) return null;
-      if (item.slice(1, -1).includes(q)) return null;
-    } else if (item.includes('"') || item.includes("'")) {
-      return null;
-    }
-  }
-  return items.join(", ");
-}
-
-function lengthInRange(s: string, re: RegExp): boolean {
-  if (!re.test(s)) return false;
-  if (s === "0") return true;
-  const v = Math.abs(parseFloat(s));
-  if (s.endsWith("px")) return v <= MAX_LENGTH_PX;
-  return v <= MAX_LENGTH_REM;
-}
-
-export function normalizeLength(v: unknown): string | null {
-  if (typeof v !== "string") return null;
-  const s = v.trim();
-  return lengthInRange(s, LENGTH_RE) ? s : null;
-}
-
-/**
- * box-shadow:`none`,或逗号分隔的若干层;每层 = [inset] 2–4 个长度 [颜色]。
- * 颜色允许透明度(阴影天然需要)。其它任何东西(url、var、关键字)都不接受。
- */
-export function normalizeShadow(v: unknown): string | null {
-  if (typeof v !== "string") return null;
-  const s = v.trim();
-  if (!s || s.length > MAX_TEXT_LEN) return null;
-  if (s.toLowerCase() === "none") return "none";
-  // 先把带空格/逗号的颜色函数换成占位符,再按逗号分层
-  const colors: string[] = [];
-  const masked = s.replace(/(rgba?|hsla?)\([^()]*\)/gi, (m) => {
-    colors.push(m);
-    return `\u0000${colors.length - 1}\u0000`;
-  });
-  if (/[()]/.test(masked)) return null;
-  const layers = masked.split(",").map((x) => x.trim());
-  const out: string[] = [];
-  for (const layer of layers) {
-    if (!layer) return null;
-    const parts = layer.split(/\s+/);
-    const built: string[] = [];
-    let lengths = 0;
-    let color: string | null = null;
-    for (const raw of parts) {
-      const part = raw.replace(/\u0000(\d+)\u0000/g, (_, i) => colors[Number(i)]);
-      if (part.toLowerCase() === "inset") {
-        if (built.length > 0) return null;
-        built.push("inset");
-        continue;
-      }
-      if (lengthInRange(part, SIGNED_LENGTH_RE)) {
-        if (color) return null;
-        lengths++;
-        built.push(part);
-        continue;
-      }
-      const c = parseColor(part);
-      if (c && !color) {
-        color = `rgb(${Math.round(c.r)} ${Math.round(c.g)} ${Math.round(c.b)} / ${Math.round(c.a * 1000) / 1000})`;
-        built.push(color);
-        continue;
-      }
-      return null;
-    }
-    if (lengths < 2 || lengths > 4) return null;
-    out.push(built.join(" "));
-  }
-  return out.join(", ");
 }
 
 function validateColorGroup<K extends string>(
@@ -293,7 +205,7 @@ function validateChart(raw: unknown, path: string, d: Diag): ThemeTokens["chart"
   return out;
 }
 
-const TOKEN_GROUPS = ["colors", "stat", "chart", "font", "radius", "shadow"] as const;
+const TOKEN_GROUPS = ["colors", "stat", "chart", "font", "radius", "shadow", "css"] as const;
 
 /** 校验一组 token(公共或某模式),非法 token 丢弃并记 warning */
 export function validateTokens(raw: unknown, path: string, d: Diag): ThemeTokens | undefined {
@@ -331,6 +243,8 @@ export function validateTokens(raw: unknown, path: string, d: Diag): ThemeTokens
     normalizeShadow, "box-shadow", d,
   );
   if (shadow) out.shadow = shadow;
+  const css = validateCss(raw.css, joinPath(path, "css"), (p, m) => d.warn(p, m));
+  if (css && Object.keys(css).length > 0) out.css = css;
   return out;
 }
 

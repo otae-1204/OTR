@@ -42,13 +42,8 @@ function TrendTooltip({
       : String(label).slice(5);
   return (
     <div
-      className="px-3 py-2 shadow-lg"
-      style={{
-        background: "hsl(var(--card))",
-        border: "1px solid hsl(var(--border))",
-        borderRadius: "var(--radius-lg)",
-        fontSize: 12,
-      }}
+      data-theme-part="tooltip"
+      className="rounded-lg border border-border bg-card px-3 py-2 text-xs shadow-lg"
     >
       <div className="mb-1 flex items-center justify-between gap-4">
         <span className="font-medium text-foreground">{labelText}</span>
@@ -289,9 +284,12 @@ export function TrendChart({
   const tickInterval = pickTickInterval(buckets.length);
 
   return (
-    <section className="rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm">
+    <section
+      data-theme-part="card chart-card"
+      className="rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm"
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 text-sm font-semibold">
+        <div data-theme-part="card-title" className="flex items-center gap-1.5 text-sm font-semibold">
           <TrendingUpIcon className="h-4 w-4 text-primary" />
           <span>消耗趋势</span>
           <span className="ml-1 text-xs font-normal text-muted-foreground">
@@ -299,7 +297,7 @@ export function TrendChart({
             {granularityLabel} · 各 Agent Token 总量
           </span>
         </div>
-        <div className="flex items-center gap-1 rounded-xl bg-muted p-1">
+        <div data-theme-part="segmented" className="flex items-center gap-1 rounded-xl bg-muted p-1">
           {(
             [
               { v: false, label: "对比" },
@@ -315,6 +313,8 @@ export function TrendChart({
                   ? "各 Agent 从上往下叠出总量"
                   : "各 Agent 独立画线,便于横向对比"
               }
+              data-theme-part="segmented-button"
+              data-theme-state={stacked === v ? "selected" : undefined}
               className={`h-7 rounded-lg px-2.5 text-xs font-medium transition-colors ${
                 stacked === v
                   ? "bg-background shadow-sm text-foreground"
@@ -335,7 +335,7 @@ export function TrendChart({
         </div>
       ) : (
         <>
-          <div className="mt-3 h-64 w-full">
+          <div data-theme-part="chart" className="mt-3 h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart
                 data={data}
@@ -411,7 +411,7 @@ export function TrendChart({
               </AreaChart>
             </ResponsiveContainer>
           </div>
-          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+          <div data-theme-part="legend" className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5">
             {agentIds.map((id) => (
               <span
                 key={id}
