@@ -24,6 +24,7 @@ import {
   TrashIcon,
 } from "./icons";
 import { AgentIcon, usesImageIcon } from "./AgentIcon";
+import { SelectMenu } from "./SelectMenu";
 import { compareVersions, fetchLatestVersion, fetchUsdCnyRate } from "../lib/remote";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeEntry, ThemeMode } from "../theme/types";
@@ -1390,20 +1391,13 @@ export function Settings({
               data-theme-part="input"
               className="h-8 rounded-lg border border-border bg-background px-2.5 text-xs outline-none focus:border-primary"
             />
-            <select
+            <SelectMenu
               value={cKind}
-              onChange={(e) =>
-                setCKind(e.target.value as CustomAgentConfig["kind"])
-              }
-              data-theme-part="input"
-              className="h-8 rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary"
-            >
-              {KIND_OPTIONS.map((k) => (
-                <option key={k.value} value={k.value}>
-                  {k.label}
-                </option>
-              ))}
-            </select>
+              onChange={(v) => setCKind(v as CustomAgentConfig["kind"])}
+              ariaLabel="数据布局"
+              className="h-8 w-full"
+              options={KIND_OPTIONS}
+            />
             <input
               value={cDir}
               onChange={(e) => setCDir(e.target.value)}
@@ -1492,15 +1486,16 @@ export function Settings({
             </button>
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
               币种
-              <select
+              <SelectMenu
                 value={settings?.currency ?? "CNY"}
-                onChange={(e) => updateCurrency(e.target.value)}
-                data-theme-part="input"
-                className="h-7 rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary"
-              >
-                <option value="CNY">¥ 人民币</option>
-                <option value="USD">$ 美元</option>
-              </select>
+                onChange={updateCurrency}
+                ariaLabel="币种"
+                className="h-7"
+                options={[
+                  { value: "CNY", label: "¥ 人民币" },
+                  { value: "USD", label: "$ 美元" },
+                ]}
+              />
             </label>
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
               汇率(¥/$)
@@ -1720,32 +1715,33 @@ export function Settings({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <select
+              <SelectMenu
                 value={selectedExists ? themeCtx.selectedId : "__missing__"}
-                onChange={(e) => applyThemeId(e.target.value)}
+                onChange={applyThemeId}
                 // 设置快照还没读到时不能选:选了会生效却存不进设置文件
                 disabled={!settings}
-                data-theme-part="input"
-                className="h-8 max-w-[220px] rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-primary disabled:opacity-50"
                 title="选择主题;第三方主题放进下方目录后点「重新扫描」"
-              >
-                {selectedExists ? null : (
-                  <option value="__missing__" disabled>
-                    {themeCtx.selectedId}(未找到)
-                  </option>
-                )}
-                {themeCtx.entries.map((e) => (
-                  <option
-                    key={e.path ?? e.id}
-                    value={e.manifest ? e.id : `__invalid__:${e.path ?? e.id}`}
-                    disabled={!e.manifest}
-                  >
-                    {e.name}
-                    {e.source === "builtin" ? " · 内置" : ""}
-                    {e.manifest ? "" : "(无效)"}
-                  </option>
-                ))}
-              </select>
+                ariaLabel="主题"
+                className="h-8 max-w-[220px]"
+                options={[
+                  ...(selectedExists
+                    ? []
+                    : [
+                        {
+                          value: "__missing__",
+                          label: `${themeCtx.selectedId}(未找到)`,
+                          disabled: true,
+                        },
+                      ]),
+                  ...themeCtx.entries.map((e) => ({
+                    value: e.manifest ? e.id : `__invalid__:${e.path ?? e.id}`,
+                    label: `${e.name}${e.source === "builtin" ? " · 内置" : ""}${
+                      e.manifest ? "" : "(无效)"
+                    }`,
+                    disabled: !e.manifest,
+                  })),
+                ]}
+              />
               <button
                 type="button"
                 onClick={() => void reloadThemes()}

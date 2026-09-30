@@ -575,7 +575,8 @@ UI 会被冻住。耗时还会被三件事放大:
 | **M4** | 定价表与统一成本口径、自定义 Agent、NSIS 安装包 + 便携 zip、单实例 | 已完成(v0.1.7) |
 | **M5** | DSH per-file 缓存、刷新链收敛、容错加固、CSP、健康提示 | v0.1.8 |
 | **M6** | 额度页(Cursor/Codex/DeepSeek/StepFun)、DeepSeek 定价修正、峰谷分时计价、多账号 | 已完成(v0.2.0) |
-| **M7** | 开机自启(需引入 tauri-plugin-autostart)、更多候选 Agent | 待排期 |
+| **M7** | 主题接口(清单/校验/加载)、受限自定义 CSS、示例主题、托盘恢复默认主题 | 已完成(v0.3.0) |
+| **M8** | 开机自启(需引入 tauri-plugin-autostart)、更多候选 Agent | 待排期 |
 
 ## 12. 风险与对策
 

@@ -38,8 +38,10 @@ Custom agents are supported: point any of the three built-in parsers (Claude Cod
 
 ## Features
 
-- Tray-resident with live "today" totals; incremental refresh on file changes
+- Tray-resident with live "today" totals; incremental refresh on file changes; tray action to restore the default theme
 - Dashboard: today / 7d / 30d / month / custom range, per-agent view, hourly/day/month adaptive trend granularity
+- Quotas: subscription and balance for Cursor, Codex, DeepSeek, Qwen, and StepFun
+- Themes: switch built-in and third-party themes in Settings. A single-mode theme temporarily locks light or dark and restores your preference when you switch back. Examples live in [`examples/themes`](examples/themes)
 - Model share donut with click-through details and cache hit-rate
 - Cost pricing: one-click fetch from models.dev, manual editing, exchange rate
 - SQLite snapshots — history survives agent log cleanup

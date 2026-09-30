@@ -199,6 +199,29 @@ export const ChevronDownIcon = makeIcon(
   "ChevronDownIcon",
 );
 
+export const MinusIcon = makeIcon(<path d="M5 12h14" />, "MinusIcon");
+
+export const SquareIcon = makeIcon(
+  <rect x="5" y="5" width="14" height="14" rx="1" />,
+  "SquareIcon",
+);
+
+export const RestoreIcon = makeIcon(
+  <>
+    <rect x="8" y="8" width="11" height="11" rx="1" />
+    <path d="M6 15V6a1 1 0 0 1 1-1h9" />
+  </>,
+  "RestoreIcon",
+);
+
+export const XIcon = makeIcon(
+  <>
+    <path d="M6 6l12 12" />
+    <path d="M18 6 6 18" />
+  </>,
+  "XIcon",
+);
+
 export const TrashIcon = makeIcon(
   <>
     <path d="M3 6h18" />

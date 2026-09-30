@@ -10,6 +10,7 @@ import { useUsageData } from "./hooks/useUsageData";
 import { useTheme } from "./theme/ThemeProvider";
 import { compareVersions, fetchLatestVersion } from "./lib/remote";
 import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   computeRange,
   PRESET_LABELS,
@@ -25,6 +26,8 @@ import { SessionTable } from "./components/SessionTable";
 import { Settings } from "./components/Settings";
 import { EmptyState, Skeleton } from "./components/Skeleton";
 import { StatCard } from "./components/StatCard";
+import { ThemeMascot } from "./components/ThemeMascot";
+import { WindowControls } from "./components/WindowControls";
 import { TrendChart } from "./components/TrendChart";
 import {
   ActivityIcon,
@@ -245,16 +248,30 @@ export default function App() {
 
   return (
     <div data-theme-part="app" className="min-h-screen bg-background text-foreground">
+      <ThemeMascot />
       <header
-        data-tauri-drag-region
         data-theme-part="header"
-        className="fixed top-0 z-50 h-16 w-full border-b border-border/50 bg-background/80 backdrop-blur-md"
+        className="fixed top-0 z-50 flex h-16 w-full border-b border-border/50 bg-background text-foreground"
       >
         <div
-          data-tauri-drag-region
-          className="flex h-full items-center justify-between px-6"
+          className="flex h-full min-w-0 flex-1 items-center justify-between px-6"
+          onMouseDown={(e) => {
+            if (e.buttons !== 1) return;
+            const target = e.target;
+            if (!(target instanceof Element)) return;
+            if (target.closest("button, a, input, textarea, select")) return;
+            e.preventDefault();
+            void getCurrentWindow().startDragging();
+          }}
+          onDoubleClick={(e) => {
+            const target = e.target;
+            if (target instanceof Element && target.closest("button, a, input, textarea, select")) {
+              return;
+            }
+            getCurrentWindow().toggleMaximize();
+          }}
         >
-          <div data-tauri-drag-region className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
               <ActivityIcon className="h-4 w-4 text-primary" />
             </div>
@@ -314,16 +331,21 @@ export default function App() {
             </button>
           </div>
         </div>
+        <WindowControls />
       </header>
 
-      <main data-theme-part="main" className="min-h-screen">
+      <main data-theme-part="main" className="relative z-10 min-h-screen">
         {view === "dashboard" ? (
           <div
             key="dashboard"
             className="mx-auto max-w-6xl animate-fade-in space-y-4 px-6 pb-10 pt-20"
           >
             {/* 筛选栏:Agent + 日期范围 */}
-            <div data-theme-part="filter-bar" className="sticky top-16 z-40 -mx-6 space-y-2 border-b border-border/40 bg-background/90 px-6 pb-3 pt-2 backdrop-blur-md">
+            <div className="sticky top-16 z-40">
+              <div
+                data-theme-part="filter-bar"
+                className="w-fit max-w-full space-y-2 rounded-xl border border-border/50 bg-card/40 px-3 py-2 backdrop-blur-md"
+              >
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-muted-foreground">Agent</span>
                 <button
@@ -404,6 +426,7 @@ export default function App() {
                     />
                   </span>
                 ) : null}
+              </div>
               </div>
             </div>
 

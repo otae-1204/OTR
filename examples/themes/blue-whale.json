@@ -1,0 +1,203 @@
+{
+  "$schema": "https://raw.githubusercontent.com/otae-1204/OTR/main/docs/theme.schema.json",
+  "apiVersion": 1,
+  "id": "blue-whale",
+  "name": "蓝色大肥鱼",
+  "version": "1.0.0",
+  "author": "OTR 示例主题",
+  "description": "深海女仆。暗色是海夜，亮色是围裙白；品牌蓝作主色，米饭白作正文，金边只点在提醒和图表上。",
+  "homepage": "https://github.com/otae-1204/OTR",
+  "tokens": {
+    "font": {
+      "sans": "\"Segoe UI Variable Text\", \"Segoe UI\", Roboto, \"PingFang SC\", \"Microsoft YaHei\", sans-serif",
+      "mono": "\"Cascadia Mono\", Consolas, Menlo, monospace"
+    },
+    "radius": { "md": "0.5rem", "lg": "0.875rem", "xl": "1rem" },
+    "css": {
+      "card-title": { "letter-spacing": "0.03em" },
+      "page-title": { "letter-spacing": "0.04em", "font-size": "1.08em" }
+    }
+  },
+  "modes": {
+    "dark": {
+      "colors": {
+        "background": "#10182c",
+        "foreground": "#f4f1e8",
+        "card": "#182238",
+        "cardForeground": "#f4f1e8",
+        "popover": "#141c34",
+        "popoverForeground": "#f4f1e8",
+        "primary": "#a9bbff",
+        "primaryForeground": "#10182c",
+        "secondary": "#243049",
+        "secondaryForeground": "#f4f1e8",
+        "muted": "#243049",
+        "mutedForeground": "#c5d0e6",
+        "accent": "#2a3854",
+        "accentForeground": "#f4f1e8",
+        "destructive": "#e89098",
+        "destructiveForeground": "#10182c",
+        "border": "#31405c",
+        "input": "#3a4a6a",
+        "ring": "#8eb4ff",
+        "overlay": "#e8eeff",
+        "success": "#7ddbb8",
+        "warning": "#e6c98a",
+        "danger": "#f0a8b0",
+        "info": "#8eb4ff",
+        "notice": "#e3b48a",
+        "successText": "#b6f0d4",
+        "warningText": "#f3ddb0",
+        "dangerText": "#f5c0c6",
+        "successLabel": "#9ee0c4",
+        "warningLabel": "#e8d09a",
+        "dangerLabel": "#f0b0b8",
+        "switchThumb": "#10182c",
+        "switchThumbOff": "#f4f1e8"
+      },
+      "stat": {
+        "input": "#b7c6ff",
+        "output": "#d4c2f5",
+        "cacheRead": "#8fe0cf",
+        "cacheWrite": "#f0d39a",
+        "calls": "#9fd4ff",
+        "cost": "#b7e3a4"
+      },
+      "chart": {
+        "palette": ["#a9bbff", "#7dcdb8", "#e6c98a", "#f0a0b4", "#9fd4ff", "#c9b4f0", "#e7b898", "#8eb4ff", "#c5d0e6"],
+        "agents": {
+          "dsh": "#c9b4f0",
+          "claude-code": "#e6c98a",
+          "codex": "#9fd4ff",
+          "zcode": "#7dcdb8",
+          "opencode": "#8eb4ff",
+          "pi": "#f0a0b4",
+          "cursor": "#c5d0e6"
+        },
+        "agentFallback": ["#f0a0b4", "#e7b898", "#7dcdb8", "#c9b4f0", "#9fd4ff", "#e6c98a"]
+      },
+      "shadow": {
+        "sm": "0 1px 2px 0 rgba(8, 12, 28, 0.45)",
+        "base": "0 1px 3px 0 rgba(8, 12, 28, 0.5), 0 0 0 1px rgba(169, 187, 255, 0.18)",
+        "md": "0 10px 24px -12px rgba(8, 12, 28, 0.7), 0 0 0 1px rgba(169, 187, 255, 0.28)",
+        "lg": "0 18px 40px -16px rgba(8, 12, 28, 0.75), 0 0 0 1px rgba(142, 180, 255, 0.2)"
+      },
+      "css": {
+        "header": {
+          "background-image": "linear-gradient(180deg, rgba(24, 34, 56, 0.92) 0%, rgba(16, 24, 44, 0.72) 100%)",
+          "backdrop-filter": "blur(14px) saturate(1.25)"
+        },
+        "card": {
+          "background-color": "hsl(var(--card) / 0.38)",
+          "backdrop-filter": "blur(18px) saturate(1.4)",
+          "background-image": "linear-gradient(180deg, rgba(169, 187, 255, 0.1) 0%, rgba(169, 187, 255, 0) 46%)"
+        },
+        "mini-stat": {
+          "background-color": "hsl(var(--background) / 0.28)",
+          "backdrop-filter": "blur(12px) saturate(1.25)"
+        },
+        "agent-card:selected": {
+          "background-image": "linear-gradient(180deg, rgba(169, 187, 255, 0.16) 0%, rgba(169, 187, 255, 0) 70%)",
+          "border-color": "hsl(var(--primary))"
+        },
+        "stat-card": {
+          "background-image": "linear-gradient(120deg, rgba(169, 187, 255, 0.14) 0%, rgba(125, 205, 184, 0.06) 48%, rgba(16, 24, 44, 0) 82%)"
+        },
+        "progress-fill": {
+          "background-image": "linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.28) 100%)"
+        },
+        "chip:selected": { "border-color": "hsl(var(--primary) / 0.8)" }
+      }
+    },
+    "light": {
+      "colors": {
+        "background": "#f4f7ff",
+        "foreground": "#152044",
+        "card": "#ffffff",
+        "cardForeground": "#152044",
+        "popover": "#ffffff",
+        "popoverForeground": "#152044",
+        "primary": "#2c4ad4",
+        "primaryForeground": "#ffffff",
+        "secondary": "#e4eaf8",
+        "secondaryForeground": "#152044",
+        "muted": "#e4eaf8",
+        "mutedForeground": "#3e4e6e",
+        "accent": "#e7edf8",
+        "accentForeground": "#152044",
+        "destructive": "#c43648",
+        "destructiveForeground": "#ffffff",
+        "border": "#d5ddf0",
+        "input": "#c9d3ea",
+        "ring": "#2c4ad4",
+        "overlay": "#152044",
+        "success": "#0e7a56",
+        "warning": "#8a5a12",
+        "danger": "#c43648",
+        "info": "#1d4f9a",
+        "notice": "#9a5410",
+        "successText": "#0c6b4c",
+        "warningText": "#7a4e10",
+        "dangerText": "#b42336",
+        "successLabel": "#0b6a4a",
+        "warningLabel": "#7a4e10",
+        "dangerLabel": "#b42336",
+        "switchThumb": "#ffffff",
+        "switchThumbOff": "#3e4e6e"
+      },
+      "stat": {
+        "input": "#2c4ad4",
+        "output": "#6a3faf",
+        "cacheRead": "#0e7a56",
+        "cacheWrite": "#8a5a12",
+        "calls": "#1d4f9a",
+        "cost": "#1f7a42"
+      },
+      "chart": {
+        "palette": ["#2c4ad4", "#0e7a56", "#8a5a12", "#c43648", "#1d4f9a", "#6a3faf", "#b86a2a", "#3e4e6e", "#1f7a42"],
+        "agents": {
+          "dsh": "#6a3faf",
+          "claude-code": "#8a5a12",
+          "codex": "#1d4f9a",
+          "zcode": "#0e7a56",
+          "opencode": "#2c4ad4",
+          "pi": "#c43648",
+          "cursor": "#3e4e6e"
+        },
+        "agentFallback": ["#c43648", "#b86a2a", "#0e7a56", "#6a3faf", "#1d4f9a", "#8a5a12"]
+      },
+      "shadow": {
+        "sm": "0 1px 2px 0 rgba(21, 32, 68, 0.08)",
+        "base": "0 1px 3px 0 rgba(21, 32, 68, 0.12), 0 0 0 1px rgba(44, 74, 212, 0.08)",
+        "md": "0 10px 24px -12px rgba(21, 32, 68, 0.18), 0 0 0 1px rgba(44, 74, 212, 0.12)",
+        "lg": "0 18px 40px -16px rgba(21, 32, 68, 0.22), 0 0 0 1px rgba(44, 74, 212, 0.1)"
+      },
+      "css": {
+        "header": {
+          "background-image": "linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(244, 247, 255, 0.78) 100%)",
+          "backdrop-filter": "blur(14px) saturate(1.15)"
+        },
+        "card": {
+          "background-color": "hsl(var(--card) / 0.46)",
+          "backdrop-filter": "blur(18px) saturate(1.35)",
+          "background-image": "linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0) 48%)"
+        },
+        "mini-stat": {
+          "background-color": "hsl(var(--background) / 0.35)",
+          "backdrop-filter": "blur(12px) saturate(1.2)"
+        },
+        "agent-card:selected": {
+          "background-image": "linear-gradient(180deg, rgba(44, 74, 212, 0.1) 0%, rgba(44, 74, 212, 0) 70%)",
+          "border-color": "hsl(var(--primary))"
+        },
+        "stat-card": {
+          "background-image": "linear-gradient(120deg, rgba(44, 74, 212, 0.08) 0%, rgba(14, 122, 86, 0.04) 50%, rgba(255, 255, 255, 0) 82%)"
+        },
+        "progress-fill": {
+          "background-image": "linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.35) 100%)"
+        },
+        "chip:selected": { "border-color": "hsl(var(--primary) / 0.8)" }
+      }
+    }
+  }
+}
