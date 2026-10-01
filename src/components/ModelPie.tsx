@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import type { ModelSlice, RangeSummary, Totals } from "../api/bindings";
 import { fmtCost, fmtTokens } from "../lib/format";
@@ -63,13 +63,22 @@ interface ModelPieProps {
   rangeLabel: string;
   currency: string;
   rate: number;
+  /** 当前点中的扇区,含「其他」;null = 没选 */
+  selected: string | null;
+  onSelect: (name: string | null) => void;
 }
 
 /** 模型占比(环形图 + 图例);点击扇区在该卡片内查看该模型明细(含缓存命中率) */
-export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps) {
+export function ModelPie({
+  summary,
+  rangeLabel,
+  currency,
+  rate,
+  selected,
+  onSelect,
+}: ModelPieProps) {
   // 扇区按序取色,调色板来自当前主题
   const { chartPalette: PALETTE } = useTheme();
-  const [selected, setSelected] = useState<string | null>(null);
 
   const slices = useMemo<Slice[]>(() => {
     const list: ModelSlice[] = [...(summary?.byModel ?? [])].sort(
@@ -180,7 +189,7 @@ export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps)
                   onClick={(entry: any) => {
                     const name = entry?.name ?? entry?.payload?.name;
                     if (typeof name === "string") {
-                      setSelected((prev) => (prev === name ? null : name));
+                      onSelect(selected === name ? null : name);
                     }
                   }}
                   style={{ cursor: "pointer" }}
@@ -218,12 +227,10 @@ export function ModelPie({ summary, rangeLabel, currency, rate }: ModelPieProps)
                   key={s.name}
                   role="button"
                   tabIndex={0}
-                  onClick={() =>
-                    setSelected((prev) => (prev === s.name ? null : s.name))
-                  }
+                  onClick={() => onSelect(selected === s.name ? null : s.name)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
-                      setSelected((prev) => (prev === s.name ? null : s.name));
+                      onSelect(selected === s.name ? null : s.name);
                     }
                   }}
                   className={`flex cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1 text-xs transition-colors hover:bg-muted/40 ${

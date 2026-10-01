@@ -196,6 +196,14 @@ pub struct DailyUsage {
     pub cost: f64,
 }
 
+/// 一天中的某个小时,把范围内各天的同一小时加在一起。hour 为 0–23。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HourProfile {
+    pub hour: i64,
+    pub total_tokens: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionUsage {

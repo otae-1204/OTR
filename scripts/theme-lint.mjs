@@ -47,6 +47,15 @@ function fallbackSummary(manifest, mode, vars) {
     .join(" ");
 }
 const reserved = BUILTIN_THEMES.map((t) => t.id);
+/** 示例目录里与内置主题同名的文件是打包源,不当作用户主题去撞保留 id */
+function reservedFor(file) {
+  const norm = file.replace(/\\/g, "/");
+  const base = norm.split("/").pop()?.replace(/\.json$/, "");
+  if (norm.includes("/examples/themes/")) {
+    return reserved.filter((id) => id !== base);
+  }
+  return reserved;
+}
 let failed = false;
 
 for (const file of files) {
@@ -59,7 +68,7 @@ for (const file of files) {
     failed = true;
     continue;
   }
-  const { manifest, diagnostics } = parseThemeFile(text, { reservedIds: reserved });
+  const { manifest, diagnostics } = parseThemeFile(text, { reservedIds: reservedFor(file) });
   for (const d of diagnostics) {
     console.log(`  [${d.level === "error" ? "错误" : "警告"}] ${d.path || "/"}: ${d.message}`);
   }

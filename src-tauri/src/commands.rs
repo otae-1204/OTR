@@ -128,6 +128,7 @@ pub fn get_daily(
     from: Option<String>,
     to: Option<String>,
     granularity: Option<String>,
+    model: Option<String>,
 ) -> std::result::Result<Vec<DailyUsage>, String> {
     let state = app.state::<AppState>();
     let from = from.unwrap_or_else(|| date_str(chrono::Duration::days(29)));
@@ -139,13 +140,42 @@ pub fn get_daily(
     };
     let mut rows = state
         .store
-        .daily(agent.as_deref(), &from, &to, &g)
+        .daily(agent.as_deref(), &from, &to, &g, model.as_deref())
         .map_err(err_str)?;
     if agent.is_none() {
         let enabled = crate::lock(&state.settings).enabled_agents.clone();
         rows.retain(|r| enabled.iter().any(|id| id == &r.agent));
     }
     Ok(rows)
+}
+
+#[tauri::command]
+pub fn get_hour_profile(
+    app: AppHandle,
+    agent: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    model: Option<String>,
+) -> std::result::Result<Vec<crate::model::HourProfile>, String> {
+    let state = app.state::<AppState>();
+    let from = from.unwrap_or_else(|| date_str(chrono::Duration::days(29)));
+    let to = to.unwrap_or_else(today_str);
+    let enabled = crate::lock(&state.settings).enabled_agents.clone();
+    let enabled_filter = if agent.is_none() {
+        Some(enabled.as_slice())
+    } else {
+        None
+    };
+    state
+        .store
+        .hour_profile(
+            agent.as_deref(),
+            &from,
+            &to,
+            model.as_deref(),
+            enabled_filter,
+        )
+        .map_err(err_str)
 }
 
 #[tauri::command]

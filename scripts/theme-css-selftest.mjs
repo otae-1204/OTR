@@ -1033,7 +1033,10 @@ function run(raw, path = "tokens.css") {
   check("examples: at least five themes", files.length >= 5, files.join(","));
   let dual = 0;
   for (const f of files) {
-    const { manifest, diagnostics } = parseThemeFile(fs.readFileSync(path.join(dir, f), "utf8"), { reservedIds: ["otr"] });
+    const reserved = (T.BUILTIN_THEMES ?? []).map((t) => t.id).filter((id) => `${id}.json` !== f);
+    const { manifest, diagnostics } = parseThemeFile(fs.readFileSync(path.join(dir, f), "utf8"), {
+      reservedIds: reserved,
+    });
     check(`example ${f}: loads with zero diagnostics`, manifest !== null && diagnostics.length === 0, JSON.stringify(diagnostics));
     if (!manifest) continue;
     check(`example ${f}: id matches file name`, `${manifest.id}.json` === f);

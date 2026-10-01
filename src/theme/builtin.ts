@@ -9,6 +9,7 @@
 
 import type { ThemeManifest, ThemeTokens } from "./types";
 import { validateManifest } from "./validate";
+import blueWhaleRaw from "../../examples/themes/blue-whale.json";
 
 /** 与深浅模式无关的公共 token */
 const OTR_COMMON: ThemeTokens = {
@@ -167,17 +168,21 @@ const OTR_RAW: ThemeManifest = {
  * 十六进制会被转成 HSL 三元组、图表色转成 #rrggbb。这样解析器只需要处理一种形态,
  * 也顺便保证内置清单本身永远是合法的示例。
  */
-function normalizeBuiltin(raw: ThemeManifest): ThemeManifest {
+function normalizeBuiltin(raw: unknown): ThemeManifest {
+  const hinted =
+    typeof raw === "object" && raw !== null && "id" in raw && typeof raw.id === "string"
+      ? raw.id
+      : "?";
   const { manifest, diagnostics } = validateManifest(raw);
   const problems = diagnostics.filter((d) => d.level === "error");
   if (!manifest || problems.length > 0) {
     // 内置主题写坏了是开发期错误,直接抛出让构建/首屏立刻暴露
     throw new Error(
-      `内置主题「${raw.id}」不合法:${problems.map((d) => `${d.path}: ${d.message}`).join("; ")}`,
+      `内置主题「${hinted}」不合法:${problems.map((d) => `${d.path}: ${d.message}`).join("; ")}`,
     );
   }
   for (const d of diagnostics) {
-    console.warn(`[theme] 内置主题「${raw.id}」${d.path}: ${d.message}`);
+    console.warn(`[theme] 内置主题「${manifest.id}」${d.path}: ${d.message}`);
   }
   return manifest;
 }
@@ -185,5 +190,8 @@ function normalizeBuiltin(raw: ThemeManifest): ThemeManifest {
 /** 默认主题:当前应用外观的完整描述(已归一化) */
 export const OTR_THEME: ThemeManifest = normalizeBuiltin(OTR_RAW);
 
+/** 蓝色大肥鱼:清单在 examples/themes/blue-whale.json,立绘按 id 铺在窗口上 */
+export const BLUE_WHALE_THEME: ThemeManifest = normalizeBuiltin(blueWhaleRaw);
+
 /** 随应用打包的主题,按展示顺序排列;第一个必须是默认主题 */
-export const BUILTIN_THEMES: readonly ThemeManifest[] = [OTR_THEME];
+export const BUILTIN_THEMES: readonly ThemeManifest[] = [OTR_THEME, BLUE_WHALE_THEME];

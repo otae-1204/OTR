@@ -13,6 +13,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   computeRange,
+  previousRange,
   PRESET_LABELS,
   rangeSubtitle,
   rangeTitle,
@@ -29,6 +30,7 @@ import { StatCard } from "./components/StatCard";
 import { ThemeMascot } from "./components/ThemeMascot";
 import { WindowControls } from "./components/WindowControls";
 import { TrendChart } from "./components/TrendChart";
+import { HourProfile } from "./components/HourProfile";
 import {
   ActivityIcon,
   CalendarIcon,
@@ -57,11 +59,13 @@ export default function App() {
   const [limitsEpoch, setLimitsEpoch] = useState(0);
   const spinTimerRef = useRef<number | null>(null);
   const { summary, agents, settings, loading, refresh } = useUsageData();
-  const { agentColor } = useTheme();
+  const { agentColor, chartPalette } = useTheme();
 
   // 筛选状态:Agent 维度 + 日期范围
   const [agentId, setAgentId] = useState<string | null>(null);
   const [preset, setPreset] = useState<RangePreset>("30d");
+  /** 扇区点选,含「其他」。只有真实模型名会驱动趋势图和时段图 */
+  const [piePick, setPiePick] = useState<string | null>(null);
   const [customFrom, setCustomFrom] = useState(() =>
     new Date(Date.now() - 29 * 86400_000).toISOString().slice(0, 10),
   );
@@ -70,12 +74,18 @@ export default function App() {
     () => computeRange(preset, customFrom, customTo),
     [preset, customFrom, customTo],
   );
+  const prevWindow = useMemo(
+    () => previousRange(preset, range),
+    [preset, range],
+  );
 
   // 范围统计(Hero + 模型占比共用)
   const [rangeSummary, setRangeSummary] = useState<RangeSummary | null>(null);
+  const [prevSummary, setPrevSummary] = useState<RangeSummary | null>(null);
   const [rangeLoading, setRangeLoading] = useState(false);
   // 竞态防护:只接受与当前筛选一致的响应(快速切换时旧响应可能更晚返回)
   const rangeReqRef = useRef("");
+  const prevReqRef = useRef("");
 
   useEffect(() => {
     return () => {
@@ -149,6 +159,30 @@ export default function App() {
     };
   }, [view, agentId, range.from, range.to, refreshKey]);
 
+  useEffect(() => {
+    if (view !== "dashboard") return;
+    if (!prevWindow) {
+      prevReqRef.current = "";
+      setPrevSummary(null);
+      return;
+    }
+    const reqKey = `${agentId ?? ""}|${prevWindow.from}|${prevWindow.to}|${enabledKey}`;
+    prevReqRef.current = reqKey;
+    let active = true;
+    api
+      .getRangeSummary(agentId, prevWindow.from, prevWindow.to)
+      .then((r) => {
+        if (active && prevReqRef.current === reqKey) setPrevSummary(r);
+      })
+      .catch((err) => {
+        console.error("[App] 上一周期 getRangeSummary 失败", err);
+        if (active && prevReqRef.current === reqKey) setPrevSummary(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [view, agentId, prevWindow, enabledKey, refreshKey]);
+
   /** 合并 listAgents 与 byAgentToday;设置里停用的不进主页 */
   const agentCards = useMemo(() => {
     const enabledIds = new Set(
@@ -205,6 +239,45 @@ export default function App() {
   const statTitle = agentName
     ? `${rangeTitle(preset, range)} · ${agentName}`
     : rangeTitle(preset, range);
+  const previous =
+    prevWindow &&
+    rangeSummary &&
+    prevSummary &&
+    rangeSummary.from === range.from &&
+    rangeSummary.to === range.to &&
+    (rangeSummary.agent ?? null) === agentId &&
+    prevSummary.from === prevWindow.from &&
+    prevSummary.to === prevWindow.to &&
+    (prevSummary.agent ?? null) === agentId
+      ? {
+          label: prevWindow.label,
+          from: prevWindow.from,
+          to: prevWindow.to,
+          totals: prevSummary.totals,
+        }
+      : null;
+  const chartModel = piePick && piePick !== "其他" ? piePick : null;
+  const modelColor = useMemo(() => {
+    if (!chartModel || !rangeSummary) return null;
+    const index = rangeSummary.byModel.findIndex((m) => m.model === chartModel);
+    if (index < 0 || index >= 8 || chartPalette.length === 0) return null;
+    return chartPalette[index % chartPalette.length];
+  }, [chartModel, rangeSummary, chartPalette]);
+
+  useEffect(() => {
+    if (!piePick || !rangeSummary) return;
+    if (rangeSummary.from !== range.from || rangeSummary.to !== range.to) return;
+    if ((rangeSummary.agent ?? null) !== agentId) return;
+    if (piePick === "其他") {
+      if (rangeSummary.byModel.length <= 8) setPiePick(null);
+      return;
+    }
+    const visible = rangeSummary.byModel
+      .slice(0, 8)
+      .some((m) => m.model === piePick);
+    if (!visible) setPiePick(null);
+  }, [piePick, rangeSummary, range.from, range.to, agentId]);
+
   const sessionRange: { from: string | null; to: string | null } = range.all
     ? { from: null, to: null }
     : { from: range.from, to: range.to };
@@ -459,6 +532,7 @@ export default function App() {
                           ?.status.totalTokens ?? null)
                       : null
                   }
+                  previous={previous}
                 />
 
                 <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
@@ -482,14 +556,28 @@ export default function App() {
                     to={range.to}
                     all={range.all}
                     refreshKey={refreshKey}
+                    previous={prevWindow}
+                    model={chartModel}
+                    modelColor={modelColor}
                   />
                   <ModelPie
                     summary={rangeSummary}
                     rangeLabel={rangeTitle(preset, range)}
                     currency={currency}
                     rate={exchangeRate}
+                    selected={piePick}
+                    onSelect={setPiePick}
                   />
                 </div>
+
+                <HourProfile
+                  agentId={agentId}
+                  from={range.from}
+                  to={range.to}
+                  refreshKey={refreshKey}
+                  model={chartModel}
+                  modelColor={modelColor}
+                />
 
                 <SessionTable
                   agentId={agentId}

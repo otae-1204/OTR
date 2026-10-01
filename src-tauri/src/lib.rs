@@ -196,6 +196,7 @@ pub fn run() {
             commands::get_summary,
             commands::get_range_summary,
             commands::get_daily,
+            commands::get_hour_profile,
             commands::get_sessions,
             commands::rescan,
             commands::get_settings,

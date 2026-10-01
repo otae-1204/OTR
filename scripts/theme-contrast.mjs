@@ -45,6 +45,14 @@ const theme = await loadThemeModule("theme-contrast");
 
 const { parseThemeFile, resolveTheme, parseColor, BUILTIN_THEMES, OTR_THEME } = theme;
 const reserved = BUILTIN_THEMES.map((t) => t.id);
+function reservedFor(file) {
+  const norm = file.replace(/\\/g, "/");
+  const base = norm.split("/").pop()?.replace(/\.json$/, "");
+  if (norm.includes("/examples/themes/")) {
+    return reserved.filter((id) => id !== base);
+  }
+  return reserved;
+}
 
 const TEXT = 4.5;
 const UI = 3;
@@ -196,7 +204,7 @@ for (const file of files) {
     failed = true;
     continue;
   }
-  const { manifest } = parseThemeFile(text, { reservedIds: reserved });
+  const { manifest } = parseThemeFile(text, { reservedIds: reservedFor(file) });
   if (!manifest) {
     console.log("  ✗ 校验未通过,先用 scripts/theme-lint.mjs 修正");
     failed = true;

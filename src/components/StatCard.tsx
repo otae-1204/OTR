@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { RangeSummary, Totals } from "../api/bindings";
 import { fmtCost, fmtDateTime, fmtTokens } from "../lib/format";
+import { compareText, formatRangeSpan } from "../lib/range";
 import {
   ActivityIcon,
   ArrowDownIcon,
@@ -16,6 +17,7 @@ function MiniStat({
   value,
   accent,
   title,
+  hint,
 }: {
   icon: ReactNode;
   label: string;
@@ -23,6 +25,8 @@ function MiniStat({
   /** 语义色 class,如 text-stat-input(由主题的 stat token 决定) */
   accent: string;
   title?: string;
+  /** 上一周期差额,和数值同一行,避免把整排卡片撑高 */
+  hint?: { mark: string; title: string } | null;
 }) {
   return (
     <div
@@ -36,7 +40,18 @@ function MiniStat({
         {icon}
         <span className="tracking-wide">{label}</span>
       </div>
-      <div className="text-sm font-semibold tabular-nums">{value}</div>
+      <div className="flex items-baseline gap-1.5 whitespace-nowrap">
+        <div className="text-sm font-semibold tabular-nums">{value}</div>
+        {hint ? (
+          <span
+            data-theme-part="compare-delta"
+            className="text-11px font-medium tabular-nums text-muted-foreground"
+            title={hint.title}
+          >
+            {hint.mark}
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -62,6 +77,8 @@ interface StatCardProps {
   agentAllTimeTokens: number | null;
   currency: string;
   rate: number;
+  /** 上一周期合计;与当前 summary 的窗口对齐后才传入,否则不显示差额 */
+  previous?: { label: string; from: string; to: string; totals: Totals } | null;
 }
 
 /** Hero 统计卡:由筛选栏的 Agent + 日期范围驱动 */
@@ -73,10 +90,36 @@ export function StatCard({
   agentAllTimeTokens,
   currency,
   rate,
+  previous,
 }: StatCardProps) {
   const totals: Totals | null = summary?.totals ?? null;
   const hit = totals ? cacheHitRate(totals) : 0;
   const hitPct = (hit * 100).toFixed(1);
+  const compareWindow = previous
+    ? formatRangeSpan(previous.from, previous.to)
+    : "";
+  const tokenCompare =
+    previous && totals
+      ? compareText({
+          label: previous.label,
+          current: totals.totalTokens,
+          previous: previous.totals.totalTokens,
+          formatAbs: fmtTokens,
+          previousWindow: compareWindow,
+        })
+      : null;
+  const costCompare =
+    previous && totals
+      ? compareText({
+          label: previous.label,
+          current: totals.cost,
+          previous: previous.totals.cost,
+          formatAbs: (n) => fmtCost(n, currency, rate),
+          previousWindow: compareWindow,
+          epsilon: 1e-6,
+          flatDetail: "金额相同",
+        })
+      : null;
 
   return (
     <section
@@ -108,6 +151,15 @@ export function StatCard({
               </span>
             ) : null}
           </div>
+          {tokenCompare ? (
+            <p
+              data-theme-part="compare-delta"
+              className="mt-1.5 text-xs text-muted-foreground"
+              title={tokenCompare.title}
+            >
+              {tokenCompare.text}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-col items-end gap-1.5">
           {summary ? (
@@ -201,6 +253,7 @@ export function StatCard({
               ? `成本 ${totals.cost.toFixed(4)}(填了定价的模型按定价重算,其余用自带成本或 0)`
               : undefined
           }
+          hint={costCompare}
         />
       </div>
     </section>

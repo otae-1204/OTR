@@ -240,8 +240,32 @@ export const api = {
   getSummary: () => invoke<UsageSummary>("get_summary"),
   getRangeSummary: (agent: string | null, from: string, to: string) =>
     invoke<RangeSummary>("get_range_summary", { agent, from, to }),
-  getDaily: (agent: string | null, from: string, to: string, granularity?: "day" | "hour" | "month") =>
-    invoke<DailyUsage[]>("get_daily", { agent, from, to, granularity: granularity ?? "day" }),
+  getDaily: (
+    agent: string | null,
+    from: string,
+    to: string,
+    granularity?: "day" | "hour" | "month",
+    model?: string | null,
+  ) =>
+    invoke<DailyUsage[]>("get_daily", {
+      agent,
+      from,
+      to,
+      granularity: granularity ?? "day",
+      model: model ?? null,
+    }),
+  getHourProfile: (
+    agent: string | null,
+    from: string,
+    to: string,
+    model?: string | null,
+  ) =>
+    invoke<{ hour: number; totalTokens: number }[]>("get_hour_profile", {
+      agent,
+      from,
+      to,
+      model: model ?? null,
+    }),
   getSessions: (
     agent: string | null,
     from: string | null,

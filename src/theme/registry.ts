@@ -61,6 +61,15 @@ export function entriesFromFiles(files: ThemeFile[], reservedIds: readonly strin
     }
     const result = parseThemeFile(f.contents, { reservedIds });
     entry.diagnostics = result.diagnostics;
+    if (!result.manifest) {
+      const reserved = result.diagnostics.some(
+        (d) => d.path === "id" && d.message.includes("内置主题的 id"),
+      );
+      // 用户目录里放了一份同名文件时,让位给内置那条,不再另挂一条无效项
+      if (reserved) continue;
+      out.push(entry);
+      continue;
+    }
     if (result.manifest) {
       if (seen.has(result.manifest.id)) {
         entry.diagnostics.push({

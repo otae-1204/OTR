@@ -37,7 +37,7 @@ fn copy_live_db(tag: &str) -> std::path::PathBuf {
 /// 某个 Agent 在某天的按天 tokens(agent 作用域,避免被别的 Agent 污染)
 fn daily_tokens(store: &Store, agent: &str, date: &str) -> u64 {
     store
-        .daily(Some(agent), date, date, "day")
+        .daily(Some(agent), date, date, "day", None)
         .unwrap()
         .iter()
         .map(|r| r.total_tokens)
@@ -47,7 +47,7 @@ fn daily_tokens(store: &Store, agent: &str, date: &str) -> u64 {
 /// 同一天的按小时表合计 —— 会话日志口径,是"真实发生过的用量"。
 fn hourly_tokens(store: &Store, agent: &str, date: &str) -> u64 {
     store
-        .daily(Some(agent), date, date, "hour")
+        .daily(Some(agent), date, date, "hour", None)
         .unwrap()
         .iter()
         .map(|r| r.total_tokens)
@@ -74,7 +74,7 @@ fn model_tokens(store: &Store, agent: &str, date: &str, model: &str) -> u64 {
 /// 按小时表里出现过的、且**不属于台账**的日期(升序)。
 fn log_dates(store: &Store, agent: &str, owned: &std::collections::HashSet<String>) -> Vec<String> {
     let mut dates: Vec<String> = Vec::new();
-    for row in store.daily(Some(agent), "2026-01-01", "2026-12-31", "hour").unwrap() {
+    for row in store.daily(Some(agent), "2026-01-01", "2026-12-31", "hour", None).unwrap() {
         let date = row.date.split(' ').next().unwrap_or_default().to_string();
         if !dates.contains(&date) {
             dates.push(date);

@@ -6,8 +6,8 @@ use rusqlite::{params, Connection};
 
 use crate::error::Result;
 use crate::model::{
-    local_date, local_hour, now_ms, today_str, AgentSlice, DailyUsage, ModelSlice, RangeSummary,
-    SessionUsage, Totals, UsageSummary,
+    local_date, local_hour, now_ms, today_str, AgentSlice, DailyUsage, HourProfile, ModelSlice,
+    RangeSummary, SessionUsage, Totals, UsageSummary,
 };
 use crate::providers::FileCursor;
 use crate::settings::PriceEntry;
@@ -797,32 +797,40 @@ impl Store {
         from: &str,
         to: &str,
         granularity: &str,
+        model: Option<&str>,
     ) -> Result<Vec<DailyUsage>> {
         let conn = self.conn();
+        let model = model.filter(|m| !m.is_empty());
+        // 空模型在占比里显示成「(未知模型)」,过滤时用同一套换算。
+        let model_sql =
+            "AND (?4 IS NULL OR COALESCE(NULLIF(model, ''), '(未知模型)') = ?4)";
         let sql = match granularity {
-            "hour" => {
+            "hour" => format!(
                 "SELECT date || ' ' || printf('%02d:00', hour) AS bucket, agent,
                         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                         SUM(cache_write_tokens), SUM(calls), SUM(cost)
                  FROM usage_hourly WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)
+                 {model_sql}
                  GROUP BY bucket, agent ORDER BY bucket, agent"
-            }
-            "month" => {
+            ),
+            "month" => format!(
                 "SELECT substr(date,1,7) AS bucket, agent,
                         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                         SUM(cache_write_tokens), SUM(calls), SUM(cost)
                  FROM usage_daily WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)
+                 {model_sql}
                  GROUP BY bucket, agent ORDER BY bucket, agent"
-            }
-            _ => {
+            ),
+            _ => format!(
                 "SELECT date, agent, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                         SUM(cache_write_tokens), SUM(calls), SUM(cost)
                  FROM usage_daily WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)
+                 {model_sql}
                  GROUP BY date, agent ORDER BY date, agent"
-            }
+            ),
         };
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map(params![from, to, agent], |row| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![from, to, agent, model], |row| {
             let input: i64 = row.get(2)?;
             let output: i64 = row.get(3)?;
             let cr: i64 = row.get(4)?;
@@ -840,6 +848,59 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// 把范围内各天的同一个钟点加在一起,固定返回 0–23 共 24 格。
+    /// 只表达「习惯落在几点」。小时表可能缺近期日,调用方不要拿合计去对按天总额。
+    /// `enabled`:agent 为 None 时只计入这些 Agent;指定了 agent 时忽略。
+    pub fn hour_profile(
+        &self,
+        agent: Option<&str>,
+        from: &str,
+        to: &str,
+        model: Option<&str>,
+        enabled: Option<&[String]>,
+    ) -> Result<Vec<HourProfile>> {
+        let conn = self.conn();
+        let model = model.filter(|m| !m.is_empty());
+        let mut stmt = conn.prepare(
+            "SELECT hour, agent,
+                    SUM(input_tokens) + SUM(output_tokens)
+                    + SUM(cache_read_tokens) + SUM(cache_write_tokens)
+             FROM usage_hourly
+             WHERE date >= ?1 AND date <= ?2
+               AND (?3 IS NULL OR agent = ?3)
+               AND (?4 IS NULL OR COALESCE(NULLIF(model, ''), '(未知模型)') = ?4)
+             GROUP BY hour, agent",
+        )?;
+        let rows = stmt.query_map(params![from, to, agent, model], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut by_hour = [0u64; 24];
+        for row in rows {
+            let (hour, ag, tokens) = row?;
+            if !(0..24).contains(&hour) || tokens <= 0 {
+                continue;
+            }
+            if agent.is_none() {
+                if let Some(list) = enabled {
+                    if !list.iter().any(|id| id == &ag) {
+                        continue;
+                    }
+                }
+            }
+            by_hour[hour as usize] += tokens as u64;
+        }
+        Ok((0..24)
+            .map(|hour| HourProfile {
+                hour,
+                total_tokens: by_hour[hour as usize],
+            })
+            .collect())
     }
 
     /// 会话明细;成本与 range_summary 走**同一套 CostBasis 口径**。
@@ -1390,14 +1451,14 @@ mod tests {
             10
         );
         let rows = store
-            .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour")
+            .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour", None)
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].date, "2026-08-31 09:00");
         assert_eq!(rows[0].input_tokens, 10);
         store.wipe_agent("dsh").unwrap();
         assert!(store
-            .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour")
+            .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour", None)
             .unwrap()
             .is_empty());
         let _ = std::fs::remove_file(path);
@@ -1592,6 +1653,72 @@ mod tests {
         let basis = CostBasis::new(&none, 7.2, &no_currency);
         assert!((session_cost(&basis) - 7.2).abs() < 1e-9);
 
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn daily_model_filter_matches_named_and_unknown() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let mut alpha = record();
+        alpha.model = Some("alpha".into());
+        alpha.bucket_date = Some("2026-10-01".into());
+        alpha.input_tokens = 10;
+        let mut beta = record();
+        beta.model = Some("beta".into());
+        beta.bucket_date = Some("2026-10-01".into());
+        beta.input_tokens = 100;
+        let mut unknown = record();
+        unknown.model = None;
+        unknown.bucket_date = Some("2026-10-01".into());
+        unknown.input_tokens = 4;
+        store.apply_records(&[alpha, beta, unknown]).unwrap();
+
+        let named = store
+            .daily(None, "2026-10-01", "2026-10-01", "day", Some("alpha"))
+            .unwrap();
+        assert_eq!(named.iter().map(|r| r.input_tokens).sum::<u64>(), 10);
+        let blank = store
+            .daily(
+                None,
+                "2026-10-01",
+                "2026-10-01",
+                "day",
+                Some("(未知模型)"),
+            )
+            .unwrap();
+        assert_eq!(blank.iter().map(|r| r.input_tokens).sum::<u64>(), 4);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn hour_profile_sums_the_same_clock_hour_and_filters_model() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let mut day1 = record();
+        day1.model = Some("alpha".into());
+        day1.bucket_date = Some("2026-10-01".into());
+        day1.bucket_hour = Some(14);
+        day1.input_tokens = 10;
+        let mut day2 = day1.clone();
+        day2.bucket_date = Some("2026-10-02".into());
+        day2.input_tokens = 5;
+        let mut morning = day1.clone();
+        morning.bucket_hour = Some(3);
+        morning.input_tokens = 7;
+        let mut other = day1.clone();
+        other.model = Some("beta".into());
+        other.input_tokens = 100;
+        store.apply_records(&[day1, day2, morning, other]).unwrap();
+
+        let hours = store
+            .hour_profile(None, "2026-10-01", "2026-10-02", Some("alpha"), None)
+            .unwrap();
+        assert_eq!(hours.len(), 24);
+        assert_eq!(hours[14].hour, 14);
+        assert_eq!(hours[14].total_tokens, 15);
+        assert_eq!(hours[3].total_tokens, 7);
+        assert_eq!(hours[0].total_tokens, 0);
         let _ = std::fs::remove_file(path);
     }
 }

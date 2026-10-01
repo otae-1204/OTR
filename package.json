@@ -1,7 +1,7 @@
 {
   "name": "otr",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
@@ -12,6 +12,7 @@
     "build:renderer": "vite build",
     "typecheck": "tsc --noEmit",
     "test:theme": "node scripts/theme-css-selftest.mjs",
+    "test:range": "node scripts/range-selftest.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
