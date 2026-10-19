@@ -66,7 +66,7 @@ impl Default for PriceEntry {
 pub struct LimitAccount {
     /// 唯一键,如 "cursor-work"
     pub id: String,
-    /// "cursor" | "codex" | "deepseek" | "qwen" | "stepfun"
+    /// "cursor" | "codex" | "grok" | "deepseek" | "qwen" | "stepfun"
     pub provider: String,
     /// 用户可见名
     pub label: String,
@@ -126,6 +126,7 @@ fn default_limit_providers() -> Vec<String> {
     vec![
         "cursor".into(),
         "codex".into(),
+        "grok".into(),
         "deepseek".into(),
         "qwen".into(),
     ]
@@ -144,7 +145,7 @@ fn legacy_known_limit_providers() -> Vec<String> {
 
 /// 支持的额度 Provider。**不在这个表里的一律报 unsupported**,
 /// 不拿内置账号的数字冒充 —— 那会让用户以为配好了。
-pub const LIMIT_PROVIDERS: &[&str] = &["cursor", "codex", "deepseek", "qwen", "stepfun"];
+pub const LIMIT_PROVIDERS: &[&str] = &["cursor", "codex", "grok", "deepseek", "qwen", "stepfun"];
 
 impl LimitAccount {
     /// 校验一份账号配置;返回中文错误原因。
@@ -161,7 +162,7 @@ impl LimitAccount {
         // home 模式要目录。DeepSeek 要 API Key。StepFun 的订阅 Cookie 和
         // 按量 Key 至少有一个,否则这张卡没有任何可查的东西。
         match self.provider.as_str() {
-            "cursor" | "codex" => {
+            "cursor" | "codex" | "grok" => {
                 let home = self.home.as_deref().unwrap_or("").trim();
                 if home.is_empty() {
                     return Err(format!("{} 需要指定 profile 目录", self.provider));
@@ -274,6 +275,7 @@ pub const BUILTIN_AGENTS: &[&str] = &[
     "opencode",
     "pi",
     "cursor",
+    "grok",
 ];
 
 impl Default for Settings {
@@ -297,6 +299,7 @@ impl Default for Settings {
             known_limit_providers: {
                 let mut known = legacy_known_limit_providers();
                 known.push("qwen".into());
+                known.push("grok".into());
                 known
             },
         }
@@ -342,6 +345,14 @@ impl Settings {
             s.known_limit_providers.push("qwen".into());
             if !s.limit_providers.iter().any(|p| p == "qwen") {
                 s.limit_providers.push("qwen".into());
+            }
+            changed = true;
+        }
+        // Grok 订阅额度是后加的:旧设置文件里没见过它,就自动打开一次。
+        if !s.known_limit_providers.iter().any(|p| p == "grok") {
+            s.known_limit_providers.push("grok".into());
+            if !s.limit_providers.iter().any(|p| p == "grok") {
+                s.limit_providers.push("grok".into());
             }
             changed = true;
         }
@@ -456,6 +467,7 @@ mod tests {
         assert!(s.limit_providers.iter().any(|p| p == "codex"));
         assert!(s.limit_providers.iter().any(|p| p == "deepseek"));
         assert!(s.limit_providers.iter().any(|p| p == "qwen"));
+        assert!(s.limit_providers.iter().any(|p| p == "grok"));
         assert!(
             !s.limit_providers.iter().any(|p| p == "stepfun"),
             "StepFun 依赖逆向接口,必须默认关闭"
@@ -669,6 +681,36 @@ mod tests {
             "关掉之后不能在下次启动时复活"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Grok 订阅额度是后加的来源:旧设置自动打开一次,关掉之后不再打开。
+    #[test]
+    fn grok_limit_is_enabled_once_for_existing_settings() {
+        let dir = std::env::temp_dir().join(format!("otr-grok-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"enabledAgents":["dsh"],"limitProviders":["cursor","codex"],"knownLimitProviders":["cursor","codex","deepseek","stepfun","qwen"],"currency":"CNY","exchangeRate":7.2,"migratedV2":true}"#,
+        )
+        .unwrap();
+
+        let first = Settings::load(&path);
+        assert!(first.limit_providers.iter().any(|p| p == "grok"));
+        assert_eq!(
+            first.limit_providers.iter().filter(|p| *p == "grok").count(),
+            1
+        );
+
+        let mut turned_off = Settings::load(&path);
+        turned_off.limit_providers.retain(|p| p != "grok");
+        turned_off.save(&path).unwrap();
+        let again = Settings::load(&path);
+        assert!(
+            !again.limit_providers.iter().any(|p| p == "grok"),
+            "关掉之后不能在下次启动时复活"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -17,7 +17,8 @@ const AGENT: &str = "zcode";
 /// 解析规则变更时递增,启动时全量重建该 Agent。
 /// v1: transcript 丢掉无模型的流结束重复与回合汇总,避免记成未知模型。
 /// v2: requestId 去重窗口跨扫描持久化 + 截断转全量重建。
-pub const PARSER_VERSION: u64 = 2;
+/// v3: inputTokens 含缓存读和缓存写,两栏都要减掉,否则缓存写会再加一次。
+pub const PARSER_VERSION: u64 = 3;
 
 /// 跨扫描保留的 requestId 上限;rollout 与 transcript 分属不同文件,
 /// 同一调用可能落在两次扫描里,单次 HashSet 挡不住。
@@ -145,7 +146,8 @@ pub fn scan_root(root: &Path, agent: &str, ctx: &mut ScanCtx) -> Result<Vec<Usag
 }
 
 /// 每行是一次模型调用的记录:requestId 唯一(重试会有相同 requestId 的不同 attempt,取首次);
-/// usage.inputTokens = 未缓存输入 + cacheRead(inputTokens 口径已含缓存读,需拆分)
+/// usage.inputTokens 已含 cacheRead 和 cacheWrite(ccusage / codeburn 都这么拆)。
+/// 两栏都减掉才是未缓存输入;缓存写留在 input 里又单列,合计会把缓存写算两遍。
 fn scan_file(
     path: &Path,
     transcript: bool,
@@ -190,12 +192,15 @@ fn scan_file(
             continue;
         }
         let input_total = u64f(usage, "inputTokens");
-        let cache_read = u64f(usage, "cacheReadTokens");
-        let cache_write = u64f(usage, "cacheWriteTokens");
+        let mut cache_read = u64f(usage, "cacheReadTokens");
+        let mut cache_write = u64f(usage, "cacheWriteTokens");
         let output = u64f(usage, "outputTokens");
         if input_total + output + cache_read + cache_write == 0 {
             continue;
         }
+        // 缓存栏不能超过 inclusive input,否则减完再加总会比 totalTokens 大。
+        cache_read = cache_read.min(input_total);
+        cache_write = cache_write.min(input_total.saturating_sub(cache_read));
         let Some(model) = extract_model(&v, transcript) else {
             // 无模型的 usage 不入库,避免 UI 出现「未知模型」
             continue;
@@ -242,7 +247,9 @@ fn scan_file(
             model: Some(model),
             provider: extract_provider(&v, transcript),
             ts,
-            input_tokens: input_total.saturating_sub(cache_read),
+            input_tokens: input_total
+                .saturating_sub(cache_read)
+                .saturating_sub(cache_write),
             output_tokens: output,
             cache_read_tokens: cache_read,
             cache_write_tokens: cache_write,
@@ -453,6 +460,34 @@ mod tests {
         );
         assert_eq!(records[0].input_tokens, 8194 - 6272);
         assert_eq!(records[0].cache_read_tokens, 6272);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cache_write_is_not_counted_both_inside_input_and_beside_it() {
+        let root = fixture_dir();
+        let path = root.join("model-io-sess_main.jsonl");
+        write_jsonl(
+            &path,
+            &[serde_json::json!({
+                "completedAt": "2026-09-02T23:11:29.010Z",
+                "requestId": "req-cw",
+                "model": {"modelId": "GLM-5.3-Flash", "providerId": "builtin:zai-start-plan"},
+                "response": {"usage": {
+                    "inputTokens": 1000,
+                    "outputTokens": 10,
+                    "totalTokens": 1010,
+                    "cacheReadTokens": 400,
+                    "cacheWriteTokens": 100
+                }},
+                "sessionId": "sess_main"
+            })],
+        );
+        let records = scan_files(&[(&path, false)]);
+        assert_eq!(records[0].input_tokens, 500);
+        assert_eq!(records[0].cache_read_tokens, 400);
+        assert_eq!(records[0].cache_write_tokens, 100);
+        assert_eq!(records[0].total_tokens(), 1010, "合计应等于 input+output,不能再加一遍缓存写");
         fs::remove_dir_all(root).unwrap();
     }
 

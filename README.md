@@ -31,9 +31,10 @@ OTR(**O**tae's **T**oken **R**adar)是你电脑上所有 AI Coding Agent 的 Tok
 | **Claude Code** | `~/.claude/projects/` | 按 message.id + requestId 去重 |
 | **Codex CLI** | `~/.codex/sessions/` | 逐事件解析 last_token_usage |
 | **ZCode** | `~/.zcode/cli/` | model-io + transcript 双源,按 requestId 去重 |
-| **OpenCode** | `~/.local/share/opencode/opencode.db` | SQLite 只读 |
+| **OpenCode** | `~/.local/share/opencode/opencode.db`,macOS 上也认 `~/Library/Application Support/opencode/` | SQLite 只读 |
 | **Pi** | `~/.pi/agent/sessions/` | 自带美元成本 |
 | **Cursor** | 本机登录态 + dashboard API | Cursor 3.x 本地 tokenCount 恒为 0,改走用量接口 |
+| **Grok Build** | `$GROK_HOME/sessions/`(缺省 `~/.grok/sessions/`) | 只计 `turn_completed` 一轮增量;缓存已含在 input 里,fork 按 prompt 去重 |
 
 更多 Agent 可在设置页**自定义**(内置 Claude Code / Codex / ZCode 三种布局解析器,指向任意数据目录即可)。
 
@@ -41,7 +42,7 @@ OTR(**O**tae's **T**oken **R**adar)是你电脑上所有 AI Coding Agent 的 Tok
 
 - **托盘常驻**:tooltip 实时显示今日总量;文件变化自动增量刷新;界面看不清时可用托盘「恢复默认主题」
 - **仪表盘**:今日/近7天/近30天/本月/自定义范围;单 Agent 视图;按小时/天/月自适应的趋势刻度
-- **额度页**:Cursor、Codex、DeepSeek、Qwen、StepFun 的订阅额度与余额
+- **额度页**:Cursor、Codex、Grok、DeepSeek、Qwen、StepFun 的订阅额度与余额
 - **主题**:设置页切换内置与第三方主题;单模式主题会临时锁定深浅,切回双模式主题后恢复原偏好。示例在 [`examples/themes`](examples/themes)
 - **模型占比**:点击扇区查看该模型明细,含缓存命中率
 - **成本定价**:models.dev 一键获取 + 手动编辑 + 汇率换算
@@ -64,7 +65,7 @@ npm run build:portable # 打包便携版 ZIP
 npm run build:release  # 同时生成 NSIS 安装版和便携版
 ```
 
-要求:Node 18+、Rust 1.77+、Windows(WebView2)。
+要求:Node 18+、Rust 1.77+。Windows 需要 WebView2;macOS 10.15+ 使用系统 WebKit,在 Mac 上执行 `npm run tauri build` 会打出 `.app` 和 `.dmg`(便携版 ZIP 只在 Windows 上生成)。
 
 - 前端在 `src/`,后端在 `src-tauri/`
 - 完整架构设计见 [ARCHITECTURE.md](./ARCHITECTURE.md)

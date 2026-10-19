@@ -47,7 +47,7 @@
 │  核心服务层   store.rs(SQLite 快照 + 游标 + 成本口径 CostBasis) │
 ├─────────────────────────────────────────────────────────┤
 │  Provider 层(AgentProvider trait,每个 Agent 一个适配器)  │
-│  dsh │ claude_code │ codex │ zcode │ opencode │ pi │ cursor │
+│  dsh │ claude_code │ codex │ zcode │ opencode │ pi │ cursor │ grok │
 ├─────────────────────────────────────────────────────────┤
 │  基础设施   watcher.rs(notify 监听 + 防抖)  paths.rs(路径探测) │
 └─────────────────────────────────────────────────────────┘
@@ -133,7 +133,7 @@ pub struct UsageRecord {
 
 1. 模型在定价表里有条目 → `tokens × 单价 ÷ 1e6 × 汇率` 重算,**覆盖**自带成本;
 2. 没有定价 → 用数据自带成本,按该 Agent 的 `native_cost_currency()` 归一化
-   (dsh = ¥ 原值;cursor / pi / opencode = $ × 汇率);
+   (dsh = ¥ 原值;cursor / pi / opencode / grok = $ × 汇率);
 3. 都没有 → 0。
 
 输出恒为 ¥;`RangeSummary.currency` 只是"前端该按哪个币种展示"的提示,
@@ -211,7 +211,7 @@ pub struct UsageRecord {
 |---|---|
 | 数据源 | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`(另有 `archived_sessions/`) |
 | 格式 | JSONL 事件流;`token_count` 事件的 `info` 同时含 `last_token_usage`(本次)与 `total_token_usage`(会话累计) |
-| 解析要点 | 优先用 `last`(真实的一次请求用量);`last` 缺失或全 0 而 `total` 在涨时,**用累计值的增量兜底**(否则那一次调用会无声消失),累计基准只增不减。两种口径的 `input_tokens` 都已包含 cached,统一减掉才是未缓存输入。同 thread 的多份 rollout 只保留文件名最新的一份;带 `parent_thread_id` 的派生会话整段跳过(它们重放了父线程的完整 token_count 历史),跳过数量整轮只汇总成一行日志 |
+| 解析要点 | 优先用 `last`(真实的一次请求用量);`last` 缺失或全 0 而 `total` 在涨时,**用累计值的增量兜底**(否则那一次调用会无声消失),累计基准只增不减。累计值没变的重复 `token_count`(限流重发)不记。两种口径的 `input_tokens` 都已包含 cached,统一减掉才是未缓存输入;reasoning 已含在 output 里,只单列。同 thread 的多份 rollout 只保留文件名最新的一份;带 `parent_thread_id` 的派生会话整段跳过(它们重放了父线程的完整 token_count 历史),跳过数量整轮只汇总成一行日志 |
 | 自带成本 | 无(靠定价表) |
 
 ### 5.4 ZCode
@@ -219,7 +219,7 @@ pub struct UsageRecord {
 |---|---|
 | 数据源 | `~/.zcode/cli/rollout/model-io-sess_*.jsonl`(主会话,清理快)+ `~/.zcode/cli/agents/<sess>/<agent>/transcript.jsonl`(子代理,留存较久) |
 | 格式 | JSONL。用量以 camelCase `{inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}` 为准 |
-| 解析要点 | 双源按 `requestId` 去重。transcript 一次调用会写多条带 usage 的事件,**只收白名单** `model_network_status` / `model_request_completed`(且 usage 里不带 `modelRequestCount`);`model_complete`(相同 usage、无 modelId、无 requestId)与 `turn_complete`(整轮汇总)丢弃。空模型不入库 |
+| 解析要点 | `inputTokens` 已含缓存读和缓存写,两栏都减掉,缓存栏不超过 input。双源按 `requestId` 去重。transcript 一次调用会写多条带 usage 的事件,**只收白名单** `model_network_status` / `model_request_completed`(且 usage 里不带 `modelRequestCount`);`model_complete`(相同 usage、无 modelId、无 requestId)与 `turn_complete`(整轮汇总)丢弃。空模型不入库 |
 | 本机实测 | transcript 里带 `payload.usage` 的 type 只有 `model_complete` / `model_network_status` / `turn_complete` 三种,`model_network_status` 是唯一同时带 modelId 与 requestId 的 |
 | 自带成本 | 无(靠定价表) |
 
@@ -227,7 +227,7 @@ pub struct UsageRecord {
 | 项 | 内容 |
 |---|---|
 | 数据源 | `~/.local/share/opencode/opencode.db`(SQLite) |
-| 解析要点 | WAL 模式:优先只读打开,失败退回普通打开;`session` 表按会话给绝对值快照,与上次快照做 diff;按会话起始日计入按天表 |
+| 解析要点 | WAL 模式:优先只读打开,失败退回普通打开;`session` 表按会话给绝对值快照,与上次快照做 diff。`tokens_input` 与两种缓存是分开的栏,不互相扣减。官方合计另含 `tokens_reasoning`(不在 output 里),写入时并进 output,单列仍保留。按会话起始日计入按天表 |
 | 自带成本币种 | USD |
 
 ### 5.6 Pi
@@ -249,7 +249,15 @@ pub struct UsageRecord {
 | 监听 | `state.vscdb` 与 `-wal` |
 | 自带成本币种 | USD |
 
-### 5.8 候选扩展(本机已检测到,放路线图)
+### 5.8 Grok Build
+| 项 | 内容 |
+|---|---|
+| 数据源 | `$GROK_HOME/sessions/<编码 cwd>/<session-id>/updates.jsonl`(`GROK_HOME` 缺省 `~/.grok`) |
+| 格式 | JSONL。只认 `params.update.sessionUpdate = "turn_completed"` 的 `usage`,这是一轮的增量 |
+| 解析要点 | `inputTokens` 在 ACP 日志里已含缓存,未缓存输入要减掉;若 `totalTokens` 表明缓存是另栏,或缓存比 input 还大,则不再减。`reasoningTokens` 已含在输出里,只单列。`modelUsage` 小于父级时补差额,大于父级时只留父级。同一 `prompt_id` 是快照,重复行和 fork 拷贝不累加,后写更大时只补差额。不读 `unified.jsonl` / `signals.json`(叠加以重计,上下文快照会漏计)。子会话整段跳过。`costUsdTicks / 1e10` 是美元 |
+| 自带成本币种 | USD |
+
+### 5.9 候选扩展(本机已检测到,放路线图)
 `.codebuddy` / `.codebuddycn`(CodeBuddy)、`.kimi-code`(Kimi CLI)、`.copilot`(Copilot CLI)、`.qoder-cli`(Qoder)。
 实现顺序建议:每次只加一个,先 `detect()` 再摸数据格式。Gemini CLI / Qwen Code 本机未装,不排期。
 (CodeBuddy 已可通过设置里的"自定义 Agent"用 claude-code 布局接进来。)
@@ -278,12 +286,12 @@ src-tauri/
 │   │   ├── mod.rs             # 统一模型 + 账号编排 + 内存缓存
 │   │   ├── http.rs            # 认系统代理的 HTTP 层
 │   │   ├── credential.rs      # keyring 封装(只暴露存在性)
-│   │   ├── cursor.rs  codex.rs  deepseek.rs  stepfun.rs
+│   │   ├── cursor.rs  codex.rs  grok.rs  deepseek.rs  stepfun.rs
 │   └── providers/
 │       ├── mod.rs             # trait + 注册表
 │       ├── jsonl_util.rs      # 按 offset 续读、跨扫描去重窗口
 │       ├── dsh.rs  claude_code.rs  codex.rs  zcode.rs
-│       ├── opencode.rs  pi.rs  cursor.rs  custom.rs
+│       ├── opencode.rs  pi.rs  cursor.rs  grok.rs  custom.rs
 └── tests/
     ├── scan_real.rs           # 真实数据冒烟(cargo test --release --test scan_real -- --ignored --nocapture)
     ├── range_smoke.rs         # 真实库的成本/区间对照
@@ -427,8 +435,8 @@ ProviderLimits{ account_id, account_label, provider, configured,
 - **额外账号**的条目名固定为 `limit.<provider>.<id>.key` 和
   `limit.<provider>.<id>.cookie`。空串、`../`、自拟的 `DEEPSEEK_API_KEY_WORK` 一律拒绝。
 - 解析顺序:**keyring → 环境变量**;空白值等于没有。
-- keyring 按平台收窄(`[target.'cfg(windows)'.dependencies]`):非 Windows 会拖进
-  整套 zbus 依赖树,而那边本来就走"请用环境变量"分支。
+- keyring 按平台收窄:Windows 凭据管理器、macOS 钥匙串。Linux 不引入 keyring
+  (会拖进整套 zbus),那边走环境变量。
 - **命令永不返回密钥值**:对外只有 `{name, present}`,以及账号上的 `keyPresent` / `cookiePresent`。
 
 ### StepFun:默认关闭
@@ -510,6 +518,22 @@ plan_family = 2  TOKEN  新套餐 → Credit 月池
 订阅额度是**逆向接口**,官方可能随时改动,所以默认关闭、要用户显式勾选,
 且失败只影响该卡。字段认不出时把响应键名报给用户,便于下次修正映射。
 两条来源中任一拿到数据就算成功 —— 一个失败不该把另一个已有数字染成红色报错。
+
+### Grok:本地 CLI 会话
+
+和 Codex 同一类,不贴 Cookie。读 `$GROK_HOME/auth.json`(缺省 `~/.grok/auth.json`)里的 `key`,
+请求 `cli-chat-proxy.grok.com` 的 `/v1/billing?format=credits` 和 `/v1/user?include=subscription`。
+头要带 `Authorization: Bearer` 和 `x-grok-client-mode: cli`。
+
+`creditUsagePercent` 是**已用率**。`currentPeriod.type` 决定「每周 / 每月」,
+`end - start` 写入 `windowSeconds`。`productUsage` 是同一周池的拆分,不是第二个额度。
+只有一个产品、百分比又和周池相同(只用 Grok Build 时常见)时不再另画一格;
+两个以上产品都有用量才分列,0% 的产品不显示。`prepaidBalance.val` 是美分,大于 0 才显示成美元余额。
+`onDemandCap.val > 0` 才加「按量」行。没有周池百分比时,才用旧的 `monthlyLimit` /
+`used`(同样是美分)。
+
+**不刷新、不写回** `auth.json`。JWT 已过期或 401/403 只提示运行一次 `grok`。
+没有登录态不发网络。套餐名接口失败不影响已经拿到的额度数字。
 
 ### 代理(踩过的坑)
 

@@ -12,6 +12,7 @@ pub mod codex;
 pub mod cursor;
 pub mod custom;
 pub mod dsh;
+pub mod grok;
 pub mod jsonl_util;
 pub mod opencode;
 pub mod pi;
@@ -92,6 +93,7 @@ pub fn all_providers() -> Vec<Box<dyn AgentProvider>> {
         Box::new(opencode::OpencodeProvider),
         Box::new(pi::PiProvider),
         Box::new(cursor::CursorProvider),
+        Box::new(grok::GrokProvider),
     ]
 }
 

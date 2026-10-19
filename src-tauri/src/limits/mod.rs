@@ -19,6 +19,7 @@
 pub mod codex;
 pub mod credential;
 pub mod cursor;
+pub mod grok;
 pub mod http;
 pub mod deepseek;
 pub mod qwen;
@@ -170,6 +171,17 @@ pub fn resolve_accounts(settings: &crate::settings::Settings) -> Vec<AccountPlan
             builtin: true,
         });
     }
+    if enabled("grok") {
+        out.push(AccountPlan {
+            account: crate::settings::LimitAccount {
+                id: "grok".into(),
+                provider: "grok".into(),
+                label: "Grok".into(),
+                ..Default::default()
+            },
+            builtin: true,
+        });
+    }
     if enabled("deepseek") {
         out.push(AccountPlan {
             account: crate::settings::LimitAccount {
@@ -236,6 +248,7 @@ pub fn fetch_account(plan: &AccountPlan) -> ProviderLimits {
     let mut got = match acc.provider.as_str() {
         "cursor" => fetch_cursor(acc),
         "codex" => fetch_codex(acc),
+        "grok" => fetch_grok(acc),
         "deepseek" => fetch_deepseek(acc),
         "qwen" => fetch_qwen(acc),
         "stepfun" => fetch_stepfun(acc),
@@ -269,6 +282,13 @@ fn fetch_codex(acc: &crate::settings::LimitAccount) -> ProviderLimits {
     match acc.home.as_deref() {
         None => codex::fetch(),
         Some(home) => codex::fetch_from_home(std::path::Path::new(home)),
+    }
+}
+
+fn fetch_grok(acc: &crate::settings::LimitAccount) -> ProviderLimits {
+    match acc.home.as_deref() {
+        None => grok::fetch(),
+        Some(home) => grok::fetch_from_home(std::path::Path::new(home)),
     }
 }
 
@@ -435,7 +455,7 @@ fn combine_stepfun(mut balance: ProviderLimits, plan: ProviderLimits) -> Provide
 
 /// 内置账号的 id。额外账号不能占用,否则列表里会出现两条同一个 id。
 pub fn is_builtin_account_id(id: &str) -> bool {
-    matches!(id, "cursor" | "codex" | "deepseek" | "qwen" | "stepfun")
+    matches!(id, "cursor" | "codex" | "grok" | "deepseek" | "qwen" | "stepfun")
 }
 
 /// 删账号时要一并清掉的凭据。只含程序生成的 `limit.*`,不动内置条目。
@@ -490,6 +510,7 @@ pub fn prepare_account(
         account.label = match account.provider.as_str() {
             "cursor" => "Cursor".into(),
             "codex" => "Codex CLI".into(),
+            "grok" => "Grok".into(),
             "deepseek" => "DeepSeek".into(),
             "qwen" => "Qwen".into(),
             "stepfun" => "StepFun".into(),
@@ -514,7 +535,7 @@ pub fn prepare_account(
     let mut writes = Vec::new();
 
     match account.provider.as_str() {
-        "cursor" | "codex" => {
+        "cursor" | "codex" | "grok" => {
             account.secret_ref = None;
             account.cookie_ref = None;
         }

@@ -26,10 +26,13 @@ thiserror = "2"
 ureq = { version = "2.12", features = ["json"] }
 base64 = "0.22"
 
-# 凭据库按平台收窄:非 Windows 的 keyring 会拖进整套 zbus 依赖树,
-# 而那边本来就走"请用环境变量"分支,不需要它。
+# 凭据库按平台收窄。Linux 的 keyring 会拖进整套 zbus,那边继续走环境变量。
+# macOS 只用系统钥匙串(v1 里的 apple-native);zbus 依赖本身被 crate 限制在 Linux。
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "4", default-features = false, features = ["v1", "windows-native-keyring-store"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "4", default-features = false, features = ["v1"] }
 
 [profile.release]
 strip = true

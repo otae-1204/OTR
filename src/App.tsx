@@ -28,7 +28,7 @@ import { Settings } from "./components/Settings";
 import { EmptyState, Skeleton } from "./components/Skeleton";
 import { StatCard } from "./components/StatCard";
 import { ThemeMascot } from "./components/ThemeMascot";
-import { WindowControls } from "./components/WindowControls";
+import { isMacPlatform, WindowControls } from "./components/WindowControls";
 import { TrendChart } from "./components/TrendChart";
 import { HourProfile } from "./components/HourProfile";
 import {
@@ -327,7 +327,9 @@ export default function App() {
         className="fixed top-0 z-50 flex h-16 w-full border-b border-border/50 bg-background text-foreground"
       >
         <div
-          className="flex h-full min-w-0 flex-1 items-center justify-between px-6"
+          className={`flex h-full min-w-0 flex-1 items-center justify-between pr-6 ${
+            isMacPlatform() ? "pl-[5.25rem]" : "pl-6"
+          }`}
           onMouseDown={(e) => {
             if (e.buttons !== 1) return;
             const target = e.target;
@@ -404,7 +406,7 @@ export default function App() {
             </button>
           </div>
         </div>
-        <WindowControls />
+        {isMacPlatform() ? null : <WindowControls />}
       </header>
 
       <main data-theme-part="main" className="relative z-10 min-h-screen">

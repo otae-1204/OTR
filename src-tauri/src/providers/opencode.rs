@@ -15,7 +15,8 @@ const AGENT: &str = "opencode";
 
 /// 解析语义版本;变更时启动会全量重建。
 /// v1: session 表绝对值 diff,基线随重建一起重算。
-pub const PARSER_VERSION: u64 = 1;
+/// v2: reasoning 不在 output 里,合计时要加进去,否则官方总额会少这一栏。
+pub const PARSER_VERSION: u64 = 2;
 
 impl AgentProvider for OpencodeProvider {
     fn id(&self) -> &str {
@@ -84,7 +85,7 @@ impl OcEntry {
     }
 
     fn is_zero(&self) -> bool {
-        self.input + self.output + self.cache_read + self.cache_write == 0
+        self.input + self.output + self.cache_read + self.cache_write + self.reasoning == 0
             && self.cost.abs() < f64::EPSILON
     }
 }
@@ -171,7 +172,9 @@ fn scan_sessions(st: &mut OcState) -> Result<Vec<UsageRecord>> {
             ts,
             touch_ts: updated.filter(|t| *t > 0),
             input_tokens: delta.input,
-            output_tokens: delta.output,
+            // OpenCode 官方合计是 input + output + reasoning + 两种缓存。
+            // 本应用的合计不另加 reasoning,所以把它并进 output,单列仍保留。
+            output_tokens: delta.output.saturating_add(delta.reasoning),
             cache_read_tokens: delta.cache_read,
             cache_write_tokens: delta.cache_write,
             reasoning_tokens: delta.reasoning,
@@ -183,6 +186,37 @@ fn scan_sessions(st: &mut OcState) -> Result<Vec<UsageRecord>> {
     // 会话被删除时同步清掉基准
     st.sessions.retain(|k, _| alive.contains(k));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reasoning_counts_once_in_the_official_total() {
+        let delta = OcEntry {
+            input: 10,
+            output: 4,
+            reasoning: 6,
+            cache_read: 2,
+            cache_write: 1,
+            ..Default::default()
+        }
+        .delta_from(&OcEntry::default());
+        assert!(!delta.is_zero());
+        let output = delta.output.saturating_add(delta.reasoning);
+        let total = delta.input + output + delta.cache_read + delta.cache_write;
+        assert_eq!(total, 23, "官方合计含 reasoning,且不能再加一次");
+
+        let only_reasoning = OcEntry {
+            reasoning: 3,
+            ..Default::default()
+        };
+        assert!(
+            !only_reasoning.delta_from(&OcEntry::default()).is_zero(),
+            "只有 reasoning 的增量不能被当成空快照丢掉"
+        );
+    }
 }
 
 fn parse_model(model: Option<&str>) -> (Option<String>, Option<String>) {

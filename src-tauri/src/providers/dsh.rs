@@ -13,7 +13,9 @@ use crate::providers::{AgentProvider, ScanCtx};
 pub struct DshProvider;
 
 const AGENT: &str = "dsh";
-pub const PARSER_VERSION: u64 = 4;
+/// v5: 没有 costUsage.byModel 的会话(常见于 teammate 子会话)从
+/// modelSelection.lastUsed 补上模型,否则会话明细的模型列是空的。
+pub const PARSER_VERSION: u64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1371,6 +1373,85 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// 子会话经常没有 costUsage,用量在 tokenUsage.totals,模型在 modelSelection.lastUsed。
+    /// 以前这条退路不写模型,会话明细的模型列就是空的。
+    #[test]
+    fn scan_projcache_fills_model_from_selection_without_cost_usage() {
+        let root = temp_path("dir");
+        let dir = root.join("session_projcache").join("sessions");
+        fs::create_dir_all(&dir).unwrap();
+        let created = 1_780_000_000_000i64;
+        let with_last_used = serde_json::json!({
+            "version": 7,
+            "record": {
+                "identity": {"formatVersion": 4, "createdAt": created, "cwd": "/proj/x"},
+                "rows": {
+                    "title": {"ver": 1, "seq": 1, "val": "子会话"},
+                    "sessionListMetadata": {"ver": 1, "seq": 1, "val": {"lastPromptAt": created + 1000}},
+                    "tokenUsage": {"ver": 2, "seq": 1, "val": {"totals": {
+                        "uncachedInputTokens": 50, "outputTokens": 10,
+                        "cacheReadTokens": 4, "cacheWriteTokens": 1
+                    }}},
+                    "modelSelection": {"ver": 2, "seq": 1, "val": {
+                        "lastUsed": {"provider": "me", "model": "deepseek-v4.1-flash"},
+                        "pending": null
+                    }}
+                }
+            }
+        });
+        let policy_only = serde_json::json!({
+            "version": 7,
+            "record": {
+                "identity": {"formatVersion": 4, "createdAt": created, "cwd": "/proj/y"},
+                "rows": {
+                    "title": {"ver": 1, "seq": 1, "val": "只有策略"},
+                    "tokenUsage": {"ver": 2, "seq": 1, "val": {"totals": {
+                        "uncachedInputTokens": 8, "outputTokens": 2,
+                        "cacheReadTokens": 0, "cacheWriteTokens": 0
+                    }}},
+                    "subagentModelSelectionPolicy": {"ver": 1, "seq": 1, "val": [
+                        {"provider": "me", "model": "deepseek-v4-pro"}
+                    ]}
+                }
+            }
+        });
+        fs::write(
+            dir.join("session-child.json"),
+            serde_json::to_string(&with_last_used).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("session-policy.json"),
+            serde_json::to_string(&policy_only).unwrap(),
+        )
+        .unwrap();
+
+        let mut st = DshState::default();
+        let mut out = Vec::new();
+        super::scan_projcache(&mut st, &mut out, &root).unwrap();
+        assert_eq!(out.len(), 2, "两条没有 costUsage 的会话都要进明细: {out:?}");
+
+        let child = out
+            .iter()
+            .find(|r| r.session_id.as_deref() == Some("session-child"))
+            .expect("session-child");
+        assert_eq!(child.model.as_deref(), Some("deepseek-v4.1-flash"));
+        assert_eq!(child.provider.as_deref(), Some("me"));
+        assert_eq!(child.input_tokens, 50);
+        assert_eq!(child.output_tokens, 10);
+        assert_eq!(child.cache_read_tokens, 4);
+
+        let policy = out
+            .iter()
+            .find(|r| r.session_id.as_deref() == Some("session-policy"))
+            .expect("session-policy");
+        assert_eq!(policy.model.as_deref(), Some("deepseek-v4-pro"));
+        assert_eq!(policy.provider.as_deref(), Some("me"));
+        assert_eq!(policy.input_tokens, 8);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
     /// 老的单文件布局要作为兜底继续可读(实测仍有 3 个会话只存在于单文件)
     #[test]
     fn scan_projcache_falls_back_to_legacy_single_file() {
@@ -1498,6 +1579,39 @@ mod tests {
     }
 }
 
+fn nonempty_owned(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// projcache 没有 `costUsage.byModel` 时,模型名在 `modelSelection.lastUsed`。
+/// 子会话有时只有 `subagentModelSelectionPolicy`。pending 是还没开始用的选择,不算。
+fn model_from_selection(rows: &Value) -> (Option<String>, Option<String>) {
+    let last = rows
+        .get("modelSelection")
+        .map(row_val)
+        .and_then(|v| v.get("lastUsed"));
+    let mut model = nonempty_owned(last.and_then(|v| v.get("model")));
+    let mut provider = nonempty_owned(last.and_then(|v| v.get("provider")));
+    if model.is_none() {
+        if let Some(first) = rows
+            .get("subagentModelSelectionPolicy")
+            .map(row_val)
+            .and_then(|v| v.as_array())
+            .and_then(|items| items.first())
+        {
+            model = nonempty_owned(first.get("model"));
+            if provider.is_none() {
+                provider = nonempty_owned(first.get("provider"));
+            }
+        }
+    }
+    (model, provider)
+}
+
 /// 把一个会话的 projcache 记录(identity + rows)转成用量记录。
 /// 现行"按记录目录"与老"单文件"两种布局共用这段逻辑,区别只在怎么拿到 identity/rows。
 fn scan_projcache_session(
@@ -1547,7 +1661,9 @@ fn scan_projcache_session(
     let by_model = cost_usage.and_then(|c| c.get("byModel")).cloned();
     let mut used_by_model = false;
     if let Some(models) = by_model.as_ref().and_then(|v| v.as_object()) {
-        used_by_model = true;
+        if !models.is_empty() {
+            used_by_model = true;
+        }
         for (model, m) in models {
             let key = format!("{}|{}", sid, model);
             let cur = DshEntry::from_json(m);
@@ -1593,15 +1709,23 @@ fn scan_projcache_session(
                 cache_write: u64f(&totals, "cacheWriteTokens"),
                 ..Default::default()
             };
+            // 键不含模型:totals 是整段会话的累计,模型只是展示名。
+            // 把模型写进键的话,模型一变基线对不上,增量会把历史总量再加一遍。
             let key = format!("{}|", sid);
             let prev = st.sessions.get(&key).cloned().unwrap_or_default();
             let delta = cur.delta_from(&prev);
             if !delta.is_zero() {
+                // costUsage 没有按模型拆开时,token 仍在 totals 里,模型名在
+                // modelSelection.lastUsed(子会话经常是这种形状)。不补的话
+                // 会话明细的模型列是空的,用量却都在。
+                let (model, provider) = model_from_selection(rows);
                 out.push(UsageRecord {
                     agent: AGENT.into(),
                     session_id: Some(sid.to_string()),
                     project: cwd.clone(),
                     title: title.clone(),
+                    model,
+                    provider,
                     ts: created_at,
                     touch_ts: Some(touch_ts),
                     input_tokens: delta.input,

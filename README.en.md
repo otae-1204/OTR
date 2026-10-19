@@ -30,9 +30,10 @@ OTR (**O**tae's **T**oken **R**adar) is the radar for the token consumption of e
 | **Claude Code** | `~/.claude/projects/` (dedup by message.id + requestId) |
 | **Codex CLI** | `~/.codex/sessions/` (per-event last_token_usage) |
 | **ZCode** | `~/.zcode/cli/` (model-io + transcript, dedup by requestId) |
-| **OpenCode** | `~/.local/share/opencode/opencode.db` (SQLite read-only) |
+| **OpenCode** | `~/.local/share/opencode/opencode.db`, or `~/Library/Application Support/opencode/` on macOS (SQLite read-only) |
 | **Pi** | `~/.pi/agent/sessions/` (built-in USD cost) |
 | **Cursor** | Local Cursor login + dashboard usage API (local `tokenCount` is always 0 on Cursor 3.x) |
+| **Grok Build** | `$GROK_HOME/sessions/` (default `~/.grok/sessions/`). Completed turns only; cache is already inside input, and fork copies dedupe by prompt id |
 
 Custom agents are supported: point any of the three built-in parsers (Claude Code / Codex / ZCode layout) at an arbitrary data directory from the settings page.
 
@@ -40,7 +41,7 @@ Custom agents are supported: point any of the three built-in parsers (Claude Cod
 
 - Tray-resident with live "today" totals; incremental refresh on file changes; tray action to restore the default theme
 - Dashboard: today / 7d / 30d / month / custom range, per-agent view, hourly/day/month adaptive trend granularity
-- Quotas: subscription and balance for Cursor, Codex, DeepSeek, Qwen, and StepFun
+- Quotas: subscription and balance for Cursor, Codex, Grok, DeepSeek, Qwen, and StepFun
 - Themes: switch built-in and third-party themes in Settings. A single-mode theme temporarily locks light or dark and restores your preference when you switch back. Examples live in [`examples/themes`](examples/themes)
 - Model share donut with click-through details and cache hit-rate
 - Cost pricing: one-click fetch from models.dev, manual editing, exchange rate
@@ -51,10 +52,12 @@ Custom agents are supported: point any of the three built-in parsers (Claude Cod
 ```bash
 npm install
 npm run tauri dev
-npm run tauri build    # NSIS installer
-npm run build:portable # Portable ZIP
-npm run build:release  # Both NSIS and portable packages
+npm run tauri build    # Windows: NSIS installer. macOS: .app and .dmg
+npm run build:portable # Windows portable ZIP
+npm run build:release  # Windows: NSIS and portable packages
 ```
+
+Node 18+, Rust 1.77+. Windows needs WebView2. macOS 10.15+ uses the system WebKit; run the build on a Mac.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design doc.
 

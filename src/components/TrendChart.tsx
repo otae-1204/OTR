@@ -18,7 +18,7 @@ import { alignPreviousBucket, type PreviousRange } from "../lib/range";
 import { EmptyState, Skeleton } from "./Skeleton";
 import { TrendingUpIcon } from "./icons";
 
-const KNOWN_ORDER = ["dsh", "claude-code", "codex", "zcode", "opencode", "pi"];
+const KNOWN_ORDER = ["dsh", "claude-code", "codex", "zcode", "opencode", "pi", "cursor", "grok"];
 const MAX_DAYS = 366;
 /** 选中模型时合成一条,避开和某个 Agent id 撞车 */
 const MODEL_KEY = "__model";
@@ -53,6 +53,7 @@ function TrendTooltip({
   crossYear,
   showPrev,
   axisYear,
+  bars,
 }: any) {
   if (!active || !payload || payload.length === 0) return null;
   const series = payload.filter((p: any) => p.dataKey !== PREV_KEY);
@@ -95,7 +96,11 @@ function TrendTooltip({
         ))}
         {prevRow ? (
           <div className="flex items-center gap-2">
-            <span className="h-0 w-2 shrink-0 border-t border-dashed border-muted-foreground" />
+            {bars ? (
+              <span className="h-2 w-2 shrink-0 rounded-sm bg-muted-foreground/45" />
+            ) : (
+              <span className="h-0 w-2 shrink-0 border-t border-dashed border-muted-foreground" />
+            )}
             <span className="text-muted-foreground">
               上一周期 · {formatPrevBucket(prevDate, granularity, axisYear)}
             </span>
@@ -202,7 +207,8 @@ interface TrendChartProps {
   modelColor?: string | null;
 }
 
-/** 消耗趋势:面积或柱状,不堆叠。点中模型后只画这一条。
+/** 消耗趋势:面积各自独立;柱状在多个 Agent 时堆成一根,避免柱体被挤成细线。
+ *  点中模型后只画这一条。上一周期跟随当前图形(面积时虚线,柱状时半透明柱)。
  *  刻度随范围自适应(≤2天按小时 / ≤62天按天 / 更长按月);
  *  选「全部」时 X 轴从该筛选最早记录拉到今天 */
 export function TrendChart({
@@ -391,6 +397,10 @@ export function TrendChart({
   const granularityLabel =
     granularity === "hour" ? "按小时" : granularity === "month" ? "按月" : "按天";
   const tickInterval = pickTickInterval(buckets.length);
+  /** 按小时的刻度文字更长,固定间隔会叠在一起;交给 recharts 按文字宽度抽稀 */
+  const hourAxis = granularity === "hour";
+  /** 两个以上的 Agent 并排画柱时,每个时间桶会被均分,柱会细到看不清 */
+  const stackBars = bars && agentIds.length > 1;
 
   return (
     <section
@@ -451,7 +461,9 @@ export function TrendChart({
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart
                 data={data}
-                margin={{ top: 10, right: 8, left: 0, bottom: 0 }}
+                margin={{ top: 10, right: 8, left: 0, bottom: hourAxis ? 4 : 0 }}
+                barGap={2}
+                barCategoryGap={stackBars ? "22%" : "16%"}
               >
                 <defs>
                   {agentIds.map((id) => (
@@ -487,8 +499,9 @@ export function TrendChart({
                   axisLine={false}
                   tickLine={false}
                   dy={8}
-                  interval={tickInterval}
-                  minTickGap={16}
+                  padding={{ left: 8, right: 8 }}
+                  interval={hourAxis ? "equidistantPreserveStart" : tickInterval}
+                  minTickGap={hourAxis ? 8 : 16}
                   tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
                   tickFormatter={fmtTick}
                 />
@@ -506,19 +519,39 @@ export function TrendChart({
                       crossYear={crossYear}
                       showPrev={showPrev}
                       axisYear={to.slice(0, 4)}
+                      bars={bars}
                     />
                   }
                   wrapperStyle={{ zIndex: 50, pointerEvents: "none" }}
                 />
-                {agentIds.map((id) =>
+                {showPrev && bars ? (
+                  <Bar
+                    dataKey={PREV_KEY}
+                    name="上一周期"
+                    fill="hsl(var(--muted-foreground))"
+                    fillOpacity={0.28}
+                    stroke="hsl(var(--muted-foreground))"
+                    strokeDasharray="3 2"
+                    strokeWidth={1}
+                    maxBarSize={22}
+                    radius={[3, 3, 0, 0]}
+                    legendType="none"
+                  />
+                ) : null}
+                {agentIds.map((id, index) =>
                   bars ? (
                     <Bar
                       key={id}
                       dataKey={id}
                       name={seriesName(id)}
                       fill={seriesColor(id)}
-                      maxBarSize={28}
-                      radius={[3, 3, 0, 0]}
+                      stackId={stackBars ? "agents" : undefined}
+                      maxBarSize={stackBars ? 36 : 28}
+                      radius={
+                        !stackBars || index === agentIds.length - 1
+                          ? [3, 3, 0, 0]
+                          : [0, 0, 0, 0]
+                      }
                     />
                   ) : (
                     <Area
@@ -532,7 +565,7 @@ export function TrendChart({
                     />
                   ),
                 )}
-                {showPrev ? (
+                {showPrev && !bars ? (
                   <Line
                     type="monotone"
                     dataKey={PREV_KEY}
@@ -566,7 +599,11 @@ export function TrendChart({
             ))}
             {showPrev ? (
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <span className="inline-block w-3.5 border-t border-dashed border-muted-foreground" />
+                {bars ? (
+                  <span className="inline-block h-2 w-2.5 rounded-sm bg-muted-foreground/45" />
+                ) : (
+                  <span className="inline-block w-3.5 border-t border-dashed border-muted-foreground" />
+                )}
                 上一周期
               </span>
             ) : null}

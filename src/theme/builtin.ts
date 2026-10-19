@@ -41,6 +41,7 @@ const OTR_COMMON: ThemeTokens = {
       opencode: "#06b6d4",
       pi: "#ec4899",
       cursor: "#A3A3A3",
+      grok: "#6366f1",
     },
     agentFallback: [
       "#ec4899",

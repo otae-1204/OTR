@@ -1,4 +1,4 @@
-//! 凭据存储:优先系统凭据库(keyring → Windows 凭据管理器 / DPAPI),回退环境变量。
+//! 凭据存储:优先系统凭据库(keyring → Windows 凭据管理器 / macOS 钥匙串),回退环境变量。
 //!
 //! **命令永不返回密钥值**:对外只暴露"是否存在"(见 `list_credentials`)。
 //! 密钥一旦能从某个 Tauri 命令读出来,它就会出现在前端内存、开发者工具和任何
@@ -8,7 +8,8 @@
 //! 大约 1280 个字符就写不进去(百炼控制台 Cookie 经常更长)。超长的拆成多条
 //! `名字`、`名字#1`、`名字#2`…,读的时候再拼回去。短密钥仍然只占原来那一条。
 //!
-//! 非 Windows 不引入 keyring(Linux 会拖进整套 zbus 依赖树),走"请用环境变量"分支。
+//! Linux 不引入 keyring(会拖进整套 zbus 依赖树),走"请用环境变量"分支。
+//! macOS 与 Windows 一样写系统凭据库。
 
 /// keyring 里的 service 名
 pub const SERVICE: &str = "com.otae.radar";
@@ -125,7 +126,7 @@ fn part_name(name: &str, index: usize) -> String {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod store {
     use super::{part_name, split_secret, MAX_CHUNKS, SERVICE};
 
@@ -200,7 +201,7 @@ mod store {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 mod store {
     pub fn set(_name: &str, _secret: &str) -> std::result::Result<(), String> {
         Err("当前平台请用环境变量提供凭据".into())
@@ -338,7 +339,7 @@ mod tests {
     /// 设空值等于删除,不会把空串写进凭据库
     #[test]
     fn setting_an_empty_secret_deletes_instead() {
-        // 非 Windows 下 delete 返回 Err(平台提示);Windows 下是幂等成功。
+        // Linux 下 delete 返回 Err(平台提示);Windows / macOS 下是幂等成功。
         // 两种都不该把空串写进去。
         let _ = set("OTR_TEST_NEVER_WRITTEN", "");
         assert!(!exists("OTR_TEST_NEVER_WRITTEN"));

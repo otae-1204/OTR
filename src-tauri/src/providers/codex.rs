@@ -13,7 +13,8 @@ use crate::providers::{AgentProvider, ScanCtx};
 pub struct CodexProvider;
 
 const AGENT: &str = "codex";
-pub const PARSER_VERSION: u64 = 2;
+/// v3: 累计值没动时不再把重复的 last_token_usage 再记一笔。
+pub const PARSER_VERSION: u64 = 3;
 
 impl AgentProvider for CodexProvider {
     fn id(&self) -> &str {
@@ -265,6 +266,12 @@ fn scan_file(
                 }
                 let last_parts = last.map(usage_parts).unwrap_or_default();
                 let total_parts = total.map(usage_parts).unwrap_or_default();
+
+                // ccusage 只在累计值前进时才采用 last。限流重发会把同一份
+                // last 和同一份 total 再写一遍;累计没动却再记 last,就是重计。
+                if total.is_some() && parts_sum(prev_total) > 0 && total_parts == prev_total {
+                    continue;
+                }
 
                 // 优先用 last:它是这次请求的真实用量。
                 // 但 last 偶尔缺失/归零而 total 还在涨,那一次调用就会无声消失 ——
@@ -643,6 +650,25 @@ mod tests {
             "last 缺失时必须用 total 的增量兜底,而不是丢掉这一次"
         );
         assert_eq!(records[1].output_tokens, 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// 同一份 last 配上没变的 total 是重发,不能再记一次。
+    #[test]
+    fn repeated_token_count_with_unchanged_total_is_not_counted_twice() {
+        let root = fixture_root();
+        let path =
+            root.join("rollout-2026-08-31T07-53-17-11111111-2222-3333-4444-555555555555.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        write_header(&mut file, "gpt-5.6-sol");
+        write_token_count_full(&mut file, "2026-08-31T07:53:20.000Z", (10, 1), (10, 1));
+        write_token_count_full(&mut file, "2026-08-31T07:53:21.000Z", (10, 1), (10, 1));
+        file.flush().unwrap();
+
+        let mut cursors = HashMap::new();
+        let records = scan(&root, &mut cursors, true);
+        assert_eq!(records.len(), 1, "累计没涨的重复事件不能再记一笔");
+        assert_eq!(records[0].input_tokens, 10);
         fs::remove_dir_all(root).unwrap();
     }
 

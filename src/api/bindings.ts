@@ -172,6 +172,7 @@ export interface CredentialView {
 export const LIMIT_PROVIDER_LABELS: Record<string, string> = {
   cursor: "Cursor",
   codex: "Codex CLI",
+  grok: "Grok",
   deepseek: "DeepSeek",
   qwen: "Qwen",
   stepfun: "StepFun",
@@ -181,13 +182,14 @@ export const LIMIT_PROVIDER_LABELS: Record<string, string> = {
 export const LIMIT_PROVIDER_MODE: Record<string, "home" | "key"> = {
   cursor: "home",
   codex: "home",
+  grok: "home",
   deepseek: "key",
   qwen: "key",
   stepfun: "key",
 };
 
 /** 已实测可用的来源;StepFun 是逆向接口,默认关闭 */
-export const DEFAULT_LIMIT_PROVIDERS = ["cursor", "codex", "deepseek", "qwen"];
+export const DEFAULT_LIMIT_PROVIDERS = ["cursor", "codex", "grok", "deepseek", "qwen"];
 
 export interface Settings {
   enabledAgents: string[];
@@ -228,6 +230,7 @@ export const AGENT_LABELS: Record<string, string> = {
   opencode: "OpenCode",
   pi: "Pi",
   cursor: "Cursor",
+  grok: "Grok Build",
 };
 
 /*

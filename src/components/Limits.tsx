@@ -195,7 +195,7 @@ function sortWindows(windows: QuotaWindow[]): QuotaWindow[] {
     .map((x) => x.w);
 }
 
-const PROVIDER_ORDER = ["cursor", "codex", "deepseek", "qwen", "stepfun"];
+const PROVIDER_ORDER = ["cursor", "codex", "grok", "deepseek", "qwen", "stepfun"];
 
 /**
  * 组内顺序:已配置在前,内置账号(id 与 provider 同名)在前,再按账号名。

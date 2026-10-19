@@ -81,74 +81,139 @@ pub fn env_proxies_with(get: impl Fn(&str) -> Option<String>) -> Vec<String> {
     out
 }
 
-/// 从 Windows 注册表读系统代理(`ProxyEnable` + `ProxyServer`)。
+/// 系统代理。Windows 读注册表,macOS 读 `scutil --proxy`,其它平台没有。
 ///
-/// 走 `reg query` 而不是加一个 winreg 依赖:只读两个值,不值得为它扩大依赖面。
-/// 非 Windows 直接返回空。
-///
-/// `CREATE_NO_WINDOW` 不能省。发布版是 `windows` 子系统(没有自己的控制台),
-/// 子进程 `reg.exe` 默认会新开一个控制台窗口。额度轮询每一轮、每一个账号的
-/// 每次请求都会查两次注册表,于是托盘常驻时任务栏上的窗口会不停地闪一下就关。
+/// 环境变量代理在 `proxies()` 里排在这前面。这里只补系统设置里开着的 HTTP/HTTPS 代理。
 pub fn system_proxies() -> Vec<String> {
-    #[cfg(not(windows))]
+    #[cfg(windows)]
+    {
+        windows_system_proxies()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_system_proxies()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         Vec::new()
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
+}
 
-        /// CreateProcess 的 `CREATE_NO_WINDOW`:控制台程序在后台跑,不弹窗口。
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
-        let query = |name: &str| -> Option<String> {
-            let out = std::process::Command::new("reg")
-                .args(["query", KEY, "/v", name])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output()
-                .ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let text = String::from_utf8_lossy(&out.stdout);
-            // 行形如 "    ProxyServer    REG_SZ    127.0.0.1:7897"
-            let line = text.lines().find(|l| l.contains(name))?;
-            let value = line.split_whitespace().last()?.trim().to_string();
-            if value.is_empty() {
-                None
-            } else {
-                Some(value)
-            }
-        };
-        if query("ProxyEnable").as_deref() != Some("0x1") {
-            return Vec::new();
-        }
-        let Some(server) = query("ProxyServer") else {
-            return Vec::new();
-        };
-        // ProxyServer 可能是 "host:port" 或 "http=host:port;https=host:port"
-        let mut out = Vec::new();
-        for part in server.split(';') {
-            let addr = match part.split_once('=') {
-                Some((scheme, rest)) if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") => rest,
-                Some(_) => continue, // socks= 之类 ureq 不认
-                None => part,
-            };
-            let addr = addr.trim();
-            if addr.is_empty() {
+/// `scutil --proxy` 的文本。HTTPEnable / HTTPSEnable 为 1 才采纳对应地址。
+/// SOCKS 和 PAC 不进列表:ureq 只认 HTTP 代理。
+#[cfg(any(target_os = "macos", test))]
+fn parse_scutil_proxy(text: &str) -> Vec<String> {
+    fn field(text: &str, key: &str) -> Option<String> {
+        for line in text.lines() {
+            let line = line.trim();
+            let Some((name, value)) = line.split_once(':') else {
                 continue;
-            }
-            let url = if addr.contains("://") {
-                addr.to_string()
-            } else {
-                format!("http://{addr}")
             };
-            if !out.contains(&url) {
-                out.push(url);
+            if name.trim() == key {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
             }
         }
-        out
+        None
     }
+    let mut out = Vec::new();
+    for (enable, host_key, port_key) in [
+        ("HTTPEnable", "HTTPProxy", "HTTPPort"),
+        ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
+    ] {
+        if field(text, enable).as_deref() != Some("1") {
+            continue;
+        }
+        let Some(host) = field(text, host_key) else {
+            continue;
+        };
+        if host.is_empty() || host == "0.0.0.0" {
+            continue;
+        }
+        let url = match field(text, port_key).as_deref() {
+            Some(port) if !port.is_empty() && port != "0" => format!("http://{host}:{port}"),
+            _ => format!("http://{host}"),
+        };
+        if !out.contains(&url) {
+            out.push(url);
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn macos_system_proxies() -> Vec<String> {
+    let Ok(out) = std::process::Command::new("scutil").arg("--proxy").output() else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    parse_scutil_proxy(&String::from_utf8_lossy(&out.stdout))
+}
+
+#[cfg(windows)]
+fn windows_system_proxies() -> Vec<String> {
+    use std::os::windows::process::CommandExt;
+
+    /// CreateProcess 的 `CREATE_NO_WINDOW`:控制台程序在后台跑,不弹窗口。
+    /// 发布版是 `windows` 子系统,子进程 `reg.exe` 默认会新开一个控制台窗口。
+    /// 额度轮询每一轮都会查注册表,不带这个标志任务栏上的窗口会不停地闪一下就关。
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+    let query = |name: &str| -> Option<String> {
+        let out = std::process::Command::new("reg")
+            .args(["query", KEY, "/v", name])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        // 行形如 "    ProxyServer    REG_SZ    127.0.0.1:7897"
+        let line = text.lines().find(|l| l.contains(name))?;
+        let value = line.split_whitespace().last()?.trim().to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    };
+    if query("ProxyEnable").as_deref() != Some("0x1") {
+        return Vec::new();
+    }
+    let Some(server) = query("ProxyServer") else {
+        return Vec::new();
+    };
+    // ProxyServer 可能是 "host:port" 或 "http=host:port;https=host:port"
+    let mut out = Vec::new();
+    for part in server.split(';') {
+        let addr = match part.split_once('=') {
+            Some((scheme, rest))
+                if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") =>
+            {
+                rest
+            }
+            Some(_) => continue, // socks= 之类 ureq 不认
+            None => part,
+        };
+        let addr = addr.trim();
+        if addr.is_empty() {
+            continue;
+        }
+        let url = if addr.contains("://") {
+            addr.to_string()
+        } else {
+            format!("http://{addr}")
+        };
+        if !out.contains(&url) {
+            out.push(url);
+        }
+    }
+    out
 }
 
 /// 要依次尝试的代理列表(环境变量优先)
@@ -300,6 +365,35 @@ mod tests {
             }
         });
         assert_eq!(got, vec!["http://127.0.0.1:8080".to_string()]);
+    }
+
+    /// macOS `scutil --proxy`:只收 Enable=1 的 HTTP/HTTPS,同一地址去重,SOCKS 忽略
+    #[test]
+    fn scutil_proxy_keeps_enabled_http_and_https() {
+        let text = r#"
+<dictionary> {
+  HTTPEnable : 1
+  HTTPPort : 7890
+  HTTPProxy : 127.0.0.1
+  HTTPSEnable : 1
+  HTTPSPort : 7890
+  HTTPSProxy : 127.0.0.1
+  SOCKSEnable : 1
+  SOCKSPort : 7891
+  SOCKSProxy : 127.0.0.1
+  ProxyAutoConfigEnable : 0
+}
+"#;
+        assert_eq!(
+            parse_scutil_proxy(text),
+            vec!["http://127.0.0.1:7890".to_string()]
+        );
+    }
+
+    #[test]
+    fn scutil_proxy_ignores_disabled_entries() {
+        let text = "HTTPEnable : 0\nHTTPProxy : 127.0.0.1\nHTTPPort : 7890\n";
+        assert!(parse_scutil_proxy(text).is_empty());
     }
 
     /// 直连永远是最后一档 —— 代理挂了不能把本来能通的家一起拖死

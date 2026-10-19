@@ -37,6 +37,7 @@ const KNOWN_AGENTS = [
   "opencode",
   "pi",
   "cursor",
+  "grok",
 ];
 const KIND_OPTIONS: { value: string; label: string }[] = [
   { value: "claude-code", label: "Claude Code 布局" },
@@ -111,6 +112,7 @@ function Toggle({
 const PROVIDER_LABELS: Record<string, string> = {
   cursor: "Cursor",
   codex: "Codex CLI",
+  grok: "Grok",
   deepseek: "DeepSeek",
   qwen: "Qwen",
   stepfun: "StepFun",
@@ -120,12 +122,13 @@ const PROVIDER_LABELS: Record<string, string> = {
 const PROVIDER_MODE: Record<string, "home" | "key"> = {
   cursor: "home",
   codex: "home",
+  grok: "home",
   deepseek: "key",
   qwen: "key",
   stepfun: "key",
 };
 
-const PROVIDER_ORDER = ["cursor", "codex", "deepseek", "qwen", "stepfun"] as const;
+const PROVIDER_ORDER = ["cursor", "codex", "grok", "deepseek", "qwen", "stepfun"] as const;
 
 const BUILTIN_API_KEY: Record<string, { name: string; placeholder: string }> = {
   deepseek: { name: "DEEPSEEK_API_KEY", placeholder: "更新 API Key" },
@@ -145,7 +148,7 @@ function newLimitAccountId(provider: string, existing: string[]): string {
 }
 
 function accountStatus(a: LimitAccount): string {
-  if (a.provider === "cursor" || a.provider === "codex") {
+  if (a.provider === "cursor" || a.provider === "codex" || a.provider === "grok") {
     if (a.builtin) return "内置 · 本机会话";
     return a.home?.trim() || "未选择目录";
   }

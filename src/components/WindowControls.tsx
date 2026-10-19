@@ -2,7 +2,15 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { MinusIcon, RestoreIcon, SquareIcon, XIcon } from "./icons";
 
-/** 无边框窗口的最小化 / 最大化 / 关闭。始终渲染,不依赖探测结果。 */
+/** macOS 用系统红绿灯,不画这组 Windows 按钮。 */
+export function isMacPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  const platform = nav.userAgentData?.platform ?? nav.platform ?? "";
+  return /mac/i.test(platform) || /Macintosh/.test(nav.userAgent);
+}
+
+/** 无边框窗口的最小化 / 最大化 / 关闭。macOS 不挂载,交给系统红绿灯。 */
 export function WindowControls() {
   const [maximized, setMaximized] = useState(false);
 
