@@ -1,5 +1,8 @@
 import dshPng from "../assets/agents/dsh.png";
 import zcodePng from "../assets/agents/zcode.png";
+import grokDark from "../assets/agents/grok-logomark-dark.svg";
+import grokLight from "../assets/agents/grok-logomark-light.svg";
+import { useTheme } from "../theme/ThemeProvider";
 import {
   ClaudeMarkIcon,
   CursorMarkIcon,
@@ -15,7 +18,7 @@ const IMAGE_ICONS: Record<string, string> = {
 };
 
 export function usesImageIcon(id: string): boolean {
-  return id in IMAGE_ICONS;
+  return id in IMAGE_ICONS || id === "grok";
 }
 
 interface AgentIconProps {
@@ -27,7 +30,18 @@ interface AgentIconProps {
 
 /** Agent 品牌图标:知名品牌用官方 path/资源,其余字母兜底 */
 export function AgentIcon({ id, color, className }: AgentIconProps) {
+  const { mode } = useTheme();
   const cls = className ?? "h-5 w-5";
+  if (id === "grok") {
+    return (
+      <img
+        src={mode === "dark" ? grokLight : grokDark}
+        alt="Grok"
+        draggable={false}
+        className={`h-full w-full object-contain p-0.5 ${className ?? ""}`}
+      />
+    );
+  }
   const img = IMAGE_ICONS[id];
   if (img) {
     return (
