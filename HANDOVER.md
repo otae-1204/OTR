@@ -10,7 +10,7 @@
 
 - 分支 `main`，工作区干净，已与 `origin/main` 同步。
 - `HEAD` = `d548013`（`feat: Grok Build 使用官方标志`）。
-- 版本号 **0.3.3**，写在 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`。安装包已在本地打出，**没有提交、没有推送、没有 tag**。
+- 版本号 **0.3.3**，写在 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`。安装包已在本地打出。代码已提交，**没有 tag**。
 - 0.3.3 比已发布的 0.3.2 多三件事：`d548013` 的 Grok 官方标志，StepFun / 千问的登录窗自动取 Cookie，以及 StepFun / Grok 的登录态自动续期。
 - GitHub Release [v0.3.2](https://github.com/otae-1204/OTR/releases/tag/v0.3.2) 的 tag 仍指向 `786afef`，不包含上面两件。用户明确说发版之前，不要自己打 tag。
 - 本地 `git describe` 若仍显示 `v0.3.1`，是 tag 没 fetch。远程 tag：`v0.3.0` → `8a882ec`，`v0.3.1` → `fe20499`，`v0.3.2` → `786afef`。
