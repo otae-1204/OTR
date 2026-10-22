@@ -21,6 +21,7 @@ pub mod credential;
 pub mod cursor;
 pub mod grok;
 pub mod http;
+pub mod login;
 pub mod deepseek;
 pub mod qwen;
 pub mod stepfun;

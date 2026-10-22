@@ -6,7 +6,8 @@
 //! ```
 //!
 //! 凭据在 `$GROK_HOME/auth.json`(缺省 `~/.grok/auth.json`),取 `key`。
-//! **只读不写**。过期或 401 只提示用户跑一次 `grok`,不刷新、不改这个文件。
+//! 访问令牌还有效时不碰这个文件。临近过期或已经过期时,用同一条里的
+//! `refresh_token` 向 OIDC 换新,成功后才写回;刷新失败保留原文件。
 //! 没有登录态时不发网络。
 //!
 //! `creditUsagePercent` 是已用百分比,不是剩余率。缺字段保持不显示,不写成 0%。
@@ -21,8 +22,9 @@ pub const BILLING_URL: &str = "https://cli-chat-proxy.grok.com/v1/billing?format
 pub const USER_URL: &str = "https://cli-chat-proxy.grok.com/v1/user?include=subscription";
 
 const MISSING_LOGIN: &str = "未找到 Grok 登录态。运行一次 grok 完成登录即可。";
-const EXPIRED: &str = "登录态已过期,请运行一次 grok 刷新(OTR 不会改写它的凭据)";
-const REJECTED: &str = "登录态失效,请运行一次 grok 刷新(OTR 不会改写它的凭据)";
+const EXPIRED: &str = "登录态已过期,自动续期没有成功,请运行一次 grok 刷新";
+const REJECTED: &str = "登录态失效,自动续期没有成功,请运行一次 grok 刷新";
+const REFRESH_MARGIN_MS: i64 = 5 * 60 * 1000;
 
 pub fn auth_path() -> PathBuf {
     crate::paths::grok_home().join("auth.json")
@@ -46,12 +48,15 @@ fn fetch_from_file(path: &Path) -> ProviderLimits {
             out.error = Some("登录态文件无法读取。运行一次 grok 重新登录即可。".into());
             out
         }
-        TokenLoad::Expired => {
-            let mut out = ProviderLimits::new("grok", "Grok", "grok");
-            out.configured = true;
-            out.error = Some(EXPIRED.into());
-            out
-        }
+        TokenLoad::Expired(session) => match refresh_session(path, &session) {
+            Some(token) => fetch_with_token(&token),
+            None => {
+                let mut out = ProviderLimits::new("grok", "Grok", "grok");
+                out.configured = true;
+                out.error = Some(EXPIRED.into());
+                out
+            }
+        },
         TokenLoad::Ready(token) => fetch_with_token(&token),
     }
 }
@@ -92,10 +97,17 @@ fn fetch_with_token(token: &str) -> ProviderLimits {
     assemble(&billing, tier)
 }
 
+struct RefreshSession {
+    account: String,
+    refresh_token: String,
+    client_id: String,
+    issuer: String,
+}
+
 enum TokenLoad {
     Missing,
     Unreadable,
-    Expired,
+    Expired(RefreshSession),
     Ready(String),
 }
 
@@ -109,22 +121,70 @@ fn load_access_token(path: &Path) -> TokenLoad {
         Ok(value) => value,
         Err(_) => return TokenLoad::Unreadable,
     };
-    let Some(token) = select_access_token(&value) else {
+    let Some((account, entry)) = selected_entry(&value) else {
         return TokenLoad::Missing;
     };
-    if access_token_expired(&token) {
-        TokenLoad::Expired
+    let Some(token) = entry
+        .get("key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    else {
+        return TokenLoad::Missing;
+    };
+    if access_token_due(token) {
+        match refresh_session_from(account.clone(), &entry) {
+            Some(session) => TokenLoad::Expired(session),
+            None => TokenLoad::Expired(RefreshSession {
+                account,
+                refresh_token: String::new(),
+                client_id: String::new(),
+                issuer: String::new(),
+            }),
+        }
     } else {
-        TokenLoad::Ready(token)
+        TokenLoad::Ready(token.to_string())
     }
+}
+
+fn refresh_session_from(account: String, entry: &Value) -> Option<RefreshSession> {
+    let refresh_token = text_field(entry, "refresh_token")?;
+    let client_id = text_field(entry, "oidc_client_id")?;
+    let issuer = text_field(entry, "oidc_issuer")?;
+    Some(RefreshSession {
+        account,
+        refresh_token,
+        client_id,
+        issuer,
+    })
+}
+
+fn text_field(entry: &Value, name: &str) -> Option<String> {
+    entry
+        .get(name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// 一个文件里可以有多条登录。取带 `key`、过期时刻最晚的那条。
 pub fn select_access_token(root: &Value) -> Option<String> {
+    selected_entry(root).and_then(|(_, entry)| {
+        entry
+            .get("key")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn selected_entry(root: &Value) -> Option<(String, Value)> {
     let entries = root.as_object()?;
-    let mut best: Option<(i64, String)> = None;
-    let mut fallback: Option<String> = None;
-    for entry in entries.values() {
+    let mut best: Option<(i64, String, Value)> = None;
+    let mut fallback: Option<(String, Value)> = None;
+    for (account, entry) in entries {
         let Some(key) = entry
             .get("key")
             .and_then(Value::as_str)
@@ -140,16 +200,24 @@ pub fn select_access_token(root: &Value) -> Option<String> {
             .or_else(|| jwt_exp_ms(key));
         match exp {
             Some(exp) => {
-                let replace = best.as_ref().map(|(prev, _)| exp >= *prev).unwrap_or(true);
+                let replace = best.as_ref().map(|(prev, _, _)| exp >= *prev).unwrap_or(true);
                 if replace {
-                    best = Some((exp, key.to_string()));
+                    best = Some((exp, account.clone(), entry.clone()));
                 }
             }
-            None if fallback.is_none() => fallback = Some(key.to_string()),
+            None if fallback.is_none() => fallback = Some((account.clone(), entry.clone())),
             None => {}
         }
     }
-    best.map(|(_, key)| key).or(fallback)
+    best.map(|(_, account, entry)| (account, entry))
+        .or(fallback)
+}
+
+fn access_token_due(token: &str) -> bool {
+    match jwt_exp_ms(token) {
+        Some(exp) => exp <= crate::model::now_ms().saturating_add(REFRESH_MARGIN_MS),
+        None => false,
+    }
 }
 
 fn access_token_expired(token: &str) -> bool {
@@ -185,6 +253,131 @@ fn b64url_decode(input: &str) -> Option<Vec<u8>> {
         }
         base64::engine::general_purpose::URL_SAFE.decode(padded).ok()
     })
+}
+
+fn refresh_session(path: &Path, session: &RefreshSession) -> Option<String> {
+    if session.refresh_token.is_empty() || session.client_id.is_empty() || session.issuer.is_empty() {
+        return None;
+    }
+    let endpoint = discover_token_endpoint(&session.issuer)?;
+    let body = super::http::fetch_json(|agent| {
+        agent
+            .post(&endpoint)
+            .set("Accept", "application/json")
+            .set("Content-Type", "application/x-www-form-urlencoded")
+            .send_string(&refresh_form(&session.client_id, &session.refresh_token))
+    })
+    .ok()?;
+    let access = body.get("access_token").and_then(Value::as_str)?.trim();
+    if access.is_empty() {
+        return None;
+    }
+    let refresh = body
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .unwrap_or(session.refresh_token.as_str());
+    let expires_at = body
+        .get("expires_in")
+        .and_then(Value::as_i64)
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| {
+            chrono::Utc::now()
+                .checked_add_signed(chrono::Duration::seconds(seconds))
+                .map(|when| when.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        })
+        .flatten();
+    if !store_refreshed_session(path, &session.account, access, refresh, expires_at.as_deref()) {
+        return None;
+    }
+    Some(access.to_string())
+}
+
+fn discover_token_endpoint(issuer: &str) -> Option<String> {
+    let issuer = issuer.trim().trim_end_matches('/');
+    if !(issuer.starts_with("https://") || issuer.starts_with("http://")) {
+        return None;
+    }
+    let url = format!("{issuer}/.well-known/openid-configuration");
+    let doc = super::http::fetch_json(|agent| agent.get(&url).call()).ok()?;
+    let endpoint = doc.get("token_endpoint").and_then(Value::as_str)?.trim();
+    if endpoint.starts_with("https://") || endpoint.starts_with("http://") {
+        Some(endpoint.to_string())
+    } else {
+        None
+    }
+}
+
+fn refresh_form(client_id: &str, refresh_token: &str) -> String {
+    form_pairs(&[
+        ("grant_type", "refresh_token"),
+        ("client_id", client_id),
+        ("refresh_token", refresh_token),
+    ])
+}
+
+fn form_pairs(pairs: &[(&str, &str)]) -> String {
+    pairs
+        .iter()
+        .map(|(name, value)| format!("{}={}", form_escape(name), form_escape(value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn form_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn store_refreshed_session(
+    path: &Path,
+    account: &str,
+    access_token: &str,
+    refresh_token: &str,
+    expires_at: Option<&str>,
+) -> bool {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(_) => return false,
+    };
+    let mut root: Value = match serde_json::from_str(&text) {
+        Ok(root) => root,
+        Err(_) => return false,
+    };
+    let Some(entry) = root.get_mut(account).filter(|entry| entry.is_object()) else {
+        return false;
+    };
+    if let Some(object) = entry.as_object_mut() {
+        object.insert("key".into(), Value::String(access_token.to_string()));
+        object.insert("refresh_token".into(), Value::String(refresh_token.to_string()));
+        if let Some(expires_at) = expires_at {
+            object.insert("expires_at".into(), Value::String(expires_at.to_string()));
+        }
+    }
+    // auth.json 原本是紧凑 JSON。续期不要把它重排成另一种格式。
+    let mut bytes = match serde_json::to_vec(&root) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    bytes.push(10);
+    let tmp = path.with_extension("json.refreshing");
+    if std::fs::write(&tmp, &bytes).is_err() {
+        return false;
+    }
+    if std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    true
 }
 
 pub fn subscription_tier(body: &Value) -> Option<String> {
@@ -531,5 +724,52 @@ mod tests {
         assert!(access_token_expired(&expired));
         let fresh = jwt(4_000_000_000);
         assert!(!access_token_expired(&fresh));
+    }
+
+    #[test]
+    fn a_token_inside_the_refresh_margin_is_due() {
+        let soon = crate::model::now_ms() / 1000 + 60;
+        assert!(access_token_due(&jwt(soon)));
+        let later = crate::model::now_ms() / 1000 + 60 * 60;
+        assert!(!access_token_due(&jwt(later)));
+    }
+
+    #[test]
+    fn refresh_form_keeps_the_three_oauth_fields() {
+        let form = refresh_form("client id", "a+b/c");
+        assert!(form.starts_with("grant_type=refresh_token&"));
+        assert!(form.contains("client_id=client%20id"));
+        assert!(form.contains("refresh_token=a%2Bb%2Fc"));
+    }
+
+    #[test]
+    fn refreshed_fields_replace_only_the_selected_account() {
+        let dir = std::env::temp_dir().join(format!(
+            "otr-grok-refresh-{}-{}",
+            std::process::id(),
+            crate::model::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth.json");
+        std::fs::write(
+            &path,
+            r#"{"one":{"key":"old","refresh_token":"old-refresh","email":"keep"},"two":{"key":"untouched"}}"#,
+        )
+        .unwrap();
+        assert!(store_refreshed_session(
+            &path,
+            "one",
+            "new-access",
+            "new-refresh",
+            Some("2027-01-01T00:00:00.000Z")
+        ));
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["one"]["key"], "new-access");
+        assert_eq!(saved["one"]["refresh_token"], "new-refresh");
+        assert_eq!(saved["one"]["expires_at"], "2027-01-01T00:00:00.000Z");
+        assert_eq!(saved["one"]["email"], "keep");
+        assert_eq!(saved["two"]["key"], "untouched");
+        assert!(!dir.join("auth.json.refreshing").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

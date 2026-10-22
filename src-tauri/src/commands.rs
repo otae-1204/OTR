@@ -578,6 +578,23 @@ pub fn get_themes_dir(app: AppHandle) -> std::result::Result<String, String> {
     Ok(themes_dir_of(&state)?.to_string_lossy().to_string())
 }
 
+/// 打开登录窗,登录完成后把合格的 Cookie 写进指定凭据条目。
+///
+/// 返回值只有一句状态。Cookie 和 JWT 不返回、不写日志。窗口关掉或超时都不会改已有凭据。
+/// 必须是 async:建 WebView 不能堵在事件循环那条线程上,等登录也不能堵在上面。
+#[tauri::command]
+pub async fn capture_console_cookie(
+    app: AppHandle,
+    provider: String,
+    credential_name: String,
+) -> std::result::Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::limits::login::capture(&app, &provider, &credential_name)
+    })
+    .await
+    .map_err(|e| format!("登录获取中断:{e}"))?
+}
+
 /// 需要手填 Cookie 的套餐(Qwen / StepFun)教程窗口。只在用户点「教程」时创建。
 ///
 /// 必须是 async。同步命令跑在事件循环那条线程上,而建 WebView 又要等事件循环

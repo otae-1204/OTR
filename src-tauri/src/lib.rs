@@ -212,6 +212,7 @@ pub fn run() {
             commands::save_limit_credential,
             commands::delete_limit_credential,
             commands::open_cookie_guide,
+            commands::capture_console_cookie,
             commands::list_themes,
             commands::get_themes_dir,
         ])

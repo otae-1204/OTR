@@ -182,6 +182,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
   const [draftKey, setDraftKey] = useState("");
   const [draftCookie, setDraftCookie] = useState("");
   const [builtinDraft, setBuiltinDraft] = useState<Record<string, string>>({});
+  const [capturing, setCapturing] = useState<string | null>(null);
 
   const reload = () => {
     void api
@@ -343,6 +344,29 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
     void api.openCookieGuide(provider).catch((e) => setErr(String(e)));
   };
 
+  const captureCookie = async (provider: string) => {
+    const builtin = (accounts ?? []).find(
+      (a) => a.builtin && a.provider === provider && a.cookieRef,
+    );
+    if (!builtin?.cookieRef) {
+      setErr("先打开这个额度来源,再自动获取");
+      return;
+    }
+    setErr(null);
+    setMsg(null);
+    setCapturing(provider);
+    try {
+      const status = await api.captureConsoleCookie(provider, builtin.cookieRef);
+      setMsg(status);
+      reload();
+      refreshLimits();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setCapturing(null);
+    }
+  };
+
   return (
     <div>
       <div className="divide-y divide-border/40">
@@ -364,6 +388,17 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                       className="inline-flex h-6 shrink-0 items-center rounded-md border border-border bg-background px-2 text-11px font-medium transition-colors hover:border-primary/60 hover:text-primary"
                     >
                       教程
+                    </button>
+                  ) : null}
+                  {p === "qwen" || p === "stepfun" ? (
+                    <button
+                      type="button"
+                      disabled={capturing === p}
+                      onClick={() => void captureCookie(p)}
+                      data-theme-part="button"
+                      className="inline-flex h-6 shrink-0 items-center rounded-md border border-border bg-background px-2 text-11px font-medium transition-colors hover:border-primary/60 hover:text-primary disabled:opacity-50"
+                    >
+                      {capturing === p ? "等待登录…" : "自动获取"}
                     </button>
                   ) : null}
                 </div>
@@ -1297,7 +1332,11 @@ export function Settings({
                       id={row.id}
                       color={color}
                       className={
-                        usesImageIcon(row.id) ? "h-full w-full" : "h-5 w-5"
+                        row.id === "grok"
+                          ? "h-5 w-5"
+                          : usesImageIcon(row.id)
+                            ? "h-full w-full"
+                            : "h-5 w-5"
                       }
                     />
                   </div>

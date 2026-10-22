@@ -495,13 +495,55 @@ fn call_rpc(method: &str, journal: &str, device_id: Option<&str>) -> std::result
     })
 }
 
+/// 把续期后的 journal 写回原凭据。只替换 `Oasis-Token` 的值,
+/// 用户原来贴进来的其他内容保持不动。写入失败时旧凭据不变。
+fn persist_journal(credential_name: &str, journal: &str) -> std::result::Result<(), String> {
+    let Some(raw) = super::credential::resolve(credential_name) else {
+        return Err("原凭据已经不在".into());
+    };
+    let updated = replace_oasis_token(&raw, journal);
+    if updated == raw {
+        return Ok(());
+    }
+    super::credential::set(credential_name, &updated)
+}
+
+/// 原凭据里有 `Oasis-Token=` 就只换它的值;裸 journal 则整段替换。
+fn replace_oasis_token(raw: &str, journal: &str) -> String {
+    let mut replaced = false;
+    let updated = raw
+        .split(';')
+        .map(|part| {
+            let trimmed = part.trim();
+            let Some((name, _)) = trimmed.split_once('=') else {
+                return part.to_string();
+            };
+            let key = name.trim().to_ascii_lowercase();
+            if key == "oasis-token" || key == "oasis_token" {
+                replaced = true;
+                let prefix = &part[..part.len() - part.trim_start().len()];
+                format!("{prefix}{}={journal}", name.trim())
+            } else {
+                part.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(";");
+    if replaced {
+        updated
+    } else {
+        journal.to_string()
+    }
+}
+
 /// 用整条 journal 调 `RefreshToken` 换新令牌。
 ///
 /// **关键**:必须用**同一条 journal**(两个 JWT 都在)去换,换回来的
 /// `refreshToken.raw` 要拼成新 journal 继续用。只拿后半段(刷新令牌)单独去换
 /// 会失败 —— 实测那样回 400 `oasis header is invalid`。
 ///
-/// 新 journal **只留在内存**,不写回任何文件(那是浏览器的会话,不该由我们落盘)。
+/// 新 journal 会写回原来的凭据条目,这样下次启动不用再换一次。
+/// 刷新失败时返回 None,调用方不会碰旧凭据。
 fn renew_journal(journal: &str, device_id: Option<&str>) -> Option<String> {
     let url = format!("{PASSPORT_BASE}/RefreshToken");
     let headers = plan_headers(journal, device_id);
@@ -576,6 +618,9 @@ pub fn fetch_plan_with_credential(credential_name: &str) -> ProviderLimits {
                     device_id = Some(id);
                 }
                 journal = fresh;
+                if let Err(err) = persist_journal(credential_name, &journal) {
+                    eprintln!("[otr] StepFun 新凭据没有写回: {err}");
+                }
                 rate = call_rpc(RPC_RATE_LIMIT, &journal, device_id.as_deref());
                 plan = call_rpc(RPC_PLAN_STATUS, &journal, device_id.as_deref());
             }
@@ -914,6 +959,21 @@ mod tests {
         // 带刷新令牌的不报警
         let both = format!("{access}...{}", jwt_with(r#"{"device_id":"d"}"#, "s"));
         assert!(check_credential(&both).is_ok());
+    }
+
+    /// 续期只换 Oasis-Token 这一项,旁边的其他 Cookie 不能被冲掉。
+    #[test]
+    fn a_renewed_journal_replaces_only_the_oasis_token() {
+        let access = jwt_with(r#"{"activated":true}"#, "sigA");
+        let refresh = jwt_with(r#"{"device_id":"dev1"}"#, "sigB");
+        let journal = format!("{access}...{refresh}");
+        let raw = format!("session=keep; Oasis-Token=old-token; theme=blue");
+        let got = replace_oasis_token(&raw, &journal);
+        assert!(got.contains(&format!("Oasis-Token={journal}")));
+        assert!(got.contains("session=keep"));
+        assert!(got.contains("theme=blue"));
+        assert!(!got.contains("old-token"));
+        assert_eq!(replace_oasis_token(&access, &journal), journal);
     }
 
     /// 从 journal 里取 device_id 当 `Oasis-Webid` / `Oasis-Did`

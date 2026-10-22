@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "windows": ["main", "guide-qwen", "guide-stepfun"],
+  "windows": ["main", "guide-qwen", "guide-stepfun", "login-qwen", "login-stepfun"],
   "permissions": [
     "core:default",
     "dialog:allow-open",

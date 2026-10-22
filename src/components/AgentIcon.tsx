@@ -38,7 +38,7 @@ export function AgentIcon({ id, color, className }: AgentIconProps) {
         src={mode === "dark" ? grokLight : grokDark}
         alt="Grok"
         draggable={false}
-        className={`h-full w-full object-contain p-0.5 ${className ?? ""}`}
+        className={`object-contain ${cls}`}
       />
     );
   }
@@ -49,7 +49,7 @@ export function AgentIcon({ id, color, className }: AgentIconProps) {
         src={img}
         alt={id}
         draggable={false}
-        className={`h-full w-full object-contain p-0.5 ${className ?? ""}`}
+        className={`h-full w-full object-contain ${id === "zcode" ? "p-1" : "p-0.5"} ${className ?? ""}`}
       />
     );
   }

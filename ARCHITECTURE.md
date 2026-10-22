@@ -1,6 +1,8 @@
 # OTR 项目架构
 
 > 只读展示本机所有 AI Coding Agent 的 Token 消耗(类似 CC-Switch,但只做"看",不做"切"。曾用名 Token-Show)。
+>
+> 本文与代码对齐到 **0.3.2**(2026-10-21)。GitHub Release `v0.3.2` 的 tag 在 `786afef`;`main` 上还多一次提交 `d548013`(Grok 官方标志),那一笔还没打进安装包。仓库状态见 [HANDOVER.md](HANDOVER.md)。
 
 ## 1. 定位
 
@@ -94,7 +96,18 @@ pub struct ScanCtx<'a> {
 }
 ```
 
-注册表在 `providers/mod.rs`;用户在设置里启停。新增一个 Agent = 新增一个文件 + 注册一行。
+注册表在 `providers/mod.rs`;用户在设置里启停。新增一个 Agent = 新增一个文件 + 注册一行,
+并把它加进 `settings.rs` 的 `BUILTIN_AGENTS`。没见过的内置 Agent 会自动启用一次
+(`known_agents`),用户之后关掉不会在下次启动时复活。
+
+**当前解析版本**(`PARSER_VERSION`;改解析语义必须加一,否则旧游标让新逻辑只看见增量):
+
+| Agent | 版本 | Agent | 版本 |
+|---|---|---|---|
+| DSH | 5 | Cursor | 2 |
+| Codex | 3 | OpenCode | 2 |
+| ZCode | 3 | Grok | 2 |
+| Claude Code | 1 | Pi | 1 |
 
 ### 4.2 数据模型
 
@@ -255,18 +268,21 @@ pub struct UsageRecord {
 | 数据源 | `$GROK_HOME/sessions/<编码 cwd>/<session-id>/updates.jsonl`(`GROK_HOME` 缺省 `~/.grok`) |
 | 格式 | JSONL。只认 `params.update.sessionUpdate = "turn_completed"` 的 `usage`,这是一轮的增量 |
 | 解析要点 | `inputTokens` 在 ACP 日志里已含缓存,未缓存输入要减掉;若 `totalTokens` 表明缓存是另栏,或缓存比 input 还大,则不再减。`reasoningTokens` 已含在输出里,只单列。`modelUsage` 小于父级时补差额,大于父级时只留父级。同一 `prompt_id` 是快照,重复行和 fork 拷贝不累加,后写更大时只补差额。不读 `unified.jsonl` / `signals.json`(叠加以重计,上下文快照会漏计)。子会话整段跳过。`costUsdTicks / 1e10` 是美元 |
+| 解析版本 | 2:模型拆分补差额,同一 `prompt_id` 的重复快照只记增量 |
 | 自带成本币种 | USD |
 
 ### 5.9 候选扩展(本机已检测到,放路线图)
 `.codebuddy` / `.codebuddycn`(CodeBuddy)、`.kimi-code`(Kimi CLI)、`.copilot`(Copilot CLI)、`.qoder-cli`(Qoder)。
-实现顺序建议:每次只加一个,先 `detect()` 再摸数据格式。Gemini CLI / Qwen Code 本机未装,不排期。
+实现顺序建议:每次只加一个,先 `detect()` 再摸数据格式。Gemini CLI / Qwen Code 的**用量解析**不排期。
+千问只做了额度(见 §9),没有本地用量 Provider。
 (CodeBuddy 已可通过设置里的"自定义 Agent"用 claude-code 布局接进来。)
 
 ## 6. 后端模块划分(src-tauri/src/)
 
 ```
 src-tauri/
-├── tauri.conf.json            # 窗口/打包/CSP 配置
+├── tauri.conf.json            # 窗口/打包/CSP;Windows 无边框(decorations: false)
+├── tauri.macos.conf.json      # macOS:overlay 标题栏、系统红绿灯、.app/.dmg
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs                # 薄壳
@@ -286,7 +302,7 @@ src-tauri/
 │   │   ├── mod.rs             # 统一模型 + 账号编排 + 内存缓存
 │   │   ├── http.rs            # 认系统代理的 HTTP 层
 │   │   ├── credential.rs      # keyring 封装(只暴露存在性)
-│   │   ├── cursor.rs  codex.rs  grok.rs  deepseek.rs  stepfun.rs
+│   │   ├── cursor.rs  codex.rs  grok.rs  deepseek.rs  qwen.rs  stepfun.rs
 │   └── providers/
 │       ├── mod.rs             # trait + 注册表
 │       ├── jsonl_util.rs      # 按 offset 续读、跨扫描去重窗口
@@ -297,7 +313,9 @@ src-tauri/
     ├── range_smoke.rs         # 真实库的成本/区间对照
     ├── dsh_repair.rs          # 按小时表校正按天表的端到端
     ├── pricing_peak_acc.rs    # 定价修正 + 峰谷计价在真实库上的验收
-    └── limits_live.rs         # 额度页真实网络验收(cargo test --test limits_live -- --ignored --nocapture)
+    ├── limits_live.rs         # 额度页真实网络验收(cargo test --test limits_live -- --ignored --nocapture)
+    ├── limits_no_freeze.rs    # refresh_limits 必须异步:派发耗时与连接超时上限
+    └── stepfun_live.rs        # StepFun 控制台接口的真实网络验收(ignored)
 ```
 
 > 各 Provider 的解析单测直接写在对应源文件的 `#[cfg(test)] mod tests` 里(内联 fixture),
@@ -321,21 +339,46 @@ kv(k, v)                                               -- state:<agent> / data_v
 
 ```
 src/
-├── main.tsx / App.tsx           # 主窗口:仪表盘 / 额度 / 设置 切换 + 筛选栏(Agent × 日期范围)
+├── main.tsx / App.tsx           # 主窗口:仪表盘 / 额度 / 设置;无 pages/ 目录
 ├── api/bindings.ts              # 手写的类型与命令封装
 ├── hooks/useUsageData.ts        # summary + agents + settings;事件订阅 + 30s 轮询 + in-flight 去重
-├── lib/{format,range,remote}.ts # 格式化 / 日期区间 / GitHub 版本 + 实时汇率
-├── theme/                       # 主题接口:token 目录、清单校验、解析、应用、ThemeProvider(见 docs/theme_interface.md)
+├── lib/
+│   ├── format.ts  range.ts      # 格式化;日期区间与上一周期对比
+│   ├── remote.ts                # GitHub 版本 + 实时汇率
+│   └── limitsLayout.ts          # 额度卡拖拽排布(localStorage,不进 settings.json)
+├── theme/                       # 主题接口(见 docs/theme_interface.md)
+│   ├── builtin.ts               # 内置 otr + 蓝色大肥鱼(清单来自 examples/themes/blue-whale.json)
+│   └── art/                     # 蓝色大肥鱼立绘
 └── components/
-    StatCard.tsx  AgentCard.tsx  TrendChart.tsx
-    ModelPie.tsx  SessionTable.tsx  Settings.tsx
-    Limits.tsx                     # 额度页(每账号一卡)
+    StatCard.tsx  AgentCard.tsx  TrendChart.tsx  HourProfile.tsx
+    ModelPie.tsx  SessionTable.tsx  Settings.tsx  Limits.tsx
+    WindowControls.tsx             # Windows 无边框标题栏按钮
+    SelectMenu.tsx                 # 自绘下拉
+    ThemeMascot.tsx  CookieGuide.tsx
     AgentIcon.tsx  icons.tsx  Skeleton.tsx
 ```
 
-> 没有 `pages/` 目录,也没有 `TrayPopup.tsx` / `useTrayPopup`(托盘只有 tooltip 与菜单,不做弹窗)。
+> 没有 `TrayPopup.tsx` / `useTrayPopup`。托盘只有 tooltip 与菜单,不做弹窗。
 
-托盘交互:tooltip 常显"今日 X tokens";菜单提供刷新/显示主窗口/退出。
+**窗口。** Windows 关掉系统标题栏,按钮在 `WindowControls.tsx`。macOS 用
+`tauri.macos.conf.json` 的 overlay 标题栏,保留系统红绿灯。拖窗口时避开按钮、链接和输入框。
+
+**仪表盘(0.3.1)。** 筛选是 Agent × 日期范围。`previousRange` 给出紧挨着的上一周期
+(今日对昨日,本月对上月同期到同一天;「全部」没有上一周期),大卡用它写增减。
+点模型扇区后,趋势图和时段图改看该模型;扇区「其他」不驱动这两张图。
+趋势图可在折线与柱状之间切换,上一周期的标记跟着变。
+`HourProfile` 把范围内各天的同一个钟点加总,固定 24 格,只表达「习惯落在几点」。
+小时表可能缺近期日,这张图的合计不要拿去对按天总额。
+
+**主题。** 内置两套:`otr`(默认,缺失 token 的最终回退)和蓝色大肥鱼。
+用户主题放在数据目录的 `themes/`。单模式主题会临时锁住深浅,切回双模式主题后恢复偏好。
+`docs/theme_interface.md` 开头仍写「对应 0.2.x」,正文按 `apiVersion = 1` 仍然可用。
+
+**图标。** 知名品牌用官方 path 或位图。Grok 用 xAI 的 Logomark,深浅色各一张
+(`src/assets/agents/grok-logomark-*.svg`),按当前主题切换,不改图形。
+
+托盘:tooltip 常显「今日 X tokens」。菜单是打开主窗口、立即刷新、恢复默认主题、退出。
+恢复默认主题只把 `themeId` 设回 `otr`、生效模式设回偏好,其余设置不动。
 
 ## 8. Tauri API 面
 
@@ -343,7 +386,8 @@ src/
 - `list_agents() -> Vec<AgentStatus>`(是否检测到、是否启用、累计 tokens、健康提示)
 - `get_summary() -> UsageSummary`(今日各 Agent 卡片 + `dataVersion`)
 - `get_range_summary(agent?, from, to) -> RangeSummary`(Hero 大卡 + 模型占比)
-- `get_daily(agent?, from?, to?, granularity?) -> Vec<DailyUsage>`(折线图,day/hour/month)
+- `get_daily(agent?, from?, to?, granularity?, model?) -> Vec<DailyUsage>`(趋势图,day/hour/month;`model` 为扇区点选)
+- `get_hour_profile(agent?, from?, to?, model?) -> Vec<HourProfile>`(0–23 点的习惯分布,见 §7)
 - `get_sessions(agent?, from?, to?, limit?) -> Vec<SessionUsage>`(明细表)
 - `rescan(full?)`(手动扫描;有 pending 合并)
 - `list_models() -> Vec<String>`(设置页定价表用)
@@ -356,9 +400,10 @@ src/
 - `list_limit_accounts() -> Vec<LimitAccount>`(含内置那条、`builtin`,以及 `keyPresent` / `cookiePresent` 两个布尔值)
 - `save_limit_account(account, apiKey?, consoleCookie?)`(一次写入账号和密钥;密钥不进设置文件、不出现在返回值;空密钥表示沿用已有条目;写入失败则账号不落盘)
 - `delete_limit_account(id)`(删额外账号,并删掉它名下的 `limit.*` 凭据;内置账号删不掉)
-- `set_limit_provider(provider, enabled)`(StepFun 靠它打开)
-- `list_limit_credentials() -> Vec<{name, present}>`(**只有内置四条的布尔值,永不返回密钥**)
-- `save_limit_credential(name, secret) / delete_limit_credential(name)`(读写系统凭据库;名字必须是内置四条或 `limit.*` 生成名)
+- `set_limit_provider(provider, enabled)`(额度来源开关。StepFun 默认关;千问和 Grok 对旧设置各自动打开一次,见 §9)
+- `list_limit_credentials() -> Vec<{name, present}>`(**只有内置条目的布尔值,永不返回密钥**)
+- `save_limit_credential(name, secret) / delete_limit_credential(name)`(读写系统凭据库;名字必须是内置条目或 `limit.*` 生成名)
+- `open_cookie_guide(provider)`(Cookie 教程窗口,只认 `qwen` / `stepfun`。必须是 async:同步建 WebView 会和事件循环互相等待,窗口停在白屏)
 
 **Events(后端推送)**
 - `usage://updated`(轻量信号,前端收到后重拉 summary)
@@ -390,8 +435,9 @@ ProviderLimits{ account_id, account_label, provider, configured,
 3. **字段缺失即 `None`**,UI 显示 `--` 且**不渲染进度条**。
    绝不臆造 0 —— "0% 已用"和"读不到"是完全相反的两件事,空进度条 + "已用 0%"
    会让人以为额度全满,是反向误导。
-4. **不写回别人的凭据文件**。Codex 401 只提示"运行一次 codex 刷新",
-   不碰 `~/.codex/auth.json`;StepFun 控制台续期后的 token 只留内存。
+4. **凭据写回只限续期成功的字段**。Codex 的 401 只提示再跑一次 CLI,不碰 `~/.codex/auth.json`。
+   Grok 访问令牌到期前 5 分钟,用同一条的 `refresh_token` 续一次,成功后只替换该账号的 `key`、`refresh_token`、`expires_at`。
+   StepFun 查询返回凭据失效时续一次,成功后只替换原凭据里的 `Oasis-Token`。两边失败都不覆盖旧值。
 
 ### 子窗口的排列规则(前端 `Limits.tsx`)
 
@@ -416,8 +462,9 @@ ProviderLimits{ account_id, account_label, provider, configured,
 
 | 模式 | 适用 | 认证来源 | 多账号做法 |
 |---|---|---|---|
-| `home` | Cursor、Codex | 本地 CLI 会话 | 多份 profile 目录(Cursor 认 `--user-data-dir`,Codex 认 `CODEX_HOME`) |
-| `key` | DeepSeek、StepFun | 额度 API 直接吃 key | 同一次保存里把密钥写进系统凭据库 |
+| `home` | Cursor、Codex、Grok | 本地 CLI 会话 | 多份 profile 目录(Cursor 认 `--user-data-dir`,Codex 认 `CODEX_HOME`,Grok 认 `GROK_HOME`) |
+| `key` | DeepSeek | 额度 API 直接吃 key | 同一次保存里把密钥写进系统凭据库 |
+| `key` + `cookie` | Qwen、StepFun | 控制台 Cookie;StepFun 另有按量 Key | 两条凭据各自一条目,查询只用这个账号自己的名字 |
 
 - **内置账号由代码合成**(默认 profile),始终存在且不可删 —— 那是"什么都没配"时的默认那条;
   用户添加的额外账号存在 `settings.limitAccounts` 里。
@@ -425,15 +472,23 @@ ProviderLimits{ account_id, account_label, provider, configured,
   查询只用这两条自己的名字,不再把 Key 拼成 `<name>_CONSOLE_COOKIE`。
 - 不支持的 provider **明确报"暂不支持"**,不拿内置账号的数字冒充(否则用户以为配好了)。
 - 每个账号独立查询、独立报错;**单个失败不牵连其它**。
-- 删除额外账号时,只删它名下的生成条目,不动内置四条。
+- 删除额外账号时,只删它名下的生成条目,不动内置凭据。
+- **新来源只自动打开一次。** `known_limit_providers` 记下用户已经见过的来源。
+  千问、Grok 对旧设置文件各打开一次;用户关掉之后不会在下次启动时复活。
+  StepFun 依赖逆向接口,默认关闭,必须显式勾选。
+- 额度卡可以拖拽重排。只有「单列」的两张卡能并到同一行;
+  排布存在 `localStorage["token-show-limits-layout"]`,不进 `settings.json`。
 
 ### 凭据
 
 - service `com.otae.radar`。
-- **内置四条**(只给内置账号用):`DEEPSEEK_API_KEY` / `STEPFUN_API_KEY` /
-  `STEPFUN_CONSOLE_COOKIE` / `STEPFUN_CONSOLE_TOKEN`。
+- **内置条目**(只给内置账号用):`DEEPSEEK_API_KEY` /
+  `QWEN_CODING_PLAN_API_KEY` / `QWEN_CONSOLE_COOKIE` /
+  `STEPFUN_API_KEY` / `STEPFUN_CONSOLE_COOKIE` / `STEPFUN_CONSOLE_TOKEN`。
 - **额外账号**的条目名固定为 `limit.<provider>.<id>.key` 和
   `limit.<provider>.<id>.cookie`。空串、`../`、自拟的 `DEEPSEEK_API_KEY_WORK` 一律拒绝。
+- **Windows 凭据 blob 上限是 2560 字节**,密码按 UTF-16 存,ASCII 大约 1280 字符就写不进去。
+  超长秘密拆成 `名字`、`名字#1`、`名字#2`…,读的时候再拼回去。百炼控制台 Cookie 经常超限。
 - 解析顺序:**keyring → 环境变量**;空白值等于没有。
 - keyring 按平台收窄:Windows 凭据管理器、macOS 钥匙串。Linux 不引入 keyring
   (会拖进整套 zbus),那边走环境变量。
@@ -519,6 +574,25 @@ plan_family = 2  TOKEN  新套餐 → Credit 月池
 且失败只影响该卡。字段认不出时把响应键名报给用户,便于下次修正映射。
 两条来源中任一拿到数据就算成功 —— 一个失败不该把另一个已有数字染成红色报错。
 
+### Qwen:百炼控制台 Cookie
+
+官方文档只让用户到 Coding Plan 页面上看用量,没有公开 REST。那个页面实际调的是
+`queryCodingPlanInstanceInfoV2`。`sk-sp-` Key 打上去得到 `ConsoleNeedLogin`,
+查得到数字的是浏览器登录态(Cookie + 页面里的 `sec_token`)。
+
+编排在 `fetch_qwen`:配了 Cookie 且查出窗口就用 Cookie;Cookie 没有数字时才退回 Key,
+并告诉用户去贴 Cookie。没有凭据走不发网络的快路径。
+
+| 形态 | 接口 |
+|---|---|
+| Coding Plan 套餐实例 | `zeldaEasy.broadscope-bailian.codingPlan.queryCodingPlanInstanceInfoV2` |
+| 个人版 Token Plan Solo | 套餐实例列表为空时,改走 `tokenplan/personal` 的 `usage` / `subscription` |
+
+国内走 `bailian.console.aliyun.com` / `bailian-cs`,国际走
+`modelstudio.console.alibabacloud.com`。Cookie 里有 `login_aliyunid_ticket` 时只打国内;
+否则两处都试,国内在前。字段缺失保持 `None`。
+这是逆向接口,失败只影响该卡。
+
 ### Grok:本地 CLI 会话
 
 和 Codex 同一类,不贴 Cookie。读 `$GROK_HOME/auth.json`(缺省 `~/.grok/auth.json`)里的 `key`,
@@ -599,8 +673,10 @@ UI 会被冻住。耗时还会被三件事放大:
 | **M4** | 定价表与统一成本口径、自定义 Agent、NSIS 安装包 + 便携 zip、单实例 | 已完成(v0.1.7) |
 | **M5** | DSH per-file 缓存、刷新链收敛、容错加固、CSP、健康提示 | v0.1.8 |
 | **M6** | 额度页(Cursor/Codex/DeepSeek/StepFun)、DeepSeek 定价修正、峰谷分时计价、多账号 | 已完成(v0.2.0) |
-| **M7** | 主题接口(清单/校验/加载)、受限自定义 CSS、示例主题、托盘恢复默认主题 | 已完成(v0.3.0) |
-| **M8** | 开机自启(需引入 tauri-plugin-autostart)、更多候选 Agent | 待排期 |
+| **M7** | 主题接口、受限自定义 CSS、示例主题、托盘恢复默认主题;无边框窗口、自绘下拉、蓝色大肥鱼内置主题 | 已完成(v0.3.0) |
+| **M8** | 周期对比、点模型看趋势、趋势柱状图、使用时段 | 已完成(v0.3.1) |
+| **M9** | Grok Build 用量、Grok 订阅额度、千问 Coding Plan 额度。Grok 官方标志在 `v0.3.2` tag 之后的 `d548013`,已在 `main`,尚未打进 Release | 已完成(v0.3.2) |
+| **M10** | 开机自启(需引入 tauri-plugin-autostart)、更多候选 Agent 的用量解析 | 待排期 |
 
 ## 12. 风险与对策
 
@@ -615,7 +691,8 @@ UI 会被冻住。耗时还会被三件事放大:
 | 额度接口直连不通(实测 chatgpt.com 必超时) | `limits/http.rs` 依次试 环境变量代理 → 系统代理 → 直连;ureq 不会自己读系统代理 |
 | 额度接口改字段(尤其 StepFun 的逆向控制台 RPC) | 缺字段一律 `None` → UI 显示 `--`;**认不出的响应把原始键名报给用户**,绝不臆造数字;失败只影响该张卡 |
 | 密钥经 Tauri 命令泄漏到前端 | 命令只返回 `{name, present}`;密钥值只存在于 `credential.rs` 内部,写入即离开内存;A9 测试对真实密钥逐个反查所有返回值 |
-| 两个程序同时改同一个凭据文件 | OTR **只读** `~/.codex/auth.json` 与 Cursor 的 `state.vscdb`(后者以只读方式打开);登录态失效只提示用户去跑 CLI |
+| 两个程序同时改同一个凭据文件 | OTR **只读** `~/.codex/auth.json` 与 Cursor 的 `state.vscdb`(后者以只读方式打开)。Grok 只在续期成功后替换该账号三个字段;StepFun 只替换原凭据里的 `Oasis-Token` |
+| Windows 凭据写不下长 Cookie | blob 上限 2560 字节(UTF-16);超长秘密按 `名字#1`…分片,见 §9 |
 | 计量口径争议(cache/reasoning) | 分列展示不加总,UI 注明口径:`total = input + output + cache_read + cache_write` |
 | 定价表过期导致成本失真 | 定价表是唯一权威,但每行标注来源(官方/手动/未知),同步时对已手动设置的价格先询问 |
 

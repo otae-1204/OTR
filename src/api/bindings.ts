@@ -312,6 +312,9 @@ export const api = {
   /** 打开 Cookie 教程窗口。只在用户点击时调用。 */
   openCookieGuide: (provider: string) =>
     invoke<void>("open_cookie_guide", { provider }),
+  /** 打开登录窗并写入该凭据条目。返回值只有状态,没有 Cookie。 */
+  captureConsoleCookie: (provider: string, credentialName: string) =>
+    invoke<string>("capture_console_cookie", { provider, credentialName }),
   // 主题:Rust 只负责枚举并读出用户主题目录里的文件,解析与校验在前端 src/theme/
   listThemes: () => invoke<ThemeFile[]>("list_themes"),
   getThemesDir: () => invoke<string>("get_themes_dir"),
