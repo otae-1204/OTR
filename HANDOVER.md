@@ -63,7 +63,7 @@
 
 **登录取 Cookie：** 设置里 StepFun / 千问的「自动获取」在教程旁边。命令是 `capture_console_cookie`，实现在 `limits/login.rs`。每个来源用临时目录里的独立 WebView，不碰用户浏览器。StepFun 只存能通过 `extract_journal` 的 `Oasis-Token`；千问整段必须含 `login_aliyunid_ticket`，其余只留额度请求会读的名字。写入走该账号已有的凭据条目。关窗、超时、形状不对都不覆盖旧值。命令返回值只有状态句，Cookie 和 JWT 不返回、不写日志。Windows 上 `cookies()` 仍在独立线程读。
 
-**凭据边界：** Tauri 命令只返回「在不在」，永不返回密钥值。OTR 只读 Codex 的 `auth.json` 和 Cursor 的 `state.vscdb`。Grok 的访问令牌还有效时也不改文件；到期前 5 分钟内，用同一条的 `refresh_token` 向 `oidc_issuer` 发现的 token 端点续一次，成功后只替换该账号的 `key`、`refresh_token`、`expires_at`。StepFun 查询返回凭据失效时续一次，成功后只替换原凭据里的 `Oasis-Token`。两边失败都不覆盖旧值。
+**凭据边界：** Tauri 命令只返回「在不在」，永不返回密钥值。OTR 只读 Codex 的 `auth.json` 和 Cursor 的 `state.vscdb`。Cursor 的 `accessToken` 若是 `cursor-safe-storage` 密文，只在内存里用本机 OSCrypt 密钥解开，不写回。Grok 的访问令牌还有效时也不改文件；到期前 5 分钟内，用同一条的 `refresh_token` 向 `oidc_issuer` 发现的 token 端点续一次，成功后只替换该账号的 `key`、`refresh_token`、`expires_at`。StepFun 查询返回凭据失效时续一次，成功后只替换原凭据里的 `Oasis-Token`。两边失败都不覆盖旧值。
 
 **扫描隔离：** 用 `crate::lock`，不要 `unwrap()` 一把可能被后台线程毒化的锁。`run_scan` 和额度循环都包了 `catch_unwind`。`RescanGate` 保证同时只有一个扫描线程。
 

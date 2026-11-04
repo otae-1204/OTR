@@ -73,6 +73,34 @@ fn parse_window(raw: &Value, fallback_index: usize) -> Option<QuotaWindow> {
     )
 }
 
+/// `plan_type` 里的 Pro 档不是月费。Codex 定价文档把两档用量写成相对 Plus 的
+/// **Pro 5x** 和 **Pro 20x**。Pro 100 / 200 / 500 是美元月费,不拿来当倍率。
+/// `promax` 的文档没有标倍数,所以只写 Pro Max。
+fn plan_label(raw: &str) -> String {
+    let key: String = raw
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect();
+    match key.as_str() {
+        "free" => "Free".into(),
+        "go" => "Go".into(),
+        "plus" => "Plus".into(),
+        "prolite" => "Pro 5x".into(),
+        "pro" => "Pro 20x".into(),
+        "promax" => "Pro Max".into(),
+        "team" => "Team".into(),
+        "business" => "Business".into(),
+        "enterprise" | "hc" | "ent26" => "Enterprise".into(),
+        "edu" | "education" => "Edu".into(),
+        "eduplus" => "Edu Plus".into(),
+        "edupro" => "Edu Pro".into(),
+        "sci" => "Academic Researchers".into(),
+        "sciplus" => "Academic Researchers Plus".into(),
+        _ => raw.trim().to_string(),
+    }
+}
+
 /// 解析 /wham/usage 响应体
 pub fn parse_usage(body: &Value) -> ProviderLimits {
     let mut out = ProviderLimits::new("codex", "Codex CLI", "codex");
@@ -80,7 +108,9 @@ pub fn parse_usage(body: &Value) -> ProviderLimits {
     out.plan_label = body
         .get("plan_type")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(plan_label);
 
     let rl = body.get("rate_limit").unwrap_or(&Value::Null);
     let mut windows = Vec::new();
@@ -208,7 +238,7 @@ mod tests {
         assert_eq!(got.windows[0].key, "monthly", "2592000 秒是每月,不是 5 小时");
         assert_eq!(got.windows[0].label, "每月");
         assert_eq!(got.windows[0].window_seconds, Some(2_592_000));
-        assert_eq!(got.plan_label.as_deref(), Some("free"));
+        assert_eq!(got.plan_label.as_deref(), Some("Free"));
     }
 
     /// 5 小时与 7 天各自归位(顺序无关)
@@ -266,6 +296,14 @@ mod tests {
         let got = parse_usage(&serde_json::json!({}));
         assert!(got.windows.is_empty());
         assert_eq!(got.plan_label, None);
+    }
+
+    #[test]
+    fn pro_tiers_use_the_documented_usage_multipliers() {
+        assert_eq!(plan_label("prolite"), "Pro 5x");
+        assert_eq!(plan_label("pro"), "Pro 20x");
+        assert_eq!(plan_label("promax"), "Pro Max");
+        assert_eq!(plan_label("plus"), "Plus");
     }
 
     /// 规则 4:auth.json 只读 —— 解析函数不返回任何可写路径,

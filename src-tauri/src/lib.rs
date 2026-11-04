@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod cursor_session;
 pub mod error;
 pub mod limits;
 pub mod model;

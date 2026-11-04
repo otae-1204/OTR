@@ -20,6 +20,8 @@ import { TrendingUpIcon } from "./icons";
 
 const KNOWN_ORDER = ["dsh", "claude-code", "codex", "zcode", "opencode", "pi", "cursor", "grok"];
 const MAX_DAYS = 366;
+/** 和模型占比一样,只单独画前 8 个,其余合成「其他」 */
+const TOP_MODELS = 8;
 /** 选中模型时合成一条,避开和某个 Agent id 撞车 */
 const MODEL_KEY = "__model";
 
@@ -56,7 +58,9 @@ function TrendTooltip({
   bars,
 }: any) {
   if (!active || !payload || payload.length === 0) return null;
-  const series = payload.filter((p: any) => p.dataKey !== PREV_KEY);
+  const series = payload.filter(
+    (p: any) => p.dataKey !== PREV_KEY && Number(p.value) > 0,
+  );
   const total = series.reduce(
     (acc: number, p: any) => acc + (Number(p.value) || 0),
     0,
@@ -69,7 +73,10 @@ function TrendTooltip({
   const prevDate = row?.__prevDate;
   const prevValue = row?.[PREV_KEY];
   const prevRow =
-    showPrev && typeof prevDate === "string" && typeof prevValue === "number";
+    showPrev &&
+    typeof prevDate === "string" &&
+    typeof prevValue === "number" &&
+    prevValue > 0;
   return (
     <div
       data-theme-part="tooltip"
@@ -221,8 +228,11 @@ export function TrendChart({
   model = null,
   modelColor = null,
 }: TrendChartProps) {
-  const { agentColor } = useTheme();
+  const { agentColor, chartPalette } = useTheme();
   const [bars, setBars] = useState(false);
+  /** 没点中具体模型时,可以改成按模型拆线 */
+  const [byModel, setByModel] = useState(false);
+  const modelSplit = byModel && !model;
   const [rows, setRows] = useState<DailyUsage[] | null>(null);
   const [prevRows, setPrevRows] = useState<DailyUsage[] | null>(null);
   const [granularity, setGranularity] = useState<Granularity>(() =>
@@ -238,7 +248,7 @@ export function TrendChart({
     const load = async () => {
       try {
         if (all) {
-          const probe = await api.getDaily(agentId, from, to, "day", model);
+          const probe = await api.getDaily(agentId, from, to, "day", model, modelSplit);
           if (!active) return;
           const earliest = minBucket(probe);
           if (!earliest) {
@@ -254,7 +264,7 @@ export function TrendChart({
             setRows(probe);
             return;
           }
-          const data = await api.getDaily(agentId, earliest, to, g, model);
+          const data = await api.getDaily(agentId, earliest, to, g, model, modelSplit);
           if (!active) return;
           if (g === "hour") {
             setAxisFrom(minBucket(data) ?? earliest);
@@ -266,7 +276,7 @@ export function TrendChart({
         const g = pickGranularity(from, to);
         setGranularity(g);
         setAxisFrom(from);
-        const data = await api.getDaily(agentId, from, to, g, model);
+        const data = await api.getDaily(agentId, from, to, g, model, modelSplit);
         if (!active) return;
         setRows(data);
         if (!previous) return;
@@ -277,6 +287,7 @@ export function TrendChart({
             previous.to,
             g,
             model,
+            modelSplit,
           );
           if (active) setPrevRows(prev);
         } catch (err) {
@@ -293,11 +304,29 @@ export function TrendChart({
     return () => {
       active = false;
     };
-  }, [agentId, from, to, all, refreshKey, previous, model]);
+  }, [agentId, from, to, all, refreshKey, previous, model, modelSplit]);
 
-  /** 出现过数据的 agent,按已知顺序排列 */
+  /** 按模型拆分时,用量从高到低,和占比图同一套前 8 名 */
+  const modelRank = useMemo(() => {
+    if (!modelSplit) return null;
+    const totals = new Map<string, number>();
+    for (const r of rows ?? []) {
+      const name = r.model && r.model.length > 0 ? r.model : "(未知模型)";
+      totals.set(name, (totals.get(name) ?? 0) + r.totalTokens);
+    }
+    return [...totals.entries()].sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+    );
+  }, [rows, modelSplit]);
+
+  /** 出现过数据的序列。模型模式按用量排序;Agent 模式按已知顺序 */
   const agentIds = useMemo(() => {
     if (model) return (rows?.length ?? 0) > 0 ? [MODEL_KEY] : [];
+    if (modelRank) {
+      const top = modelRank.slice(0, TOP_MODELS).map(([name]) => name);
+      if (modelRank.length > TOP_MODELS) top.push("其他");
+      return top;
+    }
     const ids = new Set<string>();
     for (const r of rows ?? []) ids.add(r.agent);
     return [...ids].sort((a, b) => {
@@ -308,7 +337,7 @@ export function TrendChart({
       if (ib !== -1) return 1;
       return a.localeCompare(b);
     });
-  }, [rows, model]);
+  }, [rows, model, modelRank]);
 
   /** 连续桶轴。全部时间:从最早记录铺到今天;其余小时/月用筛选范围,天用数据实际范围 */
   const buckets = useMemo<string[]>(() => {
@@ -345,10 +374,20 @@ export function TrendChart({
         prevSums.set(r.date, (prevSums.get(r.date) ?? 0) + r.totalTokens);
       }
     }
+    const topModels = new Set(
+      modelRank ? modelRank.slice(0, TOP_MODELS).map(([name]) => name) : [],
+    );
     const map = new Map<string, PivotRow>();
     for (const r of rows ?? []) {
       const row = map.get(r.date) ?? { date: r.date };
-      const key = model ? MODEL_KEY : r.agent;
+      const modelName = r.model && r.model.length > 0 ? r.model : "(未知模型)";
+      const key = model
+        ? MODEL_KEY
+        : modelSplit
+          ? topModels.has(modelName)
+            ? modelName
+            : "其他"
+          : r.agent;
       row[key] = ((row[key] as number) ?? 0) + r.totalTokens;
       map.set(r.date, row);
     }
@@ -369,17 +408,25 @@ export function TrendChart({
       }
       return row;
     });
-  }, [rows, buckets, agentIds, previous, prevRows, granularity, from, to, all, model]);
+  }, [rows, buckets, agentIds, previous, prevRows, granularity, from, to, all, model, modelSplit, modelRank]);
 
-  /** 多个 Agent 各自从 0 起画时,合计虚线会把纵轴撑高 */
+  /** 多个序列各自从 0 起画时,合计虚线会把纵轴撑高。按模型拆开后也不再叠一条总虚线 */
   const showPrev =
-    previous != null && prevRows != null && (model != null || agentIds.length <= 1);
+    previous != null &&
+    prevRows != null &&
+    !modelSplit &&
+    (model != null || agentIds.length <= 1);
 
-  const seriesColor = (id: string) =>
-    id === MODEL_KEY
-      ? (modelColor ?? "hsl(var(--primary))")
-      : agentColor(id);
-  const seriesName = (id: string) => (id === MODEL_KEY ? (model ?? "") : agentLabel(id));
+  const seriesColor = (id: string) => {
+    if (id === MODEL_KEY) return modelColor ?? "hsl(var(--primary))";
+    if (modelSplit) {
+      const index = agentIds.indexOf(id);
+      return chartPalette[index % Math.max(chartPalette.length, 1)] ?? "hsl(var(--primary))";
+    }
+    return agentColor(id);
+  };
+  const seriesName = (id: string) =>
+    id === MODEL_KEY ? (model ?? "") : modelSplit ? id : agentLabel(id);
 
   const axisStartDay = axisFrom.slice(0, 10);
   const crossYear = axisStartDay.slice(0, 4) !== to.slice(0, 4);
@@ -418,11 +465,40 @@ export function TrendChart({
               <span className="inline-block max-w-[14rem] truncate align-bottom" title={model}>
                 {model}
               </span>
+            ) : modelSplit ? (
+              "各模型 Token 总量"
             ) : (
               "各 Agent Token 总量"
             )}
           </span>
         </div>
+        <div className="flex items-center gap-2">
+        {model ? null : (
+          <div data-theme-part="segmented" className="flex items-center gap-1 rounded-xl bg-muted p-1">
+            {(
+              [
+                { v: false, label: "Agent" },
+                { v: true, label: "模型" },
+              ] as const
+            ).map(({ v, label }) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setByModel(v)}
+                title={v ? "按模型拆开" : "按 Agent 汇总"}
+                data-theme-part="segmented-button"
+                data-theme-state={byModel === v ? "selected" : undefined}
+                className={`h-7 rounded-lg px-2.5 text-xs font-medium transition-colors ${
+                  byModel === v
+                    ? "bg-background shadow-sm text-foreground"
+                    : "text-muted-foreground hover:bg-overlay/5"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
         <div data-theme-part="segmented" className="flex items-center gap-1 rounded-xl bg-muted p-1">
           {(
             [
@@ -434,7 +510,7 @@ export function TrendChart({
               key={label}
               type="button"
               onClick={() => setBars(v)}
-              title={v ? "同一时间桶画成柱" : "各 Agent 独立画面积"}
+              title={v ? "同一时间桶画成柱" : modelSplit ? "各模型独立画面积" : "各 Agent 独立画面积"}
               data-theme-part="segmented-button"
               data-theme-state={bars === v ? "selected" : undefined}
               className={`h-7 rounded-lg px-2.5 text-xs font-medium transition-colors ${
@@ -446,6 +522,7 @@ export function TrendChart({
               {label}
             </button>
           ))}
+        </div>
         </div>
       </div>
 
@@ -466,10 +543,10 @@ export function TrendChart({
                 barCategoryGap={stackBars ? "22%" : "16%"}
               >
                 <defs>
-                  {agentIds.map((id) => (
+                  {agentIds.map((id, index) => (
                     <linearGradient
                       key={id}
-                      id={`trend-grad-${id}`}
+                      id={`trend-grad-${index}`}
                       x1="0"
                       y1="0"
                       x2="0"
@@ -561,7 +638,7 @@ export function TrendChart({
                       name={seriesName(id)}
                       stroke={seriesColor(id)}
                       strokeWidth={1.5}
-                      fill={`url(#trend-grad-${id})`}
+                      fill={`url(#trend-grad-${index})`}
                     />
                   ),
                 )}

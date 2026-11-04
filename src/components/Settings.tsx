@@ -114,6 +114,12 @@ const PROVIDER_LABELS: Record<string, string> = {
   codex: "Codex CLI",
   grok: "Grok",
   deepseek: "DeepSeek",
+  openrouter: "OpenRouter",
+  minimax: "MiniMax",
+  zai: "智谱",
+  kimi: "Kimi",
+  factory: "Factory",
+  mistral: "Mistral",
   qwen: "Qwen",
   stepfun: "StepFun",
 };
@@ -124,14 +130,38 @@ const PROVIDER_MODE: Record<string, "home" | "key"> = {
   codex: "home",
   grok: "home",
   deepseek: "key",
+  openrouter: "key",
+  minimax: "key",
+  zai: "key",
+  kimi: "key",
+  factory: "key",
+  mistral: "key",
   qwen: "key",
   stepfun: "key",
 };
 
-const PROVIDER_ORDER = ["cursor", "codex", "grok", "deepseek", "qwen", "stepfun"] as const;
+const PROVIDER_ORDER = [
+  "cursor",
+  "codex",
+  "grok",
+  "deepseek",
+  "openrouter",
+  "minimax",
+  "zai",
+  "kimi",
+  "factory",
+  "mistral",
+  "qwen",
+  "stepfun",
+] as const;
 
 const BUILTIN_API_KEY: Record<string, { name: string; placeholder: string }> = {
   deepseek: { name: "DEEPSEEK_API_KEY", placeholder: "更新 API Key" },
+  openrouter: { name: "OPENROUTER_API_KEY", placeholder: "更新 API Key" },
+  minimax: { name: "MINIMAX_CODING_API_KEY", placeholder: "更新 API Key" },
+  zai: { name: "ZAI_API_KEY", placeholder: "更新 API Key" },
+  kimi: { name: "KIMI_CODE_API_KEY", placeholder: "更新 API Key" },
+  factory: { name: "FACTORY_API_KEY", placeholder: "更新 API Key" },
 };
 
 const FIELD_CLASS =
@@ -157,6 +187,10 @@ function accountStatus(a: LimitAccount): string {
     const key = a.keyPresent ? "Key 已配置" : "Key 未配置";
     return a.builtin ? `内置 · ${cookie} · ${key}` : `${cookie} · ${key}`;
   }
+  if (a.provider === "mistral") {
+    const cookie = a.cookiePresent ? "Cookie 已配置" : "Cookie 未配置";
+    return a.builtin ? `内置 · ${cookie}` : cookie;
+  }
   if (a.provider === "stepfun") {
     const cookie = a.cookiePresent ? "订阅已配置" : "订阅未配置";
     const key = a.keyPresent ? "余额已配置" : "余额未配置";
@@ -164,6 +198,38 @@ function accountStatus(a: LimitAccount): string {
   }
   const key = a.keyPresent ? "API Key 已配置" : "API Key 未配置";
   return a.builtin ? `内置 · ${key}` : key;
+}
+
+const LIMIT_FOLD_KEY = "token-show-limit-source-fold";
+
+function readLimitFolds(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(LIMIT_FOLD_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (value === true) out[key] = true;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeLimitFold(
+  prev: Record<string, boolean>,
+  provider: string,
+  folded: boolean,
+): Record<string, boolean> {
+  const next = { ...prev, [provider]: folded };
+  try {
+    localStorage.setItem(LIMIT_FOLD_KEY, JSON.stringify(next));
+  } catch {
+    // 写不进去就只在这次打开里生效
+  }
+  return next;
 }
 
 /**
@@ -183,6 +249,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
   const [draftCookie, setDraftCookie] = useState("");
   const [builtinDraft, setBuiltinDraft] = useState<Record<string, string>>({});
   const [capturing, setCapturing] = useState<string | null>(null);
+  const [folded, setFolded] = useState<Record<string, boolean>>(readLimitFolds);
 
   const reload = () => {
     void api
@@ -207,6 +274,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
       await api.setLimitProvider(p, on);
       setProviders((prev) => (on ? [...prev, p] : prev.filter((x) => x !== p)));
       if (!on) setOpenProvider((cur) => (cur === p ? null : cur));
+      if (on) setFolded((prev) => writeLimitFold(prev, p, false));
       onChanged();
       reload();
       if (on) refreshLimits();
@@ -228,6 +296,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
   const canAdd = (provider: string) => {
     if (!draftLabel.trim() || adding) return false;
     if (PROVIDER_MODE[provider] === "home") return draftHome.trim().length > 0;
+    if (provider === "mistral") return draftCookie.trim().length > 0;
     if (provider === "stepfun" || provider === "qwen") {
       return draftCookie.trim().length > 0 || draftKey.trim().length > 0;
     }
@@ -258,7 +327,9 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
         {
           apiKey: mode === "key" ? draftKey.trim() : null,
           consoleCookie:
-            provider === "stepfun" || provider === "qwen" ? draftCookie.trim() : null,
+            provider === "stepfun" || provider === "qwen" || provider === "mistral"
+              ? draftCookie.trim()
+              : null,
         },
       );
       setMsg(`已添加 ${label}`);
@@ -373,14 +444,27 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
         {PROVIDER_ORDER.map((p) => {
           const on = providers.includes(p);
           const rows = (accounts ?? []).filter((a) => a.provider === p);
+          const expanded = on && !folded[p];
           return (
             <div key={p}>
-              <div className="flex items-center justify-between gap-3 px-4 py-3">
-                <div className="flex min-w-0 items-center gap-2">
-                  <div className="truncate text-sm font-medium">
-                    {PROVIDER_LABELS[p]}
-                  </div>
-                  {p === "qwen" || p === "stepfun" ? (
+              <div
+                className={`flex items-center justify-between gap-3 px-4 py-3 ${
+                  on ? "cursor-pointer hover:bg-overlay/5" : ""
+                }`}
+                onClick={
+                  on
+                    ? () => setFolded((prev) => writeLimitFold(prev, p, !prev[p]))
+                    : undefined
+                }
+              >
+                <div className="min-w-0 truncate text-sm font-medium">
+                  {PROVIDER_LABELS[p]}
+                </div>
+                <div
+                  className="flex shrink-0 items-center gap-2"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {p === "qwen" || p === "stepfun" || p === "mistral" ? (
                     <button
                       type="button"
                       onClick={() => openGuide(p)}
@@ -390,7 +474,7 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                       教程
                     </button>
                   ) : null}
-                  {p === "qwen" || p === "stepfun" ? (
+                  {p === "qwen" || p === "stepfun" || p === "mistral" ? (
                     <button
                       type="button"
                       disabled={capturing === p}
@@ -401,15 +485,14 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                       {capturing === p ? "等待登录…" : "自动获取"}
                     </button>
                   ) : null}
+                  <Toggle
+                    checked={on}
+                    onChange={() => void toggleProvider(p, !on)}
+                    ariaLabel={`${on ? "关闭" : "开启"} ${PROVIDER_LABELS[p]}`}
+                  />
                 </div>
-                <Toggle
-                  checked={on}
-                  onChange={() => void toggleProvider(p, !on)}
-                  ariaLabel={`${on ? "关闭" : "开启"} ${PROVIDER_LABELS[p]}`}
-                />
               </div>
-              {on ? (
-                <div className="border-t border-border/40 bg-background/40">
+              <div className={expanded ? "border-t border-border/40 bg-background/40" : "hidden"}>
                   {accounts == null ? (
                     <p className="px-4 py-3 text-xs text-muted-foreground">
                       正在读取账号…
@@ -492,6 +575,26 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                                   void clearBuiltin("QWEN_CODING_PLAN_API_KEY")
                                 }
                               />
+                            </div>
+                          ) : null}
+                          {a.builtin && a.provider === "mistral" ? (
+                            <div className="space-y-2">
+                              <BuiltinSecret
+                                placeholder="更新 admin.mistral.ai 的 Cookie"
+                                value={builtinDraft.MISTRAL_ADMIN_COOKIE ?? ""}
+                                present={!!a.cookiePresent}
+                                onChange={(value) =>
+                                  setBuiltinDraft((d) => ({
+                                    ...d,
+                                    MISTRAL_ADMIN_COOKIE: value,
+                                  }))
+                                }
+                                onSave={() => void saveBuiltin("MISTRAL_ADMIN_COOKIE")}
+                                onClear={() => void clearBuiltin("MISTRAL_ADMIN_COOKIE")}
+                              />
+                              <p className="text-11px leading-relaxed text-muted-foreground">
+                                点上方「自动获取」登录。窗口会在登录完成后自己关掉。也可以从请求头粘贴 Cookie。
+                              </p>
                             </div>
                           ) : null}
                           {a.builtin && a.provider === "stepfun" ? (
@@ -580,6 +683,21 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                             className={FIELD_CLASS}
                           />
                         </>
+                      ) : p === "mistral" ? (
+                        <>
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            value={draftCookie}
+                            onChange={(e) => setDraftCookie(e.target.value)}
+                            placeholder="admin.mistral.ai 的 Cookie"
+                            data-theme-part="input"
+                            className={FIELD_CLASS}
+                          />
+                          <p className="text-11px leading-relaxed text-muted-foreground">
+                            需要包含 ory_session_。过期后重新登录再贴，不能自动续期。
+                          </p>
+                        </>
                       ) : p === "stepfun" ? (
                         <>
                           <input
@@ -646,7 +764,6 @@ function LimitSources({ onChanged }: { onChanged: () => void }) {
                     </div>
                   )}
                 </div>
-              ) : null}
             </div>
           );
         })}

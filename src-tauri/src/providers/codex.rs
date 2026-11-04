@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::model::{iso_to_ms, now_ms, UsageRecord};
+use crate::model::{iso_to_ms, now_ms, plausible_gen_ms, UsageRecord};
 use crate::paths;
 use crate::providers::jsonl_util::{self, u64f};
 use crate::providers::{AgentProvider, ScanCtx};
@@ -14,7 +14,8 @@ pub struct CodexProvider;
 
 const AGENT: &str = "codex";
 /// v3: 累计值没动时不再把重复的 last_token_usage 再记一笔。
-pub const PARSER_VERSION: u64 = 3;
+/// v4: 用回合起点到 token_count 的整段时间记估算速度（含首字等待）。
+pub const PARSER_VERSION: u64 = 4;
 
 impl AgentProvider for CodexProvider {
     fn id(&self) -> &str {
@@ -210,6 +211,12 @@ fn scan_file(
         .map(|a| (a[0], a[1], a[2], a[3], a[4]))
         .unwrap_or_default();
     let mut last_ts: i64 = cursor.extra.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+    // 估算速度的起点：turn_context，或上一次已计入的 token_count。
+    let mut speed_anchor: i64 = cursor
+        .extra
+        .get("speedAnchor")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
 
     if cursor.offset > 0 && (session_id.is_none() || project.is_none() || model.is_none()) {
         recover_context(
@@ -256,6 +263,11 @@ fn scan_file(
                     }
                 }
             }
+            "turn_context" => {
+                if let Some(ms) = v.get("timestamp").and_then(|x| x.as_str()).and_then(iso_to_ms) {
+                    speed_anchor = ms;
+                }
+            }
             "token_count" => {
                 let info = payload.get("info").unwrap_or(&payload);
                 let last = info.get("last_token_usage").filter(|v| v.is_object());
@@ -293,16 +305,24 @@ fn scan_file(
                 }
 
                 let (in_total, cached, output, cache_write, reasoning) = parts;
+                let event_ts = v.get("timestamp").and_then(|x| x.as_str()).and_then(iso_to_ms);
+                let (est_output, est_ms, est_samples) = event_ts
+                    .filter(|_| output > 0 && speed_anchor > 0)
+                    .and_then(|end| plausible_gen_ms(end.saturating_sub(speed_anchor)))
+                    .map(|ms| (output, ms, 1))
+                    .unwrap_or((0, 0, 0));
+                if let Some(end) = event_ts {
+                    speed_anchor = end;
+                }
                 let r = UsageRecord {
                     agent: agent.into(),
                     session_id: session_id.clone(),
                     project: project.clone(),
                     model: model.clone(),
-                    ts: v
-                        .get("timestamp")
-                        .and_then(|x| x.as_str())
-                        .and_then(iso_to_ms)
-                        .unwrap_or_else(now_ms),
+                    ts: event_ts.unwrap_or_else(now_ms),
+                    est_output,
+                    est_ms,
+                    est_samples,
                     // input_tokens 两种口径都含 cached,统一减掉才是"未命中缓存的输入"
                     input_tokens: in_total.saturating_sub(cached),
                     output_tokens: output,
@@ -327,6 +347,7 @@ fn scan_file(
         "version": PARSER_VERSION,
         "total": [prev_total.0, prev_total.1, prev_total.2, prev_total.3, prev_total.4],
         "ts": last_ts,
+        "speedAnchor": speed_anchor,
         "session_id": session_id,
         "project": project,
         "model": model,
@@ -710,6 +731,24 @@ mod tests {
         let recs = scan_roots(std::slice::from_ref(&root), "codex", &mut ctx).unwrap();
         assert!(ctx.force_full, "截断必须请求全量重建");
         assert!(recs.is_empty(), "截断时不得输出增量记录");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn token_count_after_turn_start_is_an_estimated_speed() {
+        let root = fixture_root();
+        let path =
+            root.join("rollout-2026-08-31T07-53-17-11111111-2222-3333-4444-555555555555.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        write_header(&mut file, "gpt-5.6-sol");
+        write_token_count(&mut file, "2026-08-31T07:53:21.000Z", 10, 4);
+        drop(file);
+        let records = scan(&root, &mut HashMap::new(), true);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].output_tokens, 4);
+        assert_eq!(records[0].est_output, 4);
+        assert_eq!(records[0].est_ms, 2_000);
+        assert_eq!(records[0].gen_ms, 0, "整段回合不是真实吐字速度");
         fs::remove_dir_all(root).unwrap();
     }
 }

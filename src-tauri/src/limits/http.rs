@@ -244,10 +244,20 @@ fn build(proxy: Option<&str>) -> ureq::Agent {
 /// 可注入超时的构造器 —— 抽出来是为了能**真的测出**连接超时生效,
 /// 而不是只在注释里声称它生效(用 1 秒超时打黑洞地址,断言不会拖到默认的 30 秒)。
 fn build_with(proxy: Option<&str>, connect_secs: u64, total_secs: u64) -> ureq::Agent {
+    build_with_redirects(proxy, connect_secs, total_secs, 5)
+}
+
+fn build_with_redirects(
+    proxy: Option<&str>,
+    connect_secs: u64,
+    total_secs: u64,
+    redirects: u32,
+) -> ureq::Agent {
     let b = ureq::AgentBuilder::new()
         // 连接超时必须显式设,否则默认 30s 且盖过 timeout()
         .timeout_connect(Duration::from_secs(connect_secs))
-        .timeout(Duration::from_secs(total_secs));
+        .timeout(Duration::from_secs(total_secs))
+        .redirects(redirects);
     match proxy {
         Some(p) => match ureq::Proxy::new(p) {
             Ok(px) => b.proxy(px).build(),
@@ -256,6 +266,37 @@ fn build_with(proxy: Option<&str>, connect_secs: u64, total_secs: u64) -> ureq::
         },
         None => b.build(),
     }
+}
+
+/// 不跟随跳转。3xx 把状态码和空响应体交回去,调用方自己判断是不是登录过期。
+pub fn fetch_text_no_redirect<F>(build_req: F) -> std::result::Result<(u16, String), HttpFailure>
+where
+    F: Fn(&ureq::Agent) -> std::result::Result<ureq::Response, ureq::Error>,
+{
+    let mut last: Option<HttpFailure> = None;
+    for proxy in attempts() {
+        let agent = build_with_redirects(
+            proxy.as_deref(),
+            HTTP_CONNECT_TIMEOUT_SECS,
+            HTTP_TIMEOUT_SECS,
+            0,
+        );
+        match build_req(&agent) {
+            Ok(resp) => {
+                let status = resp.status();
+                let text = resp.into_string().unwrap_or_default();
+                return Ok((status, text));
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                let text = resp.into_string().unwrap_or_default();
+                return Ok((code, text));
+            }
+            Err(ureq::Error::Transport(e)) => {
+                last = Some(HttpFailure::Transport(e.to_string()));
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| HttpFailure::Transport("没有可用的连接方式".into())))
 }
 
 /// 和 `fetch_json` 同一套代理重试,但把响应体当文本返回。

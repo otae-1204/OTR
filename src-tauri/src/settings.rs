@@ -129,6 +129,7 @@ fn default_limit_providers() -> Vec<String> {
         "grok".into(),
         "deepseek".into(),
         "qwen".into(),
+        "openrouter".into(),
     ]
 }
 
@@ -145,7 +146,10 @@ fn legacy_known_limit_providers() -> Vec<String> {
 
 /// 支持的额度 Provider。**不在这个表里的一律报 unsupported**,
 /// 不拿内置账号的数字冒充 —— 那会让用户以为配好了。
-pub const LIMIT_PROVIDERS: &[&str] = &["cursor", "codex", "grok", "deepseek", "qwen", "stepfun"];
+pub const LIMIT_PROVIDERS: &[&str] = &[
+    "cursor", "codex", "grok", "deepseek", "openrouter", "minimax", "zai", "kimi", "factory",
+    "mistral", "qwen", "stepfun",
+];
 
 impl LimitAccount {
     /// 校验一份账号配置;返回中文错误原因。
@@ -171,10 +175,10 @@ impl LimitAccount {
                     return Err(format!("profile 目录不存在:{home}"));
                 }
             }
-            "deepseek" => {
+            "deepseek" | "openrouter" | "minimax" | "zai" | "kimi" | "factory" => {
                 let secret = self.secret_ref.as_deref().unwrap_or("").trim();
                 if secret.is_empty() {
-                    return Err("DeepSeek 需要 API Key".into());
+                    return Err(format!("{} 需要 API Key", self.provider));
                 }
             }
             "qwen" => {
@@ -189,6 +193,12 @@ impl LimitAccount {
                 let cookie = self.cookie_ref.as_deref().unwrap_or("").trim();
                 if secret.is_empty() && cookie.is_empty() {
                     return Err("StepFun 至少需要控制台 Cookie 或 API Key".into());
+                }
+            }
+            "mistral" => {
+                let cookie = self.cookie_ref.as_deref().unwrap_or("").trim();
+                if cookie.is_empty() {
+                    return Err("mistral 需要登录 Cookie".into());
                 }
             }
             _ => {}
@@ -349,6 +359,13 @@ impl Settings {
             changed = true;
         }
         // Grok 订阅额度是后加的:旧设置文件里没见过它,就自动打开一次。
+        if !s.known_limit_providers.iter().any(|p| p == "openrouter") {
+            s.known_limit_providers.push("openrouter".into());
+            if !s.limit_providers.iter().any(|p| p == "openrouter") {
+                s.limit_providers.push("openrouter".into());
+            }
+            changed = true;
+        }
         if !s.known_limit_providers.iter().any(|p| p == "grok") {
             s.known_limit_providers.push("grok".into());
             if !s.limit_providers.iter().any(|p| p == "grok") {

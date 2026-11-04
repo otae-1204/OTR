@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import type { ModelSlice, RangeSummary, Totals } from "../api/bindings";
-import { fmtCost, fmtTokens } from "../lib/format";
+import { fmtCost, fmtTokens, fmtTps, fmtTtft, tpsTitle } from "../lib/format";
 import { cacheHitRate } from "./StatCard";
 import { EmptyState } from "./Skeleton";
 import { PieChartIcon } from "./icons";
@@ -13,6 +13,7 @@ interface Slice {
   value: number;
   /** 渲染用值:极小占比钳到可见角度,真实值在 tooltip/图例展示 */
   renderValue: number;
+  speed: string | null;
 }
 
 function PieTooltip({ active, payload, total }: any) {
@@ -31,6 +32,7 @@ function PieTooltip({ active, payload, total }: any) {
       </p>
       <p className="tabular-nums text-muted-foreground">
         {fmtTokens(value)} tokens · {pct}%
+        {p.payload?.speed ? ` · ${p.payload.speed}` : ""}
       </p>
     </div>
   );
@@ -40,7 +42,7 @@ function HitRateBar({ totals }: { totals: Totals }) {
   const hit = cacheHitRate(totals);
   return (
     <div
-      title={`缓存命中率 = 缓存读 ÷ (未缓存输入 + 缓存读);缓存读高说明上下文复用得多,是省钱的好事`}
+      title="缓存读 ÷ (未缓存输入 + 缓存读)"
       className="flex items-center gap-2"
     >
       <div data-theme-part="progress" className="relative h-1.5 w-24 overflow-hidden rounded-full bg-muted/60">
@@ -90,18 +92,22 @@ export function ModelPie({
       name: s.model,
       value: s.totals.totalTokens,
       renderValue: s.totals.totalTokens,
+      speed: fmtTps(s.totals.genOutputTokens, s.totals.genMs)
+        ?? fmtTps(s.totals.estOutputTokens, s.totals.estMs),
     }));
     if (rest.length > 0) {
       built.push({
         name: "其他",
         value: rest.reduce((acc, s) => acc + s.totals.totalTokens, 0),
-        renderValue: built.length === 0 ? 0 : 0, // 先占位,下面统一钳制
+        renderValue: 0,
+        speed: fmtTps(
+          rest.reduce((acc, s) => acc + s.totals.genOutputTokens, 0),
+          rest.reduce((acc, s) => acc + s.totals.genMs, 0),
+        ) ?? fmtTps(
+          rest.reduce((acc, s) => acc + s.totals.estOutputTokens, 0),
+          rest.reduce((acc, s) => acc + s.totals.estMs, 0),
+        ),
       });
-      built[built.length - 1] = {
-        name: "其他",
-        value: built[built.length - 1].value,
-        renderValue: built[built.length - 1].value,
-      };
     }
     const all = built.filter((s) => s.value > 0);
     const total = all.reduce((acc, s) => acc + s.value, 0);
@@ -126,6 +132,14 @@ export function ModelPie({
           calls: acc.calls + s.totals.calls,
           cost: acc.cost + s.totals.cost,
           totalTokens: acc.totalTokens + s.totals.totalTokens,
+          genOutputTokens: acc.genOutputTokens + s.totals.genOutputTokens,
+          genMs: acc.genMs + s.totals.genMs,
+          genSamples: acc.genSamples + s.totals.genSamples,
+          estOutputTokens: acc.estOutputTokens + s.totals.estOutputTokens,
+          estMs: acc.estMs + s.totals.estMs,
+          estSamples: acc.estSamples + s.totals.estSamples,
+          ttftMs: acc.ttftMs + s.totals.ttftMs,
+          ttftSamples: acc.ttftSamples + s.totals.ttftSamples,
         }),
         {
           inputTokens: 0,
@@ -135,6 +149,14 @@ export function ModelPie({
           calls: 0,
           cost: 0,
           totalTokens: 0,
+          genOutputTokens: 0,
+          genMs: 0,
+          genSamples: 0,
+          estOutputTokens: 0,
+          estMs: 0,
+          estSamples: 0,
+          ttftMs: 0,
+          ttftSamples: 0,
         },
       );
     return { name: "其他", totals: restTotal as Totals };
@@ -143,6 +165,18 @@ export function ModelPie({
   const total = slices.reduce((acc, s) => acc + s.value, 0);
   const totalPct = (v: number) =>
     total > 0 ? ((v / total) * 100).toFixed(1) : "0.0";
+  const selectedReal = selectedSlice
+    ? fmtTps(selectedSlice.totals.genOutputTokens, selectedSlice.totals.genMs)
+    : null;
+  const selectedEst = selectedSlice
+    ? fmtTps(selectedSlice.totals.estOutputTokens, selectedSlice.totals.estMs)
+    : null;
+  const selectedSpeed = selectedReal ?? selectedEst;
+  const selectedSpeedLabel = selectedReal ? "平均速度" : "估算速度";
+  const selectedTtft =
+    selectedSlice && selectedSlice.totals.ttftSamples > 0
+      ? fmtTtft(selectedSlice.totals.ttftMs, selectedSlice.totals.ttftSamples)
+      : null;
 
   return (
     <section
@@ -263,19 +297,49 @@ export function ModelPie({
         {/* 选中模型的明细面板:整行铺开,不再挤在图例下方 */}
         {selectedSlice ? (
           <div className="mt-3 space-y-3 rounded-xl border border-border/50 bg-background/40 p-4 animate-fade-in">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span
-                className="min-w-0 truncate text-base font-semibold"
-                title={selectedSlice.name}
-              >
-                {selectedSlice.name}
-              </span>
-              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                占比 {totalPct(selectedSlice.totals.totalTokens)}% · 成本{" "}
-                {fmtCost(selectedSlice.totals.cost, currency, rate)}
-              </span>
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4">
+              <div className="min-w-0 space-y-2">
+                <div
+                  className="truncate text-base font-semibold"
+                  title={selectedSlice.name}
+                >
+                  {selectedSlice.name}
+                </div>
+                <HitRateBar totals={selectedSlice.totals} />
+              </div>
+              <div className="text-right text-xs tabular-nums text-muted-foreground">
+                <div>
+                  占比 {totalPct(selectedSlice.totals.totalTokens)}% · 成本{" "}
+                  {fmtCost(selectedSlice.totals.cost, currency, rate)}
+                </div>
+                {selectedSpeed || selectedTtft ? (
+                  <div className="mt-0.5 flex items-baseline justify-end gap-2">
+                    {selectedSpeed ? (
+                      <span
+                        title={
+                          selectedReal
+                            ? tpsTitle(
+                                selectedSlice.totals.genOutputTokens,
+                                selectedSlice.totals.genMs,
+                                selectedSlice.totals.genSamples,
+                              )
+                            : selectedEst
+                              ? tpsTitle(
+                                  selectedSlice.totals.estOutputTokens,
+                                  selectedSlice.totals.estMs,
+                                  selectedSlice.totals.estSamples,
+                                )
+                              : undefined
+                        }
+                      >
+                        {selectedSpeedLabel} {selectedSpeed}
+                      </span>
+                    ) : null}
+                    {selectedTtft ? <span>平均首字 {selectedTtft}</span> : null}
+                  </div>
+                ) : null}
+              </div>
             </div>
-            <HitRateBar totals={selectedSlice.totals} />
             <div className="grid grid-cols-5 gap-2 text-xs">
               {(
                 [

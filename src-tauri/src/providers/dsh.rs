@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::model::{local_date, local_hour, now_ms, UsageRecord};
+use crate::model::{
+    local_date, local_hour, now_ms, plausible_gen_ms, plausible_ttft_ms, UsageRecord,
+};
 use crate::paths;
 use crate::providers::jsonl_util::{f64f, u64f};
 use crate::providers::{AgentProvider, ScanCtx};
@@ -15,7 +17,9 @@ pub struct DshProvider;
 const AGENT: &str = "dsh";
 /// v5: 没有 costUsage.byModel 的会话(常见于 teammate 子会话)从
 /// modelSelection.lastUsed 补上模型,否则会话明细的模型列是空的。
-pub const PARSER_VERSION: u64 = 5;
+/// v6: 从流式首尾时间记每个模型的生成耗时,用来算 token/s。
+/// v7: 同一条流再记首字延迟（step/start 到第一个字）。
+pub const PARSER_VERSION: u64 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -156,6 +160,17 @@ struct DshEntry {
     calls: u64,
     #[serde(default)]
     cost: f64,
+    /// 这条聚合里、能读到流式耗时的输出 token
+    #[serde(default)]
+    gen_output: u64,
+    #[serde(default)]
+    gen_ms: u64,
+    #[serde(default)]
+    gen_samples: u64,
+    #[serde(default)]
+    ttft_ms: u64,
+    #[serde(default)]
+    ttft_samples: u64,
 }
 
 impl DshEntry {
@@ -168,6 +183,7 @@ impl DshEntry {
             reasoning: u64f(v, "reasoning"),
             calls: u64f(v, "calls"),
             cost: f64f(v, "cost"),
+            ..Default::default()
         }
     }
 
@@ -180,6 +196,11 @@ impl DshEntry {
             reasoning: self.reasoning.saturating_sub(prev.reasoning),
             calls: self.calls.saturating_sub(prev.calls),
             cost: self.cost - prev.cost,
+            gen_output: self.gen_output.saturating_sub(prev.gen_output),
+            gen_ms: self.gen_ms.saturating_sub(prev.gen_ms),
+            gen_samples: self.gen_samples.saturating_sub(prev.gen_samples),
+            ttft_ms: self.ttft_ms.saturating_sub(prev.ttft_ms),
+            ttft_samples: self.ttft_samples.saturating_sub(prev.ttft_samples),
         }
     }
 
@@ -190,6 +211,11 @@ impl DshEntry {
     fn is_zero(&self) -> bool {
         self.input + self.output + self.cache_read + self.cache_write + self.reasoning == 0
             && self.calls == 0
+            && self.gen_output == 0
+            && self.gen_ms == 0
+            && self.gen_samples == 0
+            && self.ttft_ms == 0
+            && self.ttft_samples == 0
             && self.cost.abs() < f64::EPSILON
     }
 
@@ -202,6 +228,11 @@ impl DshEntry {
         self.reasoning += other.reasoning;
         self.calls += other.calls;
         self.cost += other.cost;
+        self.gen_output += other.gen_output;
+        self.gen_ms += other.gen_ms;
+        self.gen_samples += other.gen_samples;
+        self.ttft_ms += other.ttft_ms;
+        self.ttft_samples += other.ttft_samples;
     }
 }
 
@@ -403,6 +434,11 @@ fn record_from_entry(
         reasoning_tokens: entry.reasoning,
         calls: entry.calls,
         cost: entry.cost,
+        gen_output: entry.gen_output,
+        gen_ms: entry.gen_ms,
+        gen_samples: entry.gen_samples,
+        ttft_ms: entry.ttft_ms,
+        ttft_samples: entry.ttft_samples,
         bucket_date,
         bucket_hour,
         ..Default::default()
@@ -572,6 +608,64 @@ fn collect_session_logs(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// 流式输出从第一个字到最后一个字的耗时。开头排队、首 token 之前的等待不算。
+/// 同一 turn/step 后写的样本会整段换掉先写的,所以这里只看这一条事件自己。
+fn stream_speed(event: &Value, output: u64) -> (u64, u64, u64) {
+    if output == 0 {
+        return (0, 0, 0);
+    }
+    let Some(ms) = stream_generation_ms(event) else {
+        return (0, 0, 0);
+    };
+    (output, ms, 1)
+}
+
+fn stream_bounds(event: &Value) -> Option<(i64, i64)> {
+    let stream = event.pointer("/data/stream")?.as_array()?;
+    let mut min_ts: Option<i64> = None;
+    let mut max_ts: Option<i64> = None;
+    let mut consider = |ts: i64| {
+        if ts <= 0 {
+            return;
+        }
+        min_ts = Some(min_ts.map_or(ts, |lo| lo.min(ts)));
+        max_ts = Some(max_ts.map_or(ts, |hi| hi.max(ts)));
+    };
+    for item in stream {
+        if let Some(ts) = item.get("time").and_then(json_i64) {
+            consider(ts);
+        }
+        if let Some(t0) = item.get("time0").and_then(json_i64) {
+            consider(t0);
+            let sum = item
+                .get("dt")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(json_i64)
+                        .filter(|n| *n > 0)
+                        .fold(0i64, i64::saturating_add)
+                })
+                .unwrap_or(0);
+            if sum > 0 {
+                consider(t0.saturating_add(sum));
+            }
+        }
+    }
+    Some((min_ts?, max_ts?))
+}
+
+fn stream_generation_ms(event: &Value) -> Option<u64> {
+    let (min_ts, max_ts) = stream_bounds(event)?;
+    plausible_gen_ms(max_ts.saturating_sub(min_ts))
+}
+
+fn json_i64(v: &Value) -> Option<i64> {
+    v.as_i64()
+        .or_else(|| v.as_u64().map(|n| i64::try_from(n).unwrap_or(i64::MAX)))
+        .or_else(|| v.as_f64().map(|n| n as i64))
+}
+
 /// zstd 帧魔数(小端 0x28 0xB5 0x2F 0xFD)
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
@@ -597,6 +691,7 @@ fn scan_session_file(path: &Path, aggregate: &mut HashMap<String, DshEntry>) -> 
     let mut model = "default".to_string();
     let mut created_at = 0i64;
     let mut samples: HashMap<String, (i64, String, DshEntry)> = HashMap::new();
+    let mut step_started: HashMap<(u64, u64), i64> = HashMap::new();
     for line in text.lines() {
         let Ok(event) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -604,6 +699,22 @@ fn scan_session_file(path: &Path, aggregate: &mut HashMap<String, DshEntry>) -> 
         match event.get("type").and_then(|v| v.as_str()) {
             Some("session") => {
                 created_at = event.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(0);
+                continue;
+            }
+            Some("step/start") => {
+                let turn = event
+                    .pointer("/data/turn")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let step = event
+                    .pointer("/data/step")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                if let Some(started) = event.get("time").and_then(|v| v.as_i64()) {
+                    if started > 0 {
+                        step_started.insert((turn, step), started);
+                    }
+                }
                 continue;
             }
             Some("request/header") => {
@@ -658,27 +769,35 @@ fn scan_session_file(path: &Path, aggregate: &mut HashMap<String, DshEntry>) -> 
                 continue;
             };
         let Some(usage) = usage else { continue };
+        let output = u64f(usage, "outputTokens");
+        let (gen_output, gen_ms, gen_samples) = stream_speed(&event, output);
+        let (ttft_ms, ttft_samples) = step_started
+            .get(&(turn, step))
+            .copied()
+            .zip(stream_bounds(&event).map(|(first, _)| first))
+            .and_then(|(started, first)| plausible_ttft_ms(first.saturating_sub(started)))
+            .map(|ms| (ms, 1))
+            .unwrap_or((0, 0));
         let entry = DshEntry {
             input: u64f(usage, "inputTokens"),
-            output: u64f(usage, "outputTokens"),
+            output,
             cache_read: u64f(usage, "cacheReadTokens"),
             cache_write: u64f(usage, "cacheWriteTokens"),
             reasoning: u64f(usage, "reasoningTokens"),
             calls: 1,
             cost: 0.0,
+            gen_output,
+            gen_ms,
+            gen_samples,
+            ttft_ms,
+            ttft_samples,
         };
         let key = format!("{}:{}", turn, step);
         samples.insert(key, (event_time, format!("{}:{}", provider, model), entry));
     }
     for (_sample_key, (ts, model_key, entry)) in samples {
         let key = format!("{}|{}|{}", local_date(ts), local_hour(ts), model_key);
-        let bucket = aggregate.entry(key).or_default();
-        bucket.input += entry.input;
-        bucket.output += entry.output;
-        bucket.cache_read += entry.cache_read;
-        bucket.cache_write += entry.cache_write;
-        bucket.reasoning += entry.reasoning;
-        bucket.calls += entry.calls;
+        aggregate.entry(key).or_default().merge(&entry);
     }
     true
 }
@@ -936,6 +1055,79 @@ mod tests {
             ..Default::default()
         };
         assert!(current.delta_from(&current).is_zero());
+    }
+
+    #[test]
+    fn stream_window_counts_generation_not_time_to_first_token() {
+        let path = temp_path("jsonl");
+        let start = 1_780_000_000_000i64;
+        let first = start + 8_000;
+        let mut file = fs::File::create(&path).unwrap();
+        for event in [
+            serde_json::json!({"type":"session","createdAt":start - 1}),
+            serde_json::json!({
+                "type":"request/header","time":start,
+                "data":{"header":{"config":{"provider":"p","model":"m"}}}
+            }),
+            serde_json::json!({"type":"step/start","time":start,"data":{"turn":1,"step":1}}),
+            serde_json::json!({
+                "type":"assistant/message","time":first + 5_000,
+                "data":{
+                    "turn":1,"step":1,
+                    "usage":{"inputTokens":10,"outputTokens":1000},
+                    "stream":[
+                        {"type":"chunk","time":first},
+                        {"type":"text-chunks","time0":first,"dt":[1000,1000,1000,1000,1000],"texts":["","","","","",""]}
+                    ]
+                }
+            }),
+            // 同一 step 的后写样本整段替换,速度不能和上一份相加
+            serde_json::json!({
+                "type":"assistant/message","time":first + 4_000,
+                "data":{
+                    "turn":1,"step":1,
+                    "usage":{"inputTokens":10,"outputTokens":800},
+                    "stream":[
+                        {"type":"chunk","time":first},
+                        {"type":"text-chunks","time0":first,"dt":[4000],"texts":["",""]}
+                    ]
+                }
+            }),
+            // 太短 / 太长的流不计入,避免把平均值拉飞或拉成 0
+            serde_json::json!({
+                "type":"assistant/message","time":first,
+                "data":{
+                    "turn":1,"step":2,
+                    "usage":{"outputTokens":50},
+                    "stream":[{"type":"chunk","time":first},{"type":"text-chunks","time0":first,"dt":[10],"texts":["",""]}]
+                }
+            }),
+            serde_json::json!({
+                "type":"assistant/message","time":first,
+                "data":{
+                    "turn":1,"step":3,
+                    "usage":{"outputTokens":50},
+                    "stream":[
+                        {"type":"chunk","time":first},
+                        {"type":"text-chunks","time0":first,"dt":[40 * 60 * 1000],"texts":["",""]}
+                    ]
+                }
+            }),
+        ] {
+            writeln!(file, "{event}").unwrap();
+        }
+        let mut aggregate = HashMap::new();
+        assert!(scan_session_file(&path, &mut aggregate));
+        let entry = aggregate.values().next().expect("应有一桶");
+        assert_eq!(aggregate.len(), 1);
+        assert_eq!(entry.output, 800 + 50 + 50);
+        assert_eq!(entry.gen_output, 800);
+        assert_eq!(entry.gen_ms, 4_000);
+        assert_eq!(entry.gen_samples, 1);
+        assert_eq!(entry.ttft_ms, 8_000);
+        assert_eq!(entry.ttft_samples, 1);
+        assert_eq!(entry.calls, 3);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

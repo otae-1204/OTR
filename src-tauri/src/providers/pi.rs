@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::model::{iso_to_ms, UsageRecord};
+use crate::model::{iso_to_ms, plausible_gen_ms, UsageRecord};
 use crate::paths;
 use crate::providers::jsonl_util::{self, u64f};
 use crate::providers::{AgentProvider, ScanCtx};
@@ -15,7 +15,8 @@ const AGENT: &str = "pi";
 
 /// 解析语义版本;变更时启动会全量重建。
 /// v1: 去重窗口跨扫描持久化 + 截断转全量重建。
-pub const PARSER_VERSION: u64 = 1;
+/// v2: message.durationMs 是整段请求耗时,记成估算速度。
+pub const PARSER_VERSION: u64 = 2;
 
 impl AgentProvider for PiProvider {
     fn id(&self) -> &str {
@@ -120,6 +121,15 @@ fn scan_file(path: &Path, ctx: &mut ScanCtx, out: &mut Vec<UsageRecord>) -> Resu
             .and_then(|x| x.as_str())
             .and_then(iso_to_ms)
             .unwrap_or(0);
+        // durationMs 是这条回复自己的耗时。0、负数和非整数都不算。
+        let est_ms = v
+            .pointer("/message/durationMs")
+            .or_else(|| v.pointer("/message/duration_ms"))
+            .and_then(|n| n.as_i64())
+            .filter(|ms| *ms > 0)
+            .and_then(plausible_gen_ms)
+            .filter(|_| output > 0)
+            .unwrap_or(0);
         let r = UsageRecord {
             agent: AGENT.into(),
             session_id: file_session.clone(),
@@ -143,6 +153,9 @@ fn scan_file(path: &Path, ctx: &mut ScanCtx, out: &mut Vec<UsageRecord>) -> Resu
                 .pointer("/cost/total")
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0),
+            est_output: if est_ms > 0 { output } else { 0 },
+            est_ms,
+            est_samples: u64::from(est_ms > 0),
             ..Default::default()
         };
         // 只在真正落记录时占用去重 key
@@ -252,6 +265,33 @@ mod tests {
         scan_file(&file, &mut c, &mut out2).unwrap();
         assert!(c.force_full, "截断必须请求全量重建");
         assert!(out2.is_empty(), "截断时不得输出增量记录");
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[test]
+    fn duration_ms_is_estimated_speed() {
+        let file = temp_file("speed");
+        let timed = r#"{"type":"message","id":"m1","timestamp":"2026-09-01T10:00:00.000Z","message":{"model":"m","provider":"p","durationMs":2500,"usage":{"input":10,"output":50,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}}}}"#;
+        let ignored = r#"{"type":"message","id":"m2","timestamp":"2026-09-01T10:00:01.000Z","message":{"model":"m","provider":"p","durationMs":0,"usage":{"input":10,"output":50,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.01}}}}"#;
+        std::fs::write(&file, format!("{timed}\n{ignored}\n")).unwrap();
+
+        let mut cursors: HashMap<String, FileCursor> = HashMap::new();
+        let mut out = Vec::new();
+        let mut state = serde_json::Value::Null;
+        let mut c = ScanCtx {
+            full: false,
+            force_full: false,
+            cursors: &mut cursors,
+            state: &mut state,
+        };
+        scan_file(&file, &mut c, &mut out).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].est_output, 50);
+        assert_eq!(out[0].est_ms, 2_500);
+        assert_eq!(out[0].est_samples, 1);
+        assert_eq!(out[0].gen_ms, 0);
+        assert_eq!(out[1].est_ms, 0);
+        assert_eq!(out[1].est_samples, 0);
         let _ = std::fs::remove_file(file);
     }
 }

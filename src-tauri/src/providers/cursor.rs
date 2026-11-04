@@ -6,6 +6,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::cursor_session::{read_access_token, AccessToken};
 use crate::error::{AppError, Result};
 use crate::model::{now_ms, UsageRecord};
 use crate::paths;
@@ -317,8 +318,17 @@ fn scan_usage(full: bool, st: &mut CursorState) -> Result<UsagePull> {
         }
     }
 
-    let jwt = match read_access_token() {
-        Some(t) if !t.is_empty() => t,
+    let jwt = match read_access_token(&paths::cursor_user_dir()) {
+        AccessToken::Ready(t) if !t.is_empty() => t,
+        AccessToken::Sealed => {
+            st.last_fetch_ms = now;
+            st.last_error = Some("Cursor 登录态已加密,本机解密失败".into());
+            st.last_error_ms = now;
+            return Ok(UsagePull {
+                records: vec![],
+                revise_down: false,
+            });
+        }
         _ => {
             st.last_fetch_ms = now;
             st.last_error = Some("未找到本机登录态,请打开 Cursor 并登录".into());
@@ -649,22 +659,6 @@ fn b64url_decode(input: &str) -> Option<Vec<u8>> {
     base64::engine::general_purpose::STANDARD.decode(s).ok()
 }
 
-fn read_access_token() -> Option<String> {
-    let db = paths::cursor_state_db();
-    if !db.is_file() {
-        return None;
-    }
-    let conn = open_ro(&db)?;
-    let raw: String = conn
-        .query_row(
-            "SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken'",
-            [],
-            |row| row.get(0),
-        )
-        .ok()?;
-    Some(unquote_json_string(&raw))
-}
-
 fn open_ro(path: &std::path::Path) -> Option<Connection> {
     match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
         Ok(c) => Some(c),
@@ -680,10 +674,6 @@ fn open_ro(path: &std::path::Path) -> Option<Connection> {
             .ok()
         }
     }
-}
-
-fn unquote_json_string(raw: &str) -> String {
-    serde_json::from_str::<String>(raw).unwrap_or_else(|_| raw.trim_matches('"').to_string())
 }
 
 fn json_u64(v: &Value, key: &str) -> u64 {

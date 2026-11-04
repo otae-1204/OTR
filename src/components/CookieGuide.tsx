@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-export type CookieGuideProvider = "qwen" | "stepfun";
+export type CookieGuideProvider = "qwen" | "stepfun" | "mistral";
 
 declare global {
   interface Window {
@@ -10,7 +10,7 @@ declare global {
 }
 
 function asProvider(value: string | null | undefined): CookieGuideProvider | null {
-  return value === "qwen" || value === "stepfun" ? value : null;
+  return value === "qwen" || value === "stepfun" || value === "mistral" ? value : null;
 }
 
 /** 教程窗口才有值。主窗口返回 null,页面不会自己弹出来。 */
@@ -23,6 +23,7 @@ export function cookieGuideProvider(): CookieGuideProvider | null {
     const label = getCurrentWindow().label;
     if (label === "guide-qwen") return "qwen";
     if (label === "guide-stepfun") return "stepfun";
+    if (label === "guide-mistral") return "mistral";
   } catch {
     // 浏览器预览没有 Tauri
   }
@@ -118,6 +119,34 @@ function QwenGuide() {
   );
 }
 
+function MistralGuide() {
+  return (
+    <>
+      <h1 className="text-base font-semibold">获取 Mistral 套餐 Cookie</h1>
+      <Steps
+        steps={[
+          { text: "在设置的额度来源里打开 Mistral,点「自动获取」。" },
+          {
+            text: "在弹出的窗口登录。登录完成后窗口会自己关掉,并写入 Cookie。",
+            url: "https://admin.mistral.ai/subscription",
+          },
+          { text: "自动获取用不了时,用浏览器打开上面的地址并登录。" },
+          { text: "按 F12 打开开发者工具,切到「网络 / Network」,然后刷新页面。" },
+          {
+            text: "点一条发往 admin.mistral.ai 的请求,在请求头里复制整段 Cookie,贴回设置里保存。",
+          },
+        ]}
+      />
+      <Notes>
+        <li>普通 API Key 读不到套餐百分比,要的是登录管理后台之后的会话。</li>
+        <li>Cookie 里要有 ory_session_。有 csrftoken 会一并留下,其它名字会丢掉。</li>
+        <li>贴进去的 Cookie 不能续期。过期后重新登录,再点一次「自动获取」,或重新粘贴。</li>
+        <li>自动获取用的是单独窗口,不会读取日常浏览器里的登录状态。</li>
+      </Notes>
+    </>
+  );
+}
+
 function StepFunGuide() {
   return (
     <>
@@ -148,7 +177,13 @@ function StepFunGuide() {
 export function CookieGuide({ provider }: { provider: CookieGuideProvider }) {
   return (
     <div data-theme-part="app" className="min-h-screen overflow-auto bg-background px-5 py-5 text-foreground">
-      {provider === "qwen" ? <QwenGuide /> : <StepFunGuide />}
+      {provider === "qwen" ? (
+        <QwenGuide />
+      ) : provider === "stepfun" ? (
+        <StepFunGuide />
+      ) : (
+        <MistralGuide />
+      )}
     </div>
   );
 }

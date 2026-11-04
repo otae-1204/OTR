@@ -253,7 +253,7 @@ pub struct UsageRecord {
 ### 5.7 Cursor
 | 项 | 内容 |
 |---|---|
-| 数据源 | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` 只读取出 `cursorAuth/accessToken`,再请求 `POST https://cursor.com/api/dashboard/get-filtered-usage-events` |
+| 数据源 | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` 只读取出 `cursorAuth/accessToken`。值若是 `cursor-safe-storage:v1:` 密文,在内存里解开后再请求:`POST https://cursor.com/api/dashboard/get-filtered-usage-events`。Windows 用同目录 `Local State` 的 `os_crypt.encrypted_key`(DPAPI + AES-256-GCM);macOS 用钥匙串 `Cursor Safe Storage`(AES-128-CBC)。不写回数据库 |
 | 为何走网络 | Cursor 3.x 起本地 `cursorDiskKV` 里 `tokenCount` 恒为 `{0,0}`,官方口径在用量 Dashboard |
 | 解析要点 | Cookie `WorkosCursorSessionToken=<sub>%3A%3A<jwt>`;`tokenUsage.totalCents/100` 是美元 |
 | 水位 | 事件按 `ts` 取"重叠窗口"(回退 10 分钟)+ key 去重,晚到的事件不会被永久丢掉;老状态(没有 overlap 标记)第一次升级上来仍严格按水位拉,避免重算历史 |
@@ -691,7 +691,7 @@ UI 会被冻住。耗时还会被三件事放大:
 | 额度接口直连不通(实测 chatgpt.com 必超时) | `limits/http.rs` 依次试 环境变量代理 → 系统代理 → 直连;ureq 不会自己读系统代理 |
 | 额度接口改字段(尤其 StepFun 的逆向控制台 RPC) | 缺字段一律 `None` → UI 显示 `--`;**认不出的响应把原始键名报给用户**,绝不臆造数字;失败只影响该张卡 |
 | 密钥经 Tauri 命令泄漏到前端 | 命令只返回 `{name, present}`;密钥值只存在于 `credential.rs` 内部,写入即离开内存;A9 测试对真实密钥逐个反查所有返回值 |
-| 两个程序同时改同一个凭据文件 | OTR **只读** `~/.codex/auth.json` 与 Cursor 的 `state.vscdb`(后者以只读方式打开)。Grok 只在续期成功后替换该账号三个字段;StepFun 只替换原凭据里的 `Oasis-Token` |
+| 两个程序同时改同一个凭据文件 | OTR **只读** `~/.codex/auth.json` 与 Cursor 的 `state.vscdb`(后者以只读方式打开)。Cursor 登录态若已加密,另外只读 `Local State` 或系统钥匙串里的 OSCrypt 密钥,明文不落盘。Grok 只在续期成功后替换该账号三个字段;StepFun 只替换原凭据里的 `Oasis-Token` |
 | Windows 凭据写不下长 Cookie | blob 上限 2560 字节(UTF-16);超长秘密按 `名字#1`…分片,见 §9 |
 | 计量口径争议(cache/reasoning) | 分列展示不加总,UI 注明口径:`total = input + output + cache_read + cache_write` |
 | 定价表过期导致成本失真 | 定价表是唯一权威,但每行标注来源(官方/手动/未知),同步时对已手动设置的价格先询问 |

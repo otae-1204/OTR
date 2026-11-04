@@ -9,6 +9,19 @@ export interface Totals {
   calls: number;
   totalTokens: number;
   cost: number;
+  /** 真实吐字覆盖的输出 token。速度 = 它 ÷ genMs */
+  genOutputTokens: number;
+  /** 真实吐字耗时，毫秒。不含首字之前的等待 */
+  genMs: number;
+  /** 计入真实速度的请求次数 */
+  genSamples: number;
+  /** 估算速度（整段请求，可含首字等待）覆盖的输出 token */
+  estOutputTokens: number;
+  estMs: number;
+  estSamples: number;
+  /** 首字延迟合计，毫秒。平均 = ttftMs ÷ ttftSamples */
+  ttftMs: number;
+  ttftSamples: number;
 }
 
 export interface AgentSlice {
@@ -57,6 +70,8 @@ export interface AgentStatus {
 export interface DailyUsage {
   date: string;
   agent: string;
+  /** 按模型拆分时才有值;按 Agent 汇总时为空 */
+  model?: string;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -174,6 +189,12 @@ export const LIMIT_PROVIDER_LABELS: Record<string, string> = {
   codex: "Codex CLI",
   grok: "Grok",
   deepseek: "DeepSeek",
+  openrouter: "OpenRouter",
+  minimax: "MiniMax",
+  zai: "智谱",
+  kimi: "Kimi",
+  factory: "Factory",
+  mistral: "Mistral",
   qwen: "Qwen",
   stepfun: "StepFun",
 };
@@ -184,12 +205,25 @@ export const LIMIT_PROVIDER_MODE: Record<string, "home" | "key"> = {
   codex: "home",
   grok: "home",
   deepseek: "key",
+  openrouter: "key",
+  minimax: "key",
+  zai: "key",
+  kimi: "key",
+  factory: "key",
+  mistral: "key",
   qwen: "key",
   stepfun: "key",
 };
 
 /** 已实测可用的来源;StepFun 是逆向接口,默认关闭 */
-export const DEFAULT_LIMIT_PROVIDERS = ["cursor", "codex", "grok", "deepseek", "qwen"];
+export const DEFAULT_LIMIT_PROVIDERS = [
+  "cursor",
+  "codex",
+  "grok",
+  "deepseek",
+  "qwen",
+  "openrouter",
+];
 
 export interface Settings {
   enabledAgents: string[];
@@ -249,6 +283,7 @@ export const api = {
     to: string,
     granularity?: "day" | "hour" | "month",
     model?: string | null,
+    byModel?: boolean,
   ) =>
     invoke<DailyUsage[]>("get_daily", {
       agent,
@@ -256,6 +291,7 @@ export const api = {
       to,
       granularity: granularity ?? "day",
       model: model ?? null,
+      byModel: byModel ?? false,
     }),
   getHourProfile: (
     agent: string | null,

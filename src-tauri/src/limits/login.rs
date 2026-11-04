@@ -39,6 +39,9 @@ pub fn capture(app: &AppHandle, provider: &str, credential_name: &str) -> Result
 
     let started = Instant::now();
     let mut failure = "登录窗口已关闭,没有取到凭据".to_string();
+    // StepFun 会先写一条未登录 journal。第一次看到的只当基线,不能立刻关窗。
+    let mut stepfun_baseline: Option<String> = None;
+    let mut mistral_hits = 0u8;
     loop {
         if started.elapsed() > WAIT {
             let _ = win.destroy();
@@ -53,20 +56,30 @@ pub fn capture(app: &AppHandle, provider: &str, credential_name: &str) -> Result
         };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(current.cookies());
+            let page = current.url().ok().map(|u| u.to_string());
+            let _ = tx.send((page, current.cookies()));
         });
-        let cookies = match rx.recv_timeout(Duration::from_secs(8)) {
-            Ok(Ok(list)) => list,
-            Ok(Err(_)) => continue,
+        let (page, cookies) = match rx.recv_timeout(Duration::from_secs(8)) {
+            Ok((page, Ok(list))) => (page, list),
+            Ok((_, Err(_))) => continue,
             Err(_) => continue,
         };
-        match target.secret(&cookies) {
+        match target.secret(&cookies, &mut stepfun_baseline) {
             Ok(secret) => {
+                // 过期的 ory_session 会留在 Cookie 里,同时页面被转到登录域。
+                // 连续两次停在管理后台才保存,避免刚打开、还没跳走时把旧会话写进去。
+                if provider == "mistral" && !mistral_confirmed(&mut mistral_hits, page.as_deref()) {
+                    failure = "还没有登录。登录完成后这个窗口会自己关掉。".into();
+                    continue;
+                }
                 credential::set(credential_name, &secret)?;
                 let _ = win.destroy();
                 return Ok(target.saved);
             }
-            Err(err) => failure = err,
+            Err(err) => {
+                mistral_hits = 0;
+                failure = err;
+            }
         }
     }
 }
@@ -75,7 +88,7 @@ struct Target {
     title: &'static str,
     start: &'static str,
     saved: String,
-    secret: fn(&[tauri::webview::Cookie<'static>]) -> Result<String, String>,
+    secret: fn(&[tauri::webview::Cookie<'static>], &mut Option<String>) -> Result<String, String>,
 }
 
 impl Target {
@@ -93,25 +106,41 @@ impl Target {
                 saved: "已获取百炼控制台 Cookie".into(),
                 secret: qwen_secret,
             }),
+            "mistral" => Ok(Self {
+                title: "登录 Mistral",
+                start: "https://admin.mistral.ai/subscription",
+                saved: "已获取 Mistral 登录 Cookie".into(),
+                secret: mistral_secret,
+            }),
             _ => Err("这个来源不需要登录获取".into()),
         }
     }
 
-    fn secret(&self, cookies: &[tauri::webview::Cookie<'static>]) -> Result<String, String> {
-        (self.secret)(cookies)
+    fn secret(
+        &self,
+        cookies: &[tauri::webview::Cookie<'static>],
+        baseline: &mut Option<String>,
+    ) -> Result<String, String> {
+        (self.secret)(cookies, baseline)
     }
 }
 
-fn stepfun_secret(cookies: &[tauri::webview::Cookie<'static>]) -> Result<String, String> {
+fn stepfun_secret(
+    cookies: &[tauri::webview::Cookie<'static>],
+    baseline: &mut Option<String>,
+) -> Result<String, String> {
     let Some(cookie) = cookies.iter().find(|c| c.name().eq_ignore_ascii_case("Oasis-Token")) else {
         return Err("还没有登录。登录完成后这个窗口会自己关掉。".into());
     };
-    let journal = super::stepfun::extract_journal(cookie.value())
-        .ok_or_else(|| "登录态格式不对,没有取到订阅凭据。".to_string())?;
+    let journal = super::stepfun::signed_in_journal(cookie.value(), baseline)
+        .ok_or_else(|| "还没有登录。登录完成后这个窗口会自己关掉。".to_string())?;
     Ok(format!("Oasis-Token={journal}"))
 }
 
-fn qwen_secret(cookies: &[tauri::webview::Cookie<'static>]) -> Result<String, String> {
+fn qwen_secret(
+    cookies: &[tauri::webview::Cookie<'static>],
+    _baseline: &mut Option<String>,
+) -> Result<String, String> {
     let mut pairs = Vec::new();
     let mut ticket = false;
     for cookie in cookies {
@@ -134,6 +163,43 @@ fn qwen_secret(cookies: &[tauri::webview::Cookie<'static>]) -> Result<String, St
     Ok(pairs.join("; "))
 }
 
+fn mistral_secret(
+    cookies: &[tauri::webview::Cookie<'static>],
+    _baseline: &mut Option<String>,
+) -> Result<String, String> {
+    let raw = cookies
+        .iter()
+        .filter(|cookie| !cookie.name().is_empty() && !cookie.value().is_empty())
+        .map(|cookie| format!("{}={}", cookie.name(), cookie.value()))
+        .collect::<Vec<_>>()
+        .join("; ");
+    super::mistral::session_cookie(&raw)
+        .ok_or_else(|| "还没有登录。登录完成后这个窗口会自己关掉。".to_string())
+}
+
+/// 管理后台自己的地址。登录中转在 `auth.mistral.ai`,不能算已经登录。
+fn mistral_admin_url(url: &str) -> bool {
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.split('@').next_back().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
+    host.eq_ignore_ascii_case("admin.mistral.ai")
+}
+
+fn mistral_confirmed(hits: &mut u8, url: Option<&str>) -> bool {
+    if !url.is_some_and(mistral_admin_url) {
+        *hits = 0;
+        return false;
+    }
+    *hits = hits.saturating_add(1);
+    *hits >= 2
+}
+
 /// 百炼额度实际会读到的名字,再加上登录态本身。其余跟踪 Cookie 不存。
 fn qwen_cookie_name(name: &str) -> bool {
     name == "login_aliyunid_ticket"
@@ -149,7 +215,7 @@ fn qwen_cookie_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{qwen_secret, stepfun_secret};
+    use super::{mistral_admin_url, mistral_confirmed, mistral_secret, qwen_secret, stepfun_secret};
     use tauri::webview::Cookie;
 
     fn cookie(name: &str, value: &str) -> Cookie<'static> {
@@ -157,28 +223,67 @@ mod tests {
     }
 
     #[test]
-    fn stepfun_waits_until_the_journal_shape_appears() {
-        let missing = stepfun_secret(&[cookie("_wafdytokenv1", "abc")]);
+    fn stepfun_keeps_the_first_journal_and_accepts_only_a_replacement() {
+        let missing = stepfun_secret(&[cookie("_wafdytokenv1", "abc")], &mut None);
         assert!(missing.is_err());
         let jwt = "eyJhbGciOiJub25lIn0.eyJkZXZpY2VfaWQiOiJkZXYxIn0.sig";
-        let journal = format!("{jwt}...{jwt}");
-        let got = stepfun_secret(&[cookie("Oasis-Token", &journal)]).unwrap();
-        assert_eq!(got, format!("Oasis-Token={journal}"));
-        assert!(!got.contains(jwt.split('.').next().unwrap()) || got.starts_with("Oasis-Token="));
+        let anonymous = format!("{jwt}...{jwt}");
+        let mut baseline = None;
+        let first = stepfun_secret(&[cookie("Oasis-Token", &anonymous)], &mut baseline);
+        assert!(first.is_err(), "页面刚打开的 journal 还不是登录态");
+        let same = stepfun_secret(&[cookie("Oasis-Token", &anonymous)], &mut baseline);
+        assert!(same.is_err(), "同一条 journal 不能反复触发关闭");
+        let signed = "eyJhbGciOiJub25lIn0.eyJ1aWQiOiJ1MSJ9.sig";
+        let logged_in = format!("{signed}...{signed}");
+        let got = stepfun_secret(&[cookie("Oasis-Token", &logged_in)], &mut baseline).unwrap();
+        assert_eq!(got, format!("Oasis-Token={logged_in}"));
+        let lone = stepfun_secret(&[cookie("Oasis-Token", jwt)], &mut None);
+        assert!(lone.is_err(), "没有刷新段的 JWT 不能自动保存");
     }
 
     #[test]
     fn qwen_requires_the_login_ticket_and_keeps_only_named_cookies() {
-        let early = qwen_secret(&[cookie("cna", "abc"), cookie("login_aliyunid_csrf", "csrf")]);
+        let early = qwen_secret(&[cookie("cna", "abc"), cookie("login_aliyunid_csrf", "csrf")], &mut None);
         assert!(early.is_err(), "没有登录票不能保存");
         let got = qwen_secret(&[
             cookie("cna", "abc"),
             cookie("login_aliyunid_ticket", "ticket"),
             cookie("isg", "tracker"),
-        ])
+        ], &mut None)
         .unwrap();
         assert!(got.contains("cna=abc"));
         assert!(got.contains("login_aliyunid_ticket=ticket"));
         assert!(!got.contains("isg"), "跟踪 Cookie 不进凭据");
+    }
+
+    #[test]
+    fn mistral_keeps_the_session_and_waits_until_the_admin_page_stays() {
+        let early = mistral_secret(&[cookie("csrftoken", "tok")], &mut None);
+        assert!(early.is_err(), "只有 CSRF 还没登录");
+        let got = mistral_secret(
+            &[
+                cookie("ory_session_abc", "sess"),
+                cookie("csrftoken", "tok"),
+                cookie("theme", "dark"),
+            ],
+            &mut None,
+        )
+        .unwrap();
+        assert_eq!(got, "ory_session_abc=sess; csrftoken=tok");
+
+        assert!(!mistral_admin_url("https://auth.mistral.ai/self-service/login"));
+        assert!(!mistral_admin_url("https://admin.mistral.ai.evil.com/subscription"));
+        assert!(mistral_admin_url("https://admin.mistral.ai/subscription?from=login"));
+
+        let mut hits = 0;
+        assert!(!mistral_confirmed(&mut hits, Some("https://auth.mistral.ai/login")));
+        assert!(!mistral_confirmed(
+            &mut hits,
+            Some("https://admin.mistral.ai/subscription")
+        ));
+        assert!(mistral_confirmed(
+            &mut hits,
+            Some("https://admin.mistral.ai/subscription")
+        ));
     }
 }

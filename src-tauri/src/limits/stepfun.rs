@@ -160,6 +160,25 @@ pub fn extract_journal(raw: &str) -> Option<String> {
     None
 }
 
+/// 登录窗专用:页面打开后会先写下未登录 journal,不能把它当成登录成功。
+///
+/// 第一次看到的完整 journal 记为基线。只有之后换成另一条完整 journal 才算登录完成。
+/// 单个 JWT 在这里不接受,它没有刷新段,大约 30 分钟就失效。
+pub fn signed_in_journal(raw: &str, baseline: &mut Option<String>) -> Option<String> {
+    let journal = extract_journal(raw)?;
+    if !journal.contains("...") {
+        return None;
+    }
+    match baseline {
+        None => {
+            *baseline = Some(journal);
+            None
+        }
+        Some(seen) if seen == &journal => None,
+        Some(_) => Some(journal),
+    }
+}
+
 /// 从 journal 里挑出 `device_id`(用作 `Oasis-Webid` / `Oasis-Did`)。
 ///
 /// 参考实现就是这么做的:遍历 journal 的每一段,取第一个带 `device_id` 的。
@@ -947,6 +966,27 @@ mod tests {
         );
         // 三个点必须还在
         assert!(extract_journal(&journal).unwrap().contains("..."));
+    }
+
+    /// 登录窗打开时先出现的 journal 是未登录态。它只建立基线,不能当登录成功。
+    #[test]
+    fn the_first_complete_journal_is_only_a_baseline() {
+        let anonymous = format!(
+            "{}...{}",
+            jwt_with(r#"{"activated":false}"#, "sigA"),
+            jwt_with(r#"{"device_id":"dev1"}"#, "sigB")
+        );
+        let mut baseline = None;
+        assert_eq!(signed_in_journal(&anonymous, &mut baseline), None);
+        assert_eq!(signed_in_journal(&anonymous, &mut baseline), None);
+        let logged_in = format!(
+            "{}...{}",
+            jwt_with(r#"{"uid":"u1"}"#, "sigC"),
+            jwt_with(r#"{"device_id":"dev1"}"#, "sigD")
+        );
+        assert_eq!(signed_in_journal(&logged_in, &mut baseline).as_deref(), Some(logged_in.as_str()));
+        let lone = jwt_with(r#"{"uid":"u1"}"#, "sigE");
+        assert_eq!(signed_in_journal(&lone, &mut None), None);
     }
 
     /// 单个 JWT(控制台请求头里复制的)也接受,但要提醒它会过期

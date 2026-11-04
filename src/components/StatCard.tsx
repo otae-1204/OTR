@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { RangeSummary, Totals } from "../api/bindings";
-import { fmtCost, fmtDateTime, fmtTokens } from "../lib/format";
+import { fmtCost, fmtDateTime, fmtTokens, fmtTps, fmtTtft, tpsTitle } from "../lib/format";
 import { compareText, formatRangeSpan } from "../lib/range";
 import {
   ActivityIcon,
@@ -62,8 +62,7 @@ export function cacheHitRate(t: Totals): number {
   return denom > 0 ? t.cacheReadTokens / denom : 0;
 }
 
-const HIT_RATE_TIP =
-  "缓存命中率 = 缓存读 ÷ (未缓存输入 + 缓存读)。「缓存读」是命中上下文缓存的输入部分:多轮对话里系统提示、代码上下文等每轮都从缓存读取,所以缓存读经常比未缓存输入还高,是正常现象。";
+const HIT_RATE_TIP = "缓存读 ÷ (未缓存输入 + 缓存读)";
 
 interface StatCardProps {
   summary: RangeSummary | null;
@@ -93,6 +92,13 @@ export function StatCard({
   previous,
 }: StatCardProps) {
   const totals: Totals | null = summary?.totals ?? null;
+  const agentSelected = agentAllTimeTokens != null;
+  const realSpeed =
+    agentSelected && totals ? fmtTps(totals.genOutputTokens, totals.genMs) : null;
+  const estSpeed =
+    agentSelected && totals ? fmtTps(totals.estOutputTokens, totals.estMs) : null;
+  const ttft =
+    agentSelected && totals ? fmtTtft(totals.ttftMs, totals.ttftSamples) : null;
   const hit = totals ? cacheHitRate(totals) : 0;
   const hitPct = (hit * 100).toFixed(1);
   const compareWindow = previous
@@ -179,6 +185,20 @@ export function StatCard({
               </span>
             </span>
           ) : null}
+          {(realSpeed || estSpeed || ttft) && totals ? (
+            <span className="flex flex-wrap items-baseline justify-end gap-x-3 text-xs tabular-nums text-muted-foreground">
+              {realSpeed ? (
+                <span title={tpsTitle(totals.genOutputTokens, totals.genMs, totals.genSamples)}>
+                  平均速度 {realSpeed}
+                </span>
+              ) : estSpeed ? (
+                <span title={tpsTitle(totals.estOutputTokens, totals.estMs, totals.estSamples)}>
+                  估算速度 {estSpeed}
+                </span>
+              ) : null}
+              {ttft ? <span>平均首字 {ttft}</span> : null}
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -225,9 +245,7 @@ export function StatCard({
           accent="text-stat-cache-read"
           value={totals ? fmtTokens(totals.cacheReadTokens) : "--"}
           title={
-            totals
-              ? `命中上下文缓存的输入 ${totals.cacheReadTokens.toLocaleString()} tokens(可能高于未缓存输入,属正常)`
-              : undefined
+            totals ? `${totals.cacheReadTokens.toLocaleString()} tokens` : undefined
           }
         />
         <MiniStat
@@ -248,11 +266,7 @@ export function StatCard({
           label="成本"
           accent="text-stat-cost"
           value={totals ? fmtCost(totals.cost, currency, rate) : "--"}
-          title={
-            totals
-              ? `成本 ${totals.cost.toFixed(4)}(填了定价的模型按定价重算,其余用自带成本或 0)`
-              : undefined
-          }
+          title={totals ? "按定价估算" : undefined}
           hint={costCompare}
         />
       </div>

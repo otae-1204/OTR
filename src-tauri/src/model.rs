@@ -54,11 +54,59 @@ pub struct UsageRecord {
     /// 会话"最后活跃"时间;缺省用 ts
     #[serde(default)]
     pub touch_ts: Option<i64>,
+    /// 真实吐字：第一个字到最后一个字的输出 token。0 = 这次没有真实速度样本。
+    #[serde(default)]
+    pub gen_output: u64,
+    /// 真实吐字耗时，毫秒。不含首字之前的等待。
+    #[serde(default)]
+    pub gen_ms: u64,
+    /// 计入真实速度的请求次数。
+    #[serde(default)]
+    pub gen_samples: u64,
+    /// 估算速度：整段请求（可含首字等待）覆盖的输出 token。
+    #[serde(default)]
+    pub est_output: u64,
+    #[serde(default)]
+    pub est_ms: u64,
+    #[serde(default)]
+    pub est_samples: u64,
+    /// 首字延迟合计，毫秒。展示时除以 ttft_samples。
+    #[serde(default)]
+    pub ttft_ms: u64,
+    #[serde(default)]
+    pub ttft_samples: u64,
+}
+
+/// 单次生成耗时的可信区间。短于 50ms 分不清是不是时钟粒度；
+/// 长于 30 分钟多半是卡住的流，放进平均会把速度拉成接近 0。
+pub fn plausible_gen_ms(ms: i64) -> Option<u64> {
+    if (50..=30 * 60 * 1000).contains(&ms) {
+        Some(ms as u64)
+    } else {
+        None
+    }
+}
+
+/// 首字延迟：请求开始到第一个字。短于 1ms 没有意义，长于 3 分钟多半对错了时钟。
+pub fn plausible_ttft_ms(ms: i64) -> Option<u64> {
+    if (1..=180_000).contains(&ms) {
+        Some(ms as u64)
+    } else {
+        None
+    }
 }
 
 impl UsageRecord {
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
+    }
+
+    /// 这条记录要写入速度表。估算耗时可以单独增加(流式补齐),不必同时带上输出 token。
+    pub fn writes_speed(&self) -> bool {
+        (self.gen_ms > 0 && self.gen_output > 0)
+            || self.est_ms > 0
+            || self.est_output > 0
+            || self.ttft_samples > 0
     }
 }
 
@@ -127,6 +175,17 @@ pub struct Totals {
     pub calls: u64,
     pub total_tokens: u64,
     pub cost: f64,
+    /// 真实吐字覆盖的输出 token。速度 = 它 ÷ gen_ms。
+    pub gen_output_tokens: u64,
+    pub gen_ms: u64,
+    pub gen_samples: u64,
+    /// 估算速度（整段请求，可含首字等待）覆盖的输出 token。
+    pub est_output_tokens: u64,
+    pub est_ms: u64,
+    pub est_samples: u64,
+    /// 首字延迟合计与样本数。平均延迟 = ttft_ms ÷ ttft_samples。
+    pub ttft_ms: u64,
+    pub ttft_samples: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -187,6 +246,9 @@ pub struct AgentStatus {
 pub struct DailyUsage {
     pub date: String,
     pub agent: String,
+    /// 按模型拆分时是模型名;按 Agent 汇总时为空。
+    #[serde(default)]
+    pub model: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,

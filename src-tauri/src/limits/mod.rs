@@ -21,10 +21,16 @@ pub mod credential;
 pub mod cursor;
 pub mod grok;
 pub mod http;
+pub mod factory;
+pub mod kimi;
 pub mod login;
 pub mod deepseek;
+pub mod minimax;
+pub mod mistral;
+pub mod openrouter;
 pub mod qwen;
 pub mod stepfun;
+pub mod zai;
 
 use std::sync::Mutex;
 
@@ -195,6 +201,18 @@ pub fn resolve_accounts(settings: &crate::settings::Settings) -> Vec<AccountPlan
             builtin: true,
         });
     }
+    if enabled("openrouter") {
+        out.push(AccountPlan {
+            account: crate::settings::LimitAccount {
+                id: "openrouter".into(),
+                provider: "openrouter".into(),
+                label: "OpenRouter".into(),
+                secret_ref: Some(openrouter::CREDENTIAL_NAME.into()),
+                ..Default::default()
+            },
+            builtin: true,
+        });
+    }
     if enabled("qwen") {
         out.push(AccountPlan {
             account: crate::settings::LimitAccount {
@@ -203,6 +221,37 @@ pub fn resolve_accounts(settings: &crate::settings::Settings) -> Vec<AccountPlan
                 label: "Qwen".into(),
                 secret_ref: Some(qwen::CREDENTIAL_NAME.into()),
                 cookie_ref: Some(qwen::COOKIE_NAME.into()),
+                ..Default::default()
+            },
+            builtin: true,
+        });
+    }
+    for (id, label, secret) in [
+        ("minimax", "MiniMax", minimax::CREDENTIAL_NAME),
+        ("zai", "智谱", zai::CREDENTIAL_NAME),
+        ("kimi", "Kimi", kimi::CREDENTIAL_NAME),
+        ("factory", "Factory", factory::CREDENTIAL_NAME),
+    ] {
+        if enabled(id) {
+            out.push(AccountPlan {
+                account: crate::settings::LimitAccount {
+                    id: id.into(),
+                    provider: id.into(),
+                    label: label.into(),
+                    secret_ref: Some(secret.into()),
+                    ..Default::default()
+                },
+                builtin: true,
+            });
+        }
+    }
+    if enabled("mistral") {
+        out.push(AccountPlan {
+            account: crate::settings::LimitAccount {
+                id: "mistral".into(),
+                provider: "mistral".into(),
+                label: "Mistral".into(),
+                cookie_ref: Some(mistral::COOKIE_NAME.into()),
                 ..Default::default()
             },
             builtin: true,
@@ -251,6 +300,12 @@ pub fn fetch_account(plan: &AccountPlan) -> ProviderLimits {
         "codex" => fetch_codex(acc),
         "grok" => fetch_grok(acc),
         "deepseek" => fetch_deepseek(acc),
+        "openrouter" => fetch_openrouter(acc),
+        "minimax" => fetch_keyed(acc, "minimax", "MiniMax", minimax::fetch_with_credential),
+        "zai" => fetch_keyed(acc, "zai", "智谱", zai::fetch_with_credential),
+        "kimi" => fetch_keyed(acc, "kimi", "Kimi", kimi::fetch_with_credential),
+        "factory" => fetch_keyed(acc, "factory", "Factory", factory::fetch_with_credential),
+        "mistral" => fetch_mistral(acc),
         "qwen" => fetch_qwen(acc),
         "stepfun" => fetch_stepfun(acc),
         // 理论上 resolve_accounts 已过滤;这里兜底,绝不拿别家数字冒充
@@ -347,6 +402,35 @@ fn fetch_qwen(acc: &crate::settings::LimitAccount) -> ProviderLimits {
     out
 }
 
+fn fetch_keyed(
+    acc: &crate::settings::LimitAccount,
+    provider: &str,
+    label: &str,
+    fetch: fn(&str) -> ProviderLimits,
+) -> ProviderLimits {
+    match acc.secret_ref.as_deref() {
+        Some(name) => fetch(name),
+        None => ProviderLimits::unconfigured(
+            &acc.id,
+            &acc.label,
+            provider,
+            &format!("未配置 API Key。在设置里为 {label} 填入密钥。"),
+        ),
+    }
+}
+
+fn fetch_openrouter(acc: &crate::settings::LimitAccount) -> ProviderLimits {
+    match acc.secret_ref.as_deref() {
+        Some(name) => openrouter::fetch_with_credential(name),
+        None => ProviderLimits::unconfigured(
+            &acc.id,
+            &acc.label,
+            "openrouter",
+            "未配置 API Key。在设置里为该账号填入密钥即可查看限额和余额。",
+        ),
+    }
+}
+
 fn fetch_deepseek(acc: &crate::settings::LimitAccount) -> ProviderLimits {
     match acc.secret_ref.as_deref() {
         Some(name) => deepseek::fetch_with_credential(name),
@@ -365,6 +449,23 @@ fn fetch_deepseek(acc: &crate::settings::LimitAccount) -> ProviderLimits {
 ///
 /// 哪个配了就显示哪个;两个都配则合并(余额 + 窗口共存)。
 /// 没有 cookie 时不拿别的账号的控制台凭据来凑。
+fn fetch_mistral(acc: &crate::settings::LimitAccount) -> ProviderLimits {
+    match acc
+        .cookie_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => mistral::fetch_with_credential(name),
+        None => ProviderLimits::unconfigured(
+            "mistral",
+            "Mistral",
+            "mistral",
+            "未配置登录 Cookie。在浏览器登录 admin.mistral.ai,把请求头里的 Cookie 贴到设置。",
+        ),
+    }
+}
+
 fn fetch_stepfun(acc: &crate::settings::LimitAccount) -> ProviderLimits {
     let (key_name, cookie_name) = stepfun_credential_names(acc);
     let balance = match key_name.as_deref() {
@@ -456,7 +557,21 @@ fn combine_stepfun(mut balance: ProviderLimits, plan: ProviderLimits) -> Provide
 
 /// 内置账号的 id。额外账号不能占用,否则列表里会出现两条同一个 id。
 pub fn is_builtin_account_id(id: &str) -> bool {
-    matches!(id, "cursor" | "codex" | "grok" | "deepseek" | "qwen" | "stepfun")
+    matches!(
+        id,
+        "cursor"
+            | "codex"
+            | "grok"
+            | "deepseek"
+            | "openrouter"
+            | "minimax"
+            | "zai"
+            | "kimi"
+            | "factory"
+            | "mistral"
+            | "qwen"
+            | "stepfun"
+    )
 }
 
 /// 删账号时要一并清掉的凭据。只含程序生成的 `limit.*`,不动内置条目。
@@ -513,6 +628,12 @@ pub fn prepare_account(
             "codex" => "Codex CLI".into(),
             "grok" => "Grok".into(),
             "deepseek" => "DeepSeek".into(),
+            "openrouter" => "OpenRouter".into(),
+            "minimax" => "MiniMax".into(),
+            "zai" => "智谱".into(),
+            "kimi" => "Kimi".into(),
+            "factory" => "Factory".into(),
+            "mistral" => "Mistral".into(),
             "qwen" => "Qwen".into(),
             "stepfun" => "StepFun".into(),
             other => other.to_string(),
@@ -540,12 +661,21 @@ pub fn prepare_account(
             account.secret_ref = None;
             account.cookie_ref = None;
         }
-        "deepseek" => {
+        "deepseek" | "openrouter" | "minimax" | "zai" | "kimi" | "factory" => {
             account.home = None;
             account.cookie_ref = None;
             if let Some(secret) = api_key {
                 let name = credential::generated_key_name(&account.provider, &account.id)?;
                 account.secret_ref = Some(name.clone());
+                writes.push((name, secret));
+            }
+        }
+        "mistral" => {
+            account.home = None;
+            account.secret_ref = None;
+            if let Some(secret) = console_cookie {
+                let name = credential::generated_cookie_name(&account.provider, &account.id)?;
+                account.cookie_ref = Some(name.clone());
                 writes.push((name, secret));
             }
         }

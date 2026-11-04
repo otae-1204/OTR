@@ -21,6 +21,34 @@ export function fmtTokens(n: number): string {
   return String(Math.round(n));
 }
 
+/**
+ * 生成速度。没有可信耗时时返回 null。
+ * 分子只用带耗时的输出,不能拿全部 output 来除。
+ */
+export function fmtTps(outputTokens: number, genMs: number): string | null {
+  if (!(outputTokens > 0) || !(genMs > 0)) return null;
+  const tps = outputTokens / (genMs / 1000);
+  if (!Number.isFinite(tps) || tps <= 0) return null;
+  if (tps >= 100) return `${Math.round(tps)} token/s`;
+  if (tps >= 10) return `${trimTrailingZeros(tps.toFixed(1))} token/s`;
+  return `${trimTrailingZeros(tps.toFixed(2))} token/s`;
+}
+
+/** 平均首字延迟。样本不足时返回 null。 */
+export function fmtTtft(totalMs: number, samples: number): string | null {
+  if (!(samples > 0) || !(totalMs > 0)) return null;
+  const ms = totalMs / samples;
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  if (ms >= 1000) return `${trimTrailingZeros((ms / 1000).toFixed(1))} 秒`;
+  return `${Math.round(ms)} ms`;
+}
+
+export function tpsTitle(outputTokens: number, genMs: number, samples: number): string {
+  const seconds = trimTrailingZeros((genMs / 1000).toFixed(1));
+  const calls = samples > 0 ? `${samples.toLocaleString()} 次 · ` : "";
+  return `${calls}${outputTokens.toLocaleString()} token / ${seconds} 秒`;
+}
+
 /** 成本显示:后端金额统一为 ¥,展示时按全局币种换算。>=0.01 保留 2 位,否则 4 位 */
 export function fmtCost(n: number, currency: string, rate: number): string {
   if (currency === "USD") {

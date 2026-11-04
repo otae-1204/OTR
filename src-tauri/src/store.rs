@@ -52,6 +52,21 @@ CREATE TABLE IF NOT EXISTS usage_hourly (
 );
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_daily_date ON usage_daily(date);
+-- 生成速度单独成表:按天 token 常由台账覆盖,耗时只在会话日志里。
+-- 写进 usage_daily 会被台账的先删后写抹掉。
+CREATE TABLE IF NOT EXISTS usage_speed (
+  agent TEXT NOT NULL, date TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '',
+  gen_output INTEGER NOT NULL DEFAULT 0,
+  gen_ms INTEGER NOT NULL DEFAULT 0,
+  samples INTEGER NOT NULL DEFAULT 0,
+  est_output INTEGER NOT NULL DEFAULT 0,
+  est_ms INTEGER NOT NULL DEFAULT 0,
+  est_samples INTEGER NOT NULL DEFAULT 0,
+  ttft_ms INTEGER NOT NULL DEFAULT 0,
+  ttft_samples INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (agent, date, model, provider)
+);
 "#;
 
 const SQL_DAILY_UPSERT: &str = r#"
@@ -107,6 +122,25 @@ ON CONFLICT(agent,session_id) DO UPDATE SET
   last_active = MAX(COALESCE(last_active,0), COALESCE(excluded.last_active,0))
 "#;
 
+const SQL_SPEED_UPSERT: &str = r#"
+INSERT INTO usage_speed (
+  agent, date, model, provider,
+  gen_output, gen_ms, samples,
+  est_output, est_ms, est_samples,
+  ttft_ms, ttft_samples
+)
+VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+ON CONFLICT(agent, date, model, provider) DO UPDATE SET
+  gen_output = gen_output + excluded.gen_output,
+  gen_ms = gen_ms + excluded.gen_ms,
+  samples = samples + excluded.samples,
+  est_output = est_output + excluded.est_output,
+  est_ms = est_ms + excluded.est_ms,
+  est_samples = est_samples + excluded.est_samples,
+  ttft_ms = ttft_ms + excluded.ttft_ms,
+  ttft_samples = ttft_samples + excluded.ttft_samples
+"#;
+
 /// 数据版本号:只在**真的写入了行**时递增,和用量写入在同一个事务里。
 /// 前端拿它当刷新键(替代原来的 generated_at),空闲轮询就不再连锁触发
 /// get_range_summary / get_daily / get_sessions 这三条明细查询。
@@ -134,13 +168,14 @@ fn write_records(
     let mut n = 0usize;
     for r in records {
         let has_usage = r.total_tokens() > 0 || r.calls > 0 || r.cost.abs() > f64::EPSILON;
-        if has_usage {
+        let has_speed = r.writes_speed();
+        if has_usage || has_speed {
             let date = r.bucket_date.clone().unwrap_or_else(|| local_date(r.ts));
             let hour = r
                 .bucket_hour
                 .filter(|hour| (0..24).contains(hour))
                 .unwrap_or_else(|| local_hour(r.ts));
-            if !r.skip_daily {
+            if has_usage && !r.skip_daily {
                 // 绝对总量(台账第一次看到某天)要先删后写:同一行可能已被
                 // "按小时表回填"写过,直接累加会双计。
                 if r.absolute_daily {
@@ -171,7 +206,7 @@ fn write_records(
                     ],
                 )?;
             }
-            if !r.skip_hourly {
+            if has_usage && !r.skip_hourly {
                 tx.execute(
                     SQL_HOURLY_UPSERT,
                     params![
@@ -187,6 +222,26 @@ fn write_records(
                         r.reasoning_tokens as i64,
                         r.calls as i64,
                         r.cost,
+                    ],
+                )?;
+            }
+            // 速度不跟 skip_daily 走:台账负责按天 token 时,日志仍要留下耗时。
+            if has_speed {
+                tx.execute(
+                    SQL_SPEED_UPSERT,
+                    params![
+                        r.agent,
+                        date,
+                        r.model.clone().unwrap_or_default(),
+                        r.provider.clone().unwrap_or_default(),
+                        r.gen_output as i64,
+                        r.gen_ms as i64,
+                        r.gen_samples as i64,
+                        r.est_output as i64,
+                        r.est_ms as i64,
+                        r.est_samples as i64,
+                        r.ttft_ms as i64,
+                        r.ttft_samples as i64,
                     ],
                 )?;
             }
@@ -306,6 +361,7 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        ensure_speed_columns(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -323,6 +379,7 @@ impl Store {
         let conn = self.conn();
         conn.execute("DELETE FROM usage_daily WHERE agent=?1", params![agent])?;
         conn.execute("DELETE FROM usage_hourly WHERE agent=?1", params![agent])?;
+        conn.execute("DELETE FROM usage_speed WHERE agent=?1", params![agent])?;
         conn.execute(
             "DELETE FROM usage_session_models WHERE agent=?1",
             params![agent],
@@ -368,26 +425,34 @@ impl Store {
         // 本次扫描**会写进按天或按小时表**的日期:只有这些日期允许被替换。
         // 判据与 write_records 对齐 —— 两个表都不写的记录(如只进会话表的 projcache)
         // 不能让它把那个日期的历史删掉。空集时 json_each 不产生行 → 一条都不删。
-        let covered: std::collections::HashSet<String> = records
-            .iter()
-            .filter(|r| {
-                let has_usage =
-                    r.total_tokens() > 0 || r.calls > 0 || r.cost.abs() > f64::EPSILON;
-                has_usage && !(r.skip_daily && r.skip_hourly)
-            })
-            .map(|r| {
-                r.bucket_date
-                    .clone()
-                    .unwrap_or_else(|| local_date(r.ts))
-            })
-            .collect();
-        let covered_json = serde_json::to_string(&covered)?;
+        // 只有耗时、没有 token 的记录只替换速度表,避免把那天的用量一起抹掉。
+        let mut usage_dates: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut speed_dates: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for r in records {
+            let date = r
+                .bucket_date
+                .clone()
+                .unwrap_or_else(|| local_date(r.ts));
+            let has_usage = r.total_tokens() > 0 || r.calls > 0 || r.cost.abs() > f64::EPSILON;
+            if has_usage && !(r.skip_daily && r.skip_hourly) {
+                usage_dates.insert(date.clone());
+                speed_dates.insert(date);
+            } else if r.writes_speed() {
+                speed_dates.insert(date);
+            }
+        }
+        let usage_json = serde_json::to_string(&usage_dates)?;
+        let speed_json = serde_json::to_string(&speed_dates)?;
         for sql in [
             "DELETE FROM usage_daily WHERE agent=?1 AND date IN (SELECT value FROM json_each(?2))",
             "DELETE FROM usage_hourly WHERE agent=?1 AND date IN (SELECT value FROM json_each(?2))",
         ] {
-            tx.execute(sql, params![agent, covered_json])?;
+            tx.execute(sql, params![agent, usage_json])?;
         }
+        tx.execute(
+            "DELETE FROM usage_speed WHERE agent=?1 AND date IN (SELECT value FROM json_each(?2))",
+            params![agent, speed_json],
+        )?;
         // 会话表与游标表按 Agent 整体重建(它们不是按日期的历史,重扫即最新)
         for sql in [
             "DELETE FROM usage_session_models WHERE agent=?1",
@@ -537,6 +602,7 @@ impl Store {
                 calls: row.get::<_, i64>(4)? as u64,
                 cost: row.get(5)?,
                 total_tokens: 0,
+                ..Totals::default()
             })
         })?;
         let total = t.input_tokens + t.output_tokens + t.cache_read_tokens + t.cache_write_tokens;
@@ -624,6 +690,14 @@ impl Store {
             dst.calls += src.calls;
             dst.total_tokens += src.total_tokens;
             dst.cost += src.cost;
+            dst.gen_output_tokens += src.gen_output_tokens;
+            dst.gen_ms += src.gen_ms;
+            dst.gen_samples += src.gen_samples;
+            dst.est_output_tokens += src.est_output_tokens;
+            dst.est_ms += src.est_ms;
+            dst.est_samples += src.est_samples;
+            dst.ttft_ms += src.ttft_ms;
+            dst.ttft_samples += src.ttft_samples;
         }
 
         // 折叠 (model, agent) 行:tokens 合计 + 成本(定价覆盖 / 币种归一化)
@@ -659,11 +733,11 @@ impl Store {
 
         // Q1:按 Agent 过滤 → totals + by_model;未指定 Agent 时排除已停用的
         let mut totals = Totals::default();
-        let by_model: Vec<ModelSlice> = {
+        let mut model_map: std::collections::HashMap<String, Totals> =
+            std::collections::HashMap::new();
+        {
             let sql = base_sql.replace("{agent_cond}", "AND (?3 IS NULL OR agent = ?3)");
             let mut stmt = conn.prepare(&sql)?;
-            let mut model_map: std::collections::HashMap<String, Totals> =
-                std::collections::HashMap::new();
             fold_rows(
                 &mut stmt,
                 &[&from, &to, &agent],
@@ -677,21 +751,14 @@ impl Store {
                     merge(model_map.entry(model.to_string()).or_default(), &t);
                 },
             )?;
-            let mut list: Vec<ModelSlice> = model_map
-                .into_iter()
-                .map(|(model, totals)| ModelSlice { model, totals })
-                .collect();
-            list.sort_by(|a, b| b.totals.total_tokens.cmp(&a.totals.total_tokens));
-            list.truncate(12);
-            list
-        };
+        }
 
         // Q2:不按选中 Agent 过滤 → by_agent(卡片用);仍排除设置里停用的
-        let by_agent: Vec<AgentSlice> = {
+        let mut agent_map: std::collections::HashMap<String, Totals> =
+            std::collections::HashMap::new();
+        {
             let sql = base_sql.replace("{agent_cond}", "");
             let mut stmt = conn.prepare(&sql)?;
-            let mut agent_map: std::collections::HashMap<String, Totals> =
-                std::collections::HashMap::new();
             fold_rows(
                 &mut stmt,
                 &[&from, &to],
@@ -704,6 +771,29 @@ impl Store {
                     merge(agent_map.entry(ag.to_string()).or_default(), &t);
                 },
             )?;
+        }
+
+        attach_speed(
+            &conn,
+            from,
+            to,
+            agent,
+            enabled_agents,
+            &mut totals,
+            &mut model_map,
+            &mut agent_map,
+        )?;
+
+        let by_model: Vec<ModelSlice> = {
+            let mut list: Vec<ModelSlice> = model_map
+                .into_iter()
+                .map(|(model, totals)| ModelSlice { model, totals })
+                .collect();
+            list.sort_by(|a, b| b.totals.total_tokens.cmp(&a.totals.total_tokens));
+            list.truncate(12);
+            list
+        };
+        let by_agent: Vec<AgentSlice> = {
             let mut list: Vec<AgentSlice> = agent_map
                 .into_iter()
                 .map(|(agent, totals)| AgentSlice { agent, totals })
@@ -798,52 +888,65 @@ impl Store {
         to: &str,
         granularity: &str,
         model: Option<&str>,
+        by_model: bool,
     ) -> Result<Vec<DailyUsage>> {
         let conn = self.conn();
         let model = model.filter(|m| !m.is_empty());
-        // 空模型在占比里显示成「(未知模型)」,过滤时用同一套换算。
+        // 空模型在占比里显示成「(未知模型)」,过滤和拆分都用同一套换算。
         let model_sql =
             "AND (?4 IS NULL OR COALESCE(NULLIF(model, ''), '(未知模型)') = ?4)";
+        let model_expr = if by_model {
+            "COALESCE(NULLIF(model, ''), '(未知模型)')"
+        } else {
+            "''"
+        };
+        let model_group = if by_model {
+            ", COALESCE(NULLIF(model, ''), '(未知模型)')"
+        } else {
+            ""
+        };
         let sql = match granularity {
             "hour" => format!(
-                "SELECT date || ' ' || printf('%02d:00', hour) AS bucket, agent,
+                "SELECT date || ' ' || printf('%02d:00', hour) AS bucket, agent, {model_expr},
                         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                         SUM(cache_write_tokens), SUM(calls), SUM(cost)
                  FROM usage_hourly WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)
                  {model_sql}
-                 GROUP BY bucket, agent ORDER BY bucket, agent"
+                 GROUP BY bucket, agent{model_group} ORDER BY bucket, agent"
             ),
             "month" => format!(
-                "SELECT substr(date,1,7) AS bucket, agent,
+                "SELECT substr(date,1,7) AS bucket, agent, {model_expr},
                         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                         SUM(cache_write_tokens), SUM(calls), SUM(cost)
                  FROM usage_daily WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)
                  {model_sql}
-                 GROUP BY bucket, agent ORDER BY bucket, agent"
+                 GROUP BY bucket, agent{model_group} ORDER BY bucket, agent"
             ),
             _ => format!(
-                "SELECT date, agent, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
+                "SELECT date, agent, {model_expr},
+                        SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                         SUM(cache_write_tokens), SUM(calls), SUM(cost)
                  FROM usage_daily WHERE date >= ?1 AND date <= ?2 AND (?3 IS NULL OR agent = ?3)
                  {model_sql}
-                 GROUP BY date, agent ORDER BY date, agent"
+                 GROUP BY date, agent{model_group} ORDER BY date, agent"
             ),
         };
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![from, to, agent, model], |row| {
-            let input: i64 = row.get(2)?;
-            let output: i64 = row.get(3)?;
-            let cr: i64 = row.get(4)?;
-            let cw: i64 = row.get(5)?;
+            let input: i64 = row.get(3)?;
+            let output: i64 = row.get(4)?;
+            let cr: i64 = row.get(5)?;
+            let cw: i64 = row.get(6)?;
             Ok(DailyUsage {
                 date: row.get(0)?,
                 agent: row.get(1)?,
+                model: row.get(2)?,
                 input_tokens: input as u64,
                 output_tokens: output as u64,
                 cache_read_tokens: cr as u64,
                 cache_write_tokens: cw as u64,
-                calls: row.get::<_, i64>(6)? as u64,
-                cost: row.get(7)?,
+                calls: row.get::<_, i64>(7)? as u64,
+                cost: row.get(8)?,
                 total_tokens: (input + output + cr + cw) as u64,
             })
         })?;
@@ -1104,6 +1207,113 @@ impl Store {
     }
 }
 
+/// 已有库在加估算速度和首字延迟之前建过 usage_speed。缺列就补上，默认 0。
+fn ensure_speed_columns(conn: &Connection) -> Result<()> {
+    let mut existing = std::collections::HashSet::new();
+    let mut stmt = conn.prepare("PRAGMA table_info(usage_speed)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in rows {
+        existing.insert(name?);
+    }
+    for (name, ty) in [
+        ("est_output", "INTEGER NOT NULL DEFAULT 0"),
+        ("est_ms", "INTEGER NOT NULL DEFAULT 0"),
+        ("est_samples", "INTEGER NOT NULL DEFAULT 0"),
+        ("ttft_ms", "INTEGER NOT NULL DEFAULT 0"),
+        ("ttft_samples", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if existing.contains(name) {
+            continue;
+        }
+        conn.execute_batch(&format!(
+            "ALTER TABLE usage_speed ADD COLUMN {name} {ty}"
+        ))?;
+    }
+    Ok(())
+}
+
+/// 把 usage_speed 叠到已经按 token 汇总好的结果上。
+/// 没有速度样本的模型保持 0,前端就显示「--」,不会拿全部输出去除以残缺的耗时。
+fn attach_speed(
+    conn: &Connection,
+    from: &str,
+    to: &str,
+    agent: Option<&str>,
+    enabled_agents: Option<&[String]>,
+    totals: &mut Totals,
+    model_map: &mut HashMap<String, Totals>,
+    agent_map: &mut HashMap<String, Totals>,
+) -> Result<()> {
+    let enabled_ok = |id: &str| match enabled_agents {
+        None => true,
+        Some(list) => list.iter().any(|a| a == id),
+    };
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(NULLIF(model,''),'(未知模型)'), agent,
+                COALESCE(SUM(gen_output),0), COALESCE(SUM(gen_ms),0), COALESCE(SUM(samples),0),
+                COALESCE(SUM(est_output),0), COALESCE(SUM(est_ms),0), COALESCE(SUM(est_samples),0),
+                COALESCE(SUM(ttft_ms),0), COALESCE(SUM(ttft_samples),0)
+         FROM usage_speed
+         WHERE date >= ?1 AND date <= ?2
+         GROUP BY COALESCE(NULLIF(model,''),'(未知模型)'), agent",
+    )?;
+    let rows = stmt.query_map(params![from, to], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, i64>(9)?,
+        ))
+    })?;
+    for row in rows {
+        let (model, ag, gen_output, gen_ms, samples, est_output, est_ms, est_samples, ttft_ms, ttft_samples) =
+            row?;
+        if !enabled_ok(&ag) {
+            continue;
+        }
+        let gen_output = gen_output.max(0) as u64;
+        let gen_ms = gen_ms.max(0) as u64;
+        let samples = samples.max(0) as u64;
+        let est_output = est_output.max(0) as u64;
+        let est_ms = est_ms.max(0) as u64;
+        let est_samples = est_samples.max(0) as u64;
+        let ttft_ms = ttft_ms.max(0) as u64;
+        let ttft_samples = ttft_samples.max(0) as u64;
+        let has_real = gen_output > 0 && gen_ms > 0;
+        let has_est = est_output > 0 && est_ms > 0;
+        if !has_real && !has_est && ttft_samples == 0 {
+            continue;
+        }
+        let add = |dst: &mut Totals| {
+            if has_real {
+                dst.gen_output_tokens += gen_output;
+                dst.gen_ms += gen_ms;
+                dst.gen_samples += samples;
+            }
+            if has_est {
+                dst.est_output_tokens += est_output;
+                dst.est_ms += est_ms;
+                dst.est_samples += est_samples;
+            }
+            dst.ttft_ms += ttft_ms;
+            dst.ttft_samples += ttft_samples;
+        };
+        // 卡片不跟当前选中的 Agent 走,和 token 的 by_agent 一样
+        add(agent_map.entry(ag.clone()).or_default());
+        if agent.is_none() || agent == Some(ag.as_str()) {
+            add(totals);
+            add(model_map.entry(model).or_default());
+        }
+    }
+    Ok(())
+}
+
 fn totals_from_row(row: &rusqlite::Row, base: usize) -> Totals {
     let input: i64 = row.get(base).unwrap_or(0);
     let output: i64 = row.get(base + 1).unwrap_or(0);
@@ -1119,6 +1329,7 @@ fn totals_from_row(row: &rusqlite::Row, base: usize) -> Totals {
         calls: calls as u64,
         total_tokens: (input + output + cr + cw) as u64,
         cost,
+        ..Totals::default()
     }
 }
 
@@ -1302,6 +1513,51 @@ mod tests {
         );
         let _ = std::fs::remove_file(path);
     }
+
+    /// 只有估算耗时的记录写入速度表,重建时不删掉同一天已经记下的用量。
+    #[test]
+    fn speed_only_record_keeps_daily_tokens() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let mut old = record();
+        old.bucket_date = Some("2026-08-15".into());
+        store.apply_records(&[old]).unwrap();
+
+        let speed_only = UsageRecord {
+            agent: "opencode".into(),
+            model: Some("m".into()),
+            provider: Some("p".into()),
+            ts: 1_780_000_000_000,
+            bucket_date: Some("2026-08-15".into()),
+            est_output: 40,
+            est_ms: 238,
+            est_samples: 1,
+            skip_daily: true,
+            skip_hourly: true,
+            ..Default::default()
+        };
+        store.apply_records(std::slice::from_ref(&speed_only)).unwrap();
+        assert_eq!(store.totals_for_date("2026-08-15").unwrap().input_tokens, 10);
+
+        let cursors = std::collections::HashMap::new();
+        store
+            .replace_agent("opencode", &[speed_only], &cursors, &serde_json::Value::Null)
+            .unwrap();
+        assert_eq!(
+            store.totals_for_date("2026-08-15").unwrap().input_tokens,
+            10,
+            "只替换速度的记录不能删掉同一天的用量"
+        );
+        let none = HashMap::new();
+        let currency = HashMap::new();
+        let basis = CostBasis::new(&none, 7.0, &currency);
+        let summary = store
+            .range_summary(Some("opencode"), "2026-08-15", "2026-08-15", &basis, None, None)
+            .unwrap();
+        assert_eq!(summary.totals.est_output_tokens, 40);
+        assert_eq!(summary.totals.est_ms, 238);
+        let _ = std::fs::remove_file(path);
+    }
     /// 校正:整天缺按天数据的桶被补上;按天已更高的日期原样不动(幂等、不双计)。
     #[test]
     fn reconcile_fills_buckets_whose_daily_rows_are_missing() {
@@ -1451,14 +1707,14 @@ mod tests {
             10
         );
         let rows = store
-            .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour", None)
+            .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour", None, false)
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].date, "2026-08-31 09:00");
         assert_eq!(rows[0].input_tokens, 10);
         store.wipe_agent("dsh").unwrap();
         assert!(store
-            .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour", None)
+            .daily(Some("dsh"), "2026-08-31", "2026-08-31", "hour", None, false)
             .unwrap()
             .is_empty());
         let _ = std::fs::remove_file(path);
@@ -1511,6 +1767,7 @@ mod tests {
             calls: 1,
             total_tokens: 3_600_000,
             cost: 0.0,
+            ..Totals::default()
         };
         let flat = PriceEntry {
             input: 0.15,
@@ -1590,6 +1847,70 @@ mod tests {
             .peak_shares(Some("dsh"), "2026-09-19", "2026-09-19")
             .unwrap();
         assert_eq!(shares.get("2026-09-19", "m", "p").input, 0.0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn model_speed_is_weighted_and_survives_a_ledger_owned_day() {
+        let path = temp_db();
+        let store = Store::open(&path).unwrap();
+        let mut fast = record();
+        fast.model = Some("fast".into());
+        fast.output_tokens = 1_000;
+        fast.gen_output = 1_000;
+        fast.gen_ms = 5_000;
+        fast.gen_samples = 1;
+        fast.skip_daily = true;
+        let mut slow = record();
+        slow.model = Some("slow".into());
+        slow.output_tokens = 1_000;
+        slow.gen_output = 1_000;
+        slow.gen_ms = 20_000;
+        slow.gen_samples = 4;
+        let mut bare = record();
+        bare.model = Some("bare".into());
+        bare.output_tokens = 9_000;
+        store.apply_records(&[fast, slow, bare]).unwrap();
+
+        let pricing: HashMap<String, PriceEntry> = HashMap::new();
+        let currency: HashMap<String, String> = HashMap::new();
+        let basis = CostBasis::new(&pricing, 7.0, &currency);
+        let summary = store
+            .range_summary(None, "2000-01-01", "2100-01-01", &basis, None, None)
+            .unwrap();
+        assert_eq!(summary.totals.gen_output_tokens, 2_000);
+        assert_eq!(summary.totals.gen_ms, 25_000);
+        assert_eq!(summary.totals.gen_samples, 5);
+        let fast_row = summary
+            .by_model
+            .iter()
+            .find(|m| m.model == "fast")
+            .expect("台账占了按天表时,速度仍要能查到");
+        assert_eq!(fast_row.totals.gen_ms, 5_000);
+        assert_eq!(fast_row.totals.total_tokens, 0);
+        let bare_row = summary
+            .by_model
+            .iter()
+            .find(|m| m.model == "bare")
+            .unwrap();
+        assert_eq!(bare_row.totals.gen_ms, 0);
+        assert_eq!(bare_row.totals.output_tokens, 9_000);
+
+        let mut again = record();
+        again.model = Some("fast".into());
+        again.output_tokens = 1_000;
+        again.gen_output = 1_000;
+        again.gen_ms = 5_000;
+        again.gen_samples = 1;
+        store
+            .replace_agent("dsh", &[again], &HashMap::new(), &serde_json::Value::Null)
+            .unwrap();
+        let rebuilt = store
+            .range_summary(None, "2000-01-01", "2100-01-01", &basis, None, None)
+            .unwrap();
+        assert_eq!(rebuilt.totals.gen_output_tokens, 1_000);
+        assert_eq!(rebuilt.totals.gen_ms, 5_000);
+        assert_eq!(rebuilt.totals.gen_samples, 1);
         let _ = std::fs::remove_file(path);
     }
 
@@ -1675,7 +1996,7 @@ mod tests {
         store.apply_records(&[alpha, beta, unknown]).unwrap();
 
         let named = store
-            .daily(None, "2026-10-01", "2026-10-01", "day", Some("alpha"))
+            .daily(None, "2026-10-01", "2026-10-01", "day", Some("alpha"), false)
             .unwrap();
         assert_eq!(named.iter().map(|r| r.input_tokens).sum::<u64>(), 10);
         let blank = store
@@ -1685,9 +2006,18 @@ mod tests {
                 "2026-10-01",
                 "day",
                 Some("(未知模型)"),
+                false,
             )
             .unwrap();
         assert_eq!(blank.iter().map(|r| r.input_tokens).sum::<u64>(), 4);
+
+        let split = store
+            .daily(None, "2026-10-01", "2026-10-01", "day", None, true)
+            .unwrap();
+        let mut names: Vec<_> = split.iter().map(|r| r.model.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["(未知模型)", "alpha", "beta"]);
+        assert_eq!(split.iter().map(|r| r.input_tokens).sum::<u64>(), 114);
         let _ = std::fs::remove_file(path);
     }
 

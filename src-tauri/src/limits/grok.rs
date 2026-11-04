@@ -392,19 +392,12 @@ pub fn subscription_tier(body: &Value) -> Option<String> {
 pub fn assemble(billing: &Value, tier: Option<String>) -> ProviderLimits {
     let mut out = ProviderLimits::new("grok", "Grok", "grok");
     out.configured = true;
-    out.plan_label = tier.filter(|name| !name.is_empty());
+    out.plan_label = tier.as_deref().map(str::trim).filter(|name| !name.is_empty()).map(plan_label);
     let config = billing.get("config").unwrap_or(billing);
 
-    let pool = finite_percent(config.get("creditUsagePercent"));
     if let Some(window) = usage_window(config) {
         out.windows.push(window);
     }
-    // productUsage 是同一周池按产品拆开,不是第二个额度。
-    // 只有 Grok Build 在用时,它的百分比和「每周」是同一个数,再画一格就是重复。
-    out.windows.extend(product_windows(
-        config.get("productUsage").and_then(Value::as_array),
-        pool,
-    ));
     if out.windows.iter().all(|window| window.key != "weekly") {
         if let Some(window) = legacy_monthly(config) {
             out.windows.push(window);
@@ -477,62 +470,30 @@ fn period_labels(kind: &str) -> (&'static str, &'static str) {
     }
 }
 
-fn product_windows(items: Option<&Vec<Value>>, pool: Option<f64>) -> Vec<QuotaWindow> {
-    let mut rows: Vec<QuotaWindow> = items
-        .into_iter()
-        .flatten()
-        .filter_map(product_window)
-        .collect();
-    let nonzero: Vec<&QuotaWindow> = rows
-        .iter()
-        .filter(|window| window.used_percent.unwrap_or(0.0) > 0.0)
-        .collect();
-    let splits_the_pool = nonzero.len() >= 2
-        && nonzero.iter().any(|window| !same_percent(window.used_percent, pool));
-    if !splits_the_pool {
-        return Vec::new();
-    }
-    rows.retain(|window| window.used_percent.unwrap_or(0.0) > 0.0);
-    rows
-}
-
-fn same_percent(left: Option<f64>, right: Option<f64>) -> bool {
-    match (left, right) {
-        (Some(left), Some(right)) => (left - right).abs() < 0.5,
-        _ => false,
-    }
-}
-
-fn product_window(item: &Value) -> Option<QuotaWindow> {
-    let used = finite_percent(item.get("usagePercent"))?;
-    let name = item.get("product").and_then(Value::as_str).unwrap_or("").trim();
-    if name.is_empty() {
-        return None;
-    }
-    let key = format!("product_{}", product_key(name));
-    Some(QuotaWindow::new(&key, &product_label(name)).percent(Some(used)))
-}
-
-fn product_key(name: &str) -> String {
-    let mut out = String::new();
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-        } else if !out.ends_with('_') {
-            out.push('_');
+/// `/user` 的 `subscriptionTier` 是枚举,不是定价页上的名字。
+/// `GrokPro` 对应官方的 SuperGrok;新的 X Subscription 档位本身已经是展示名。
+fn plan_label(raw: &str) -> String {
+    let mut key = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '+' {
+            key.push(ch.to_ascii_lowercase());
         }
     }
-    out.trim_matches('_').to_string()
-}
-
-fn product_label(name: &str) -> String {
-    match name {
-        "Api" | "API" => "API".into(),
-        "GrokBuild" => "Grok Build".into(),
-        "Chat" => "Chat".into(),
-        "Imagine" => "Imagine".into(),
-        "Voice" => "Voice".into(),
-        other => other.to_string(),
+    let key = key.strip_prefix("subscriptiontier").unwrap_or(&key);
+    match key {
+        "grokpro" | "supergrok" => "SuperGrok".into(),
+        "supergroklite" => "SuperGrok Lite".into(),
+        "supergrokpro" | "supergrokheavy" | "grokheavy" => "SuperGrok Heavy".into(),
+        "supergrokplus" => "SuperGrok Plus".into(),
+        "xpremium+" | "xpremiumplus" => "X Premium+".into(),
+        "xpremium" => "X Premium".into(),
+        "xbasic" => "X Basic".into(),
+        "free" | "invalid" => "Free".into(),
+        "plus" => "Plus".into(),
+        "premium" => "Premium".into(),
+        "super" => "Super".into(),
+        "ultra" => "Ultra".into(),
+        _ => raw.trim().to_string(),
     }
 }
 
@@ -642,7 +603,7 @@ mod tests {
                 "used": { "val": 4839 }
             }
         });
-        let got = assemble(&billing, Some("SuperGrok".into()));
+        let got = assemble(&billing, Some("GrokPro".into()));
         assert_eq!(got.plan_label.as_deref(), Some("SuperGrok"));
         assert!(got.error.is_none(), "{:?}", got.error);
         let weekly = got.windows.iter().find(|w| w.key == "weekly").unwrap();
@@ -652,7 +613,7 @@ mod tests {
         assert!(weekly.reset_at.is_some());
         assert!(
             got.windows.iter().all(|w| !w.key.starts_with("product_")),
-            "只有一个产品和周池相同,不再单独画一格"
+            "产品拆分没有各自的上限,不单独画一格"
         );
         assert!(
             got.windows.iter().all(|w| w.key != "monthly"),
@@ -663,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn product_split_stays_when_two_products_share_the_pool() {
+    fn product_split_is_not_a_separate_quota() {
         let billing = serde_json::json!({
             "config": {
                 "creditUsagePercent": 20,
@@ -676,10 +637,18 @@ mod tests {
             }
         });
         let got = assemble(&billing, None);
-        assert!(got.windows.iter().any(|w| w.key == "weekly"));
-        assert!(got.windows.iter().any(|w| w.key == "product_api" && w.used_percent == Some(12.0)));
-        assert!(got.windows.iter().any(|w| w.key == "product_grokbuild" && w.used_percent == Some(8.0)));
-        assert!(got.windows.iter().all(|w| w.key != "product_chat"));
+        assert_eq!(got.windows.len(), 1);
+        assert_eq!(got.windows[0].key, "weekly");
+    }
+
+    #[test]
+    fn plan_names_follow_the_official_tiers() {
+        assert_eq!(plan_label("GrokPro"), "SuperGrok");
+        assert_eq!(plan_label("SuperGrokLite"), "SuperGrok Lite");
+        assert_eq!(plan_label("SuperGrokPro"), "SuperGrok Heavy");
+        assert_eq!(plan_label("XPremiumPlus"), "X Premium+");
+        assert_eq!(plan_label("Premium"), "Premium");
+        assert_eq!(plan_label("Ultra"), "Ultra");
     }
 
     #[test]

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::model::{iso_to_ms, UsageRecord};
+use crate::model::{iso_to_ms, plausible_gen_ms, UsageRecord};
 use crate::paths;
 use crate::providers::jsonl_util::{self, u64f};
 use crate::providers::{AgentProvider, ScanCtx};
@@ -18,7 +18,9 @@ const AGENT: &str = "zcode";
 /// v1: transcript 丢掉无模型的流结束重复与回合汇总,避免记成未知模型。
 /// v2: requestId 去重窗口跨扫描持久化 + 截断转全量重建。
 /// v3: inputTokens 含缓存读和缓存写,两栏都要减掉,否则缓存写会再加一次。
-pub const PARSER_VERSION: u64 = 3;
+/// v4: 用 startedAt/completedAt 记生成耗时,用来算 token/s。
+/// v5: 这段是整段请求（含首字等待），记成估算速度，不和真实吐字混在一起。
+pub const PARSER_VERSION: u64 = 5;
 
 /// 跨扫描保留的 requestId 上限;rollout 与 transcript 分属不同文件,
 /// 同一调用可能落在两次扫描里,单次 HashSet 挡不住。
@@ -241,6 +243,7 @@ fn scan_file(
         }
         seen.insert(dedup);
 
+        let (gen_output, gen_ms, gen_samples) = request_speed(&v, output);
         let r = UsageRecord {
             agent: agent.into(),
             session_id,
@@ -254,6 +257,9 @@ fn scan_file(
             cache_read_tokens: cache_read,
             cache_write_tokens: cache_write,
             calls: 1,
+            est_output: gen_output,
+            est_ms: gen_ms,
+            est_samples: gen_samples,
             ..Default::default()
         };
         out.push(r);
@@ -280,6 +286,28 @@ fn transcript_usage_is_per_call(v: &Value, usage: &Value) -> bool {
     }
     // 回合汇总即使改了 type 名,usage 里也会带 modelRequestCount
     usage.get("modelRequestCount").is_none()
+}
+
+/// 整段请求耗时。日志没有流式分片时,这是能拿到的最接近生成速度的数。
+fn request_speed(v: &Value, output: u64) -> (u64, u64, u64) {
+    if output == 0 {
+        return (0, 0, 0);
+    }
+    let start = v
+        .get("startedAt")
+        .and_then(Value::as_str)
+        .and_then(iso_to_ms);
+    let end = v
+        .get("completedAt")
+        .and_then(Value::as_str)
+        .and_then(iso_to_ms);
+    let Some(ms) = start
+        .zip(end)
+        .and_then(|(start, end)| plausible_gen_ms(end.saturating_sub(start)))
+    else {
+        return (0, 0, 0);
+    };
+    (output, ms, 1)
 }
 
 fn nonempty_str(v: &Value) -> Option<&str> {
@@ -460,6 +488,10 @@ mod tests {
         );
         assert_eq!(records[0].input_tokens, 8194 - 6272);
         assert_eq!(records[0].cache_read_tokens, 6272);
+        assert_eq!(records[0].est_output, 100);
+        assert_eq!(records[0].est_ms, 29_010);
+        assert_eq!(records[0].est_samples, 1);
+        assert_eq!(records[0].gen_ms, 0);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -513,6 +545,7 @@ mod tests {
         assert!(records
             .iter()
             .all(|r| r.model.as_deref().is_some_and(|m| !m.is_empty())));
+        assert_eq!(records[0].gen_ms, 0, "transcript 没有起止时间,不算速度");
         fs::remove_dir_all(root).unwrap();
     }
 

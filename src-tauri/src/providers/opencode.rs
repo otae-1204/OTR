@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rusqlite::{Connection, OpenFlags};
@@ -5,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::model::{now_ms, UsageRecord};
+use crate::model::{now_ms, plausible_gen_ms, UsageRecord};
 use crate::paths;
 use crate::providers::{AgentProvider, ScanCtx};
 
@@ -16,7 +17,8 @@ const AGENT: &str = "opencode";
 /// 解析语义版本;变更时启动会全量重建。
 /// v1: session 表绝对值 diff,基线随重建一起重算。
 /// v2: reasoning 不在 output 里,合计时要加进去,否则官方总额会少这一栏。
-pub const PARSER_VERSION: u64 = 2;
+/// v3: 估算速度来自 message.data 的 time.created→completed,不使用会话的 time_updated。
+pub const PARSER_VERSION: u64 = 3;
 
 impl AgentProvider for OpencodeProvider {
     fn id(&self) -> &str {
@@ -90,11 +92,25 @@ impl OcEntry {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct OcSpeed {
+    #[serde(default)]
+    output: u64,
+    #[serde(default)]
+    ms: u64,
+    #[serde(default)]
+    samples: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct OcState {
     /// key: session id;会话表是绝对值,存上次快照做差
-    sessions: std::collections::HashMap<String, OcEntry>,
+    sessions: HashMap<String, OcEntry>,
+    /// key: session\x01model\x01provider。消息耗时的绝对值,只把增长写成估算速度。
+    #[serde(default)]
+    speed: HashMap<String, OcSpeed>,
 }
 
 /// session 表直接给出按会话聚合的 token 列;模型字段是 JSON 字符串 {"id","providerID","variant"}
@@ -139,6 +155,7 @@ fn scan_sessions(st: &mut OcState) -> Result<Vec<UsageRecord>> {
 
     let mut out = Vec::new();
     let mut alive: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut session_ts: HashMap<String, i64> = HashMap::new();
     for row in rows {
         let (sid, title, directory, cost, tin, tout, tre, tcr, tcw, model, created, updated) =
             match row {
@@ -156,12 +173,13 @@ fn scan_sessions(st: &mut OcState) -> Result<Vec<UsageRecord>> {
         };
         let prev = st.sessions.get(&sid).cloned().unwrap_or_default();
         let delta = cur.delta_from(&prev);
+        // 该会话的绝对值快照按会话起始日计入按天表(OpenCode 没有更细的按天粒度)
+        let ts = created.filter(|t| *t > 0).unwrap_or_else(now_ms);
+        session_ts.insert(sid.clone(), ts);
         if delta.is_zero() {
             continue;
         }
         let (model_id, provider_id) = parse_model(model.as_deref());
-        // 该会话的绝对值快照按会话起始日计入按天表(OpenCode 没有更细的按天粒度)
-        let ts = created.filter(|t| *t > 0).unwrap_or_else(now_ms);
         out.push(UsageRecord {
             agent: AGENT.into(),
             session_id: Some(sid.clone()),
@@ -185,7 +203,147 @@ fn scan_sessions(st: &mut OcState) -> Result<Vec<UsageRecord>> {
     }
     // 会话被删除时同步清掉基准
     st.sessions.retain(|k, _| alive.contains(k));
+    drop(stmt);
+    match load_message_speeds(&conn) {
+        Ok(snaps) => out.extend(speed_deltas(&mut st.speed, snaps, &session_ts)),
+        Err(e) => eprintln!("[opencode] message speed: {e}"),
+    }
     Ok(out)
+}
+
+/// message.data 里的 time.created → time.completed 才是单次请求耗时。
+/// 会话行的 time_updated 含着用户离开后的空档,不能拿来算速度。
+fn load_message_speeds(conn: &Connection) -> rusqlite::Result<HashMap<String, OcSpeed>> {
+    let mut stmt = conn.prepare("SELECT session_id, data FROM message")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut map: HashMap<String, OcSpeed> = HashMap::new();
+    for row in rows {
+        let (sid, data) = match row {
+            Ok(row) => row,
+            Err(_) => continue,
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&data) else {
+            continue;
+        };
+        let Some((key, snap)) = speed_from_data(&sid, &v) else {
+            continue;
+        };
+        let dst = map.entry(key).or_default();
+        dst.output = dst.output.saturating_add(snap.output);
+        dst.ms = dst.ms.saturating_add(snap.ms);
+        dst.samples = dst.samples.saturating_add(snap.samples);
+    }
+    Ok(map)
+}
+
+fn speed_from_data(session_id: &str, data: &Value) -> Option<(String, OcSpeed)> {
+    if data.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+        return None;
+    }
+    let model = data
+        .get("modelID")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| data.pointer("/model/id").and_then(|v| v.as_str()))
+        .filter(|s| !s.is_empty())?;
+    let provider = data
+        .get("providerID")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| data.pointer("/model/providerID").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    let output = json_u64(data.pointer("/tokens/output"));
+    if output == 0 {
+        return None;
+    }
+    let created = data.pointer("/time/created").and_then(Value::as_f64)?;
+    let completed = data.pointer("/time/completed").and_then(Value::as_f64)?;
+    let duration = completed - created;
+    if !duration.is_finite() || duration <= 0.0 {
+        return None;
+    }
+    let ms = plausible_gen_ms(duration as i64)?;
+    Some((
+        speed_key(session_id, model, provider),
+        OcSpeed {
+            output,
+            ms,
+            samples: 1,
+        },
+    ))
+}
+
+fn speed_key(session_id: &str, model: &str, provider: &str) -> String {
+    format!("{session_id}\u{1}{model}\u{1}{provider}")
+}
+
+fn split_speed_key(key: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = key.split('\u{1}');
+    Some((parts.next()?, parts.next()?, parts.next()?))
+}
+
+fn json_u64(v: Option<&Value>) -> u64 {
+    let Some(v) = v else {
+        return 0;
+    };
+    if let Some(n) = v.as_u64() {
+        return n;
+    }
+    if let Some(n) = v.as_i64() {
+        return n.max(0) as u64;
+    }
+    v.as_f64()
+        .filter(|n| n.is_finite() && *n > 0.0)
+        .map(|n| n as u64)
+        .unwrap_or(0)
+}
+
+fn speed_deltas(
+    speed: &mut HashMap<String, OcSpeed>,
+    snaps: HashMap<String, OcSpeed>,
+    session_ts: &HashMap<String, i64>,
+) -> Vec<UsageRecord> {
+    let mut out = Vec::new();
+    for (key, snap) in snaps {
+        let prev = speed.get(&key).cloned().unwrap_or_default();
+        let d_out = snap.output.saturating_sub(prev.output);
+        let d_ms = snap.ms.saturating_sub(prev.ms);
+        let d_samples = snap.samples.saturating_sub(prev.samples);
+        if d_out == 0 && d_ms == 0 && d_samples == 0 {
+            continue;
+        }
+        let Some((sid, model, provider)) = split_speed_key(&key) else {
+            continue;
+        };
+        if model.is_empty() {
+            continue;
+        }
+        let ts = session_ts
+            .get(sid)
+            .copied()
+            .filter(|t| *t > 0)
+            .unwrap_or_else(now_ms);
+        out.push(UsageRecord {
+            agent: AGENT.into(),
+            model: Some(model.to_string()),
+            provider: if provider.is_empty() {
+                None
+            } else {
+                Some(provider.to_string())
+            },
+            ts,
+            est_output: d_out,
+            est_ms: d_ms,
+            est_samples: d_samples,
+            skip_daily: true,
+            skip_hourly: true,
+            ..Default::default()
+        });
+        speed.insert(key, snap);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -216,6 +374,47 @@ mod tests {
             !only_reasoning.delta_from(&OcEntry::default()).is_zero(),
             "只有 reasoning 的增量不能被当成空快照丢掉"
         );
+    }
+
+    #[test]
+    fn message_time_is_estimated_speed_and_does_not_repeat() {
+        let payload = serde_json::json!({
+            "role": "assistant",
+            "modelID": "claude-sonnet-4",
+            "providerID": "anthropic",
+            "tokens": { "output": 4 },
+            "time": { "created": 1783882279705i64, "completed": 1783882279943i64 }
+        });
+        let (key, snap) = speed_from_data("ses_1", &payload).unwrap();
+        assert_eq!(snap.output, 4);
+        assert_eq!(snap.ms, 238);
+        assert_eq!(snap.samples, 1);
+
+        let user = serde_json::json!({
+            "role": "user",
+            "time": { "created": 1783882279705i64, "completed": 1783882279943i64 }
+        });
+        assert!(speed_from_data("ses_1", &user).is_none());
+        let unfinished = serde_json::json!({
+            "role": "assistant",
+            "modelID": "claude-sonnet-4",
+            "tokens": { "output": 4 },
+            "time": { "created": 1783882279705i64 }
+        });
+        assert!(speed_from_data("ses_1", &unfinished).is_none());
+
+        let mut speed = HashMap::new();
+        let mut snaps = HashMap::new();
+        snaps.insert(key, snap);
+        let session_ts = HashMap::from([("ses_1".into(), 50i64)]);
+        let first = speed_deltas(&mut speed, snaps.clone(), &session_ts);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].est_output, 4);
+        assert_eq!(first[0].est_ms, 238);
+        assert_eq!(first[0].output_tokens, 0);
+        assert!(first[0].skip_daily && first[0].skip_hourly);
+        assert_eq!(first[0].ts, 50);
+        assert!(speed_deltas(&mut speed, snaps, &session_ts).is_empty());
     }
 }
 

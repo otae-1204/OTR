@@ -129,6 +129,7 @@ pub fn get_daily(
     to: Option<String>,
     granularity: Option<String>,
     model: Option<String>,
+    by_model: Option<bool>,
 ) -> std::result::Result<Vec<DailyUsage>, String> {
     let state = app.state::<AppState>();
     let from = from.unwrap_or_else(|| date_str(chrono::Duration::days(29)));
@@ -140,7 +141,14 @@ pub fn get_daily(
     };
     let mut rows = state
         .store
-        .daily(agent.as_deref(), &from, &to, &g, model.as_deref())
+        .daily(
+            agent.as_deref(),
+            &from,
+            &to,
+            &g,
+            model.as_deref(),
+            by_model.unwrap_or(false),
+        )
         .map_err(err_str)?;
     if agent.is_none() {
         let enabled = crate::lock(&state.settings).enabled_agents.clone();
@@ -595,7 +603,7 @@ pub async fn capture_console_cookie(
     .map_err(|e| format!("登录获取中断:{e}"))?
 }
 
-/// 需要手填 Cookie 的套餐(Qwen / StepFun)教程窗口。只在用户点「教程」时创建。
+/// 需要手填 Cookie 的套餐(Qwen / StepFun / Mistral)教程窗口。只在用户点「教程」时创建。
 ///
 /// 必须是 async。同步命令跑在事件循环那条线程上,而建 WebView 又要等事件循环
 /// 回消息,两边互相等:窗口标题出来了,页面停在白底,关闭消息也进不去。
@@ -604,6 +612,7 @@ pub async fn open_cookie_guide(app: AppHandle, provider: String) -> std::result:
     let (label, title, id) = match provider.as_str() {
         "qwen" => ("guide-qwen", "Qwen · Cookie 教程", "qwen"),
         "stepfun" => ("guide-stepfun", "StepFun · Cookie 教程", "stepfun"),
+        "mistral" => ("guide-mistral", "Mistral · Cookie 教程", "mistral"),
         _ => return Err("这个来源没有 Cookie 教程".into()),
     };
     if let Some(win) = app.get_webview_window(label) {

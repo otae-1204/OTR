@@ -25,11 +25,18 @@ dirs = "6"
 thiserror = "2"
 ureq = { version = "2.12", features = ["json"] }
 base64 = "0.22"
+# Cursor 登录态的 OSCrypt。Windows 是 v10 + AES-256-GCM,macOS 是 v10 + AES-128-CBC。
+aes = "0.8"
+aes-gcm = "0.10"
+cbc = "0.1"
+pbkdf2 = "0.12"
+sha1 = "0.10"
 
 # 凭据库按平台收窄。Linux 的 keyring 会拖进整套 zbus,那边继续走环境变量。
 # macOS 只用系统钥匙串(v1 里的 apple-native);zbus 依赖本身被 crate 限制在 Linux。
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "4", default-features = false, features = ["v1", "windows-native-keyring-store"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "4", default-features = false, features = ["v1"] }

@@ -1,8 +1,8 @@
 //! Cursor 订阅额度:`GET https://cursor.com/api/usage-summary`
 //!
-//! 认证沿用本地会话:从 `state.vscdb` 里取 `cursorAuth/accessToken`(JWT),
-//! 配合 `cursorAuth/cachedSignUpType` 或 JWT 的 `sub` 拼出
-//! `WorkosCursorSessionToken=<userId>::<jwt>` 这个 cookie。
+//! 认证沿用本地会话:从 `state.vscdb` 里取 `cursorAuth/accessToken`。
+//! 新版本是 `cursor-safe-storage:v1:` 密文,先在内存里解开(见 `cursor_session`),
+//! 再按 JWT 的 `sub` 拼 `WorkosCursorSessionToken=<userId>::<jwt>`。
 //! 实测 Cursor 不校验 User-Agent,所以不伪造 UA。
 
 use serde_json::Value;
@@ -11,36 +11,8 @@ use super::{ProviderLimits, QuotaWindow};
 
 pub const SUMMARY_URL: &str = "https://cursor.com/api/usage-summary";
 
-/// 从 state.vscdb 取一个 key 的文本值(只读,且用只读方式打开)
-pub fn state_db_value(db: &std::path::Path, key: &str) -> Option<String> {
-    if !db.is_file() {
-        return None;
-    }
-    // 只读打开:Cursor 可能正开着这个库,不加 mode=ro 会抢写锁
-    let conn = rusqlite::Connection::open_with_flags(
-        db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    conn.query_row(
-        "SELECT value FROM ItemTable WHERE key = ?1",
-        rusqlite::params![key],
-        |row| row.get::<_, String>(0),
-    )
-    .ok()
-    .filter(|s| !s.trim().is_empty())
-}
-
-/// 本地 Cursor 的会话 cookie(不需要用户手填)
-pub fn local_cookie() -> Option<String> {
-    cookie_from_user_dir(&crate::paths::cursor_user_dir())
-}
-
-/// 指定 profile 目录的会话 cookie(多账号:每个账号一份 user-data-dir)
-pub fn cookie_from_user_dir(user_dir: &std::path::Path) -> Option<String> {
-    let db = user_dir.join("User").join("globalStorage").join("state.vscdb");
-    let jwt = state_db_value(&db, "cursorAuth/accessToken")?;
-    let user = user_id_from_cli_or_jwt(user_dir, &jwt).or_else(|| user_id_from_jwt(&jwt))?;
+fn cookie_from_jwt(user_dir: &std::path::Path, jwt: &str) -> Option<String> {
+    let user = user_id_from_cli_or_jwt(user_dir, jwt).or_else(|| user_id_from_jwt(jwt))?;
     Some(format!("WorkosCursorSessionToken={user}%3A%3A{jwt}"))
 }
 
@@ -107,6 +79,32 @@ fn percent_from_used_limit(used: Option<f64>, limit: Option<f64>) -> Option<f64>
     clamp_percent(used / limit * 100.0)
 }
 
+/// `membershipType` 是小写枚举。定价页上的名字是 Pro、Pro+、Ultra 这些。
+fn plan_label(raw: &str) -> String {
+    let key: String = raw
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '+')
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect();
+    match key.as_str() {
+        "free" => "Free".into(),
+        "hobby" => "Hobby".into(),
+        "start" => "Start".into(),
+        "pro" => "Pro".into(),
+        "proplus" | "pro+" => "Pro+".into(),
+        "plus" => "Plus".into(),
+        "premium" => "Premium".into(),
+        "super" => "Super".into(),
+        "ultra" => "Ultra".into(),
+        "team" | "teams" => "Teams".into(),
+        "teamsstandard" => "Teams Standard".into(),
+        "teamspremium" => "Teams Premium".into(),
+        "enterprise" => "Enterprise".into(),
+        "business" => "Business".into(),
+        _ => raw.trim().to_string(),
+    }
+}
+
 /// 解析 usage-summary。**优先级阶梯写死**(见模块注释规则 1)。
 pub fn parse_summary(body: &Value) -> ProviderLimits {
     let mut out = ProviderLimits::new("cursor", "Cursor", "cursor");
@@ -137,7 +135,9 @@ pub fn parse_summary(body: &Value) -> ProviderLimits {
         .get("planName")
         .or_else(|| body.get("membershipType"))
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(plan_label);
 
     let reset_at = body
         .get("billingCycleEnd")
@@ -175,12 +175,36 @@ pub fn parse_summary(body: &Value) -> ProviderLimits {
 }
 
 pub fn fetch() -> ProviderLimits {
-    fetch_with_cookie_opt(local_cookie())
+    fetch_from_home(&crate::paths::cursor_user_dir())
 }
 
 /// 多账号:从指定的 user-data-dir 取会话
 pub fn fetch_from_home(home: &std::path::Path) -> ProviderLimits {
-    fetch_with_cookie_opt(cookie_from_user_dir(home))
+    use crate::cursor_session::{read_access_token, AccessToken};
+    let jwt = match read_access_token(home) {
+        AccessToken::Ready(jwt) => jwt,
+        AccessToken::Sealed => {
+            let mut out = ProviderLimits::new("cursor", "Cursor", "cursor");
+            out.configured = true;
+            out.error = Some("Cursor 登录态已加密,本机解密失败".into());
+            return out;
+        }
+        AccessToken::Missing => {
+            return ProviderLimits::unconfigured(
+                "cursor",
+                "Cursor",
+                "cursor",
+                "未找到 Cursor 登录态。打开一次 Cursor 并登录即可。",
+            );
+        }
+    };
+    let Some(cookie) = cookie_from_jwt(home, &jwt) else {
+        let mut out = ProviderLimits::new("cursor", "Cursor", "cursor");
+        out.configured = true;
+        out.error = Some("登录态无法解析".into());
+        return out;
+    };
+    fetch_with_cookie_opt(Some(cookie))
 }
 
 fn fetch_with_cookie_opt(cookie: Option<String>) -> ProviderLimits {
@@ -284,11 +308,24 @@ mod tests {
         assert_eq!(parse_summary(&body).windows[0].used_percent, None);
     }
 
+    #[test]
+    fn plan_names_use_the_official_capitalization() {
+        assert_eq!(plan_label("pro"), "Pro");
+        assert_eq!(plan_label("pro_plus"), "Pro+");
+        assert_eq!(plan_label("ultra"), "Ultra");
+        let body = serde_json::json!({ "membershipType": "pro" });
+        assert_eq!(parse_summary(&body).plan_label.as_deref(), Some("Pro"));
+    }
+
     /// JWT subject 归一化:原生账号剥前缀,WorkOS 桥接保留
     #[test]
     fn subject_normalization_matches_the_cookie_format() {
         assert_eq!(
             normalize_subject("auth0|user_ABC123").as_deref(),
+            Some("user_ABC123")
+        );
+        assert_eq!(
+            normalize_subject("grok|user_ABC123").as_deref(),
             Some("user_ABC123")
         );
         assert_eq!(
