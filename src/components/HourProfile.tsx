@@ -82,8 +82,11 @@ export function HourProfile({
       <div data-theme-part="card-title" className="flex items-center gap-1.5 text-sm font-semibold">
         <ClockIcon className="h-4 w-4 text-primary" />
         <span>使用时段</span>
-        <span className="ml-1 min-w-0 text-xs font-normal text-muted-foreground">
-          各天的同一小时相加,看习惯落在什么时候。按小时记录,近期可能不完整,只看形状
+        <span
+          className="ml-1 min-w-0 truncate text-xs font-normal text-muted-foreground"
+          title="各天的同一小时相加，看习惯落在什么时候；按小时记录，近期可能不完整，只看形状"
+        >
+          按 24 小时汇总（只看形状）
           {model ? (
             <>
               {" · "}

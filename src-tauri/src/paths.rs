@@ -128,6 +128,24 @@ pub fn cursor_user_dir() -> PathBuf {
     }
 }
 
+/// Antigravity 的 Gemini 家目录。CLI 可用 `GEMINI_CLI_HOME` 改家目录。
+pub fn gemini_home() -> PathBuf {
+    std::env::var_os("GEMINI_CLI_HOME")
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".gemini"))
+}
+
+/// 直接可读的会话库目录。备份目录不扫,避免和正在用的库算两遍。
+pub fn antigravity_conversation_dirs() -> Vec<PathBuf> {
+    let root = gemini_home();
+    vec![
+        root.join("antigravity").join("conversations"),
+        root.join("antigravity-ide").join("conversations"),
+        root.join("antigravity-cli").join("conversations"),
+    ]
+}
+
 pub fn cursor_state_db() -> PathBuf {
     cursor_user_dir()
         .join("User")

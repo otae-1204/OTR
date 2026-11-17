@@ -13,6 +13,10 @@ export type SelectOption = {
   value: string;
   label: string;
   disabled?: boolean;
+  /** 可选小圆点色（例如 Agent 筛选下拉里的品牌色点） */
+  dotColor?: string;
+  /** 未检测到等弱化显示 */
+  muted?: boolean;
 };
 
 type MenuPos = {
@@ -208,7 +212,15 @@ export function SelectMenu({
           open ? "border-primary" : "border-border hover:border-primary/50"
         } ${className ?? "h-8"}`}
       >
-        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+          {current?.dotColor ? (
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: current.dotColor }}
+            />
+          ) : null}
+          <span className="min-w-0 flex-1 truncate">{label}</span>
+        </span>
         <ChevronDownIcon
           className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-150 ${
             open ? "rotate-180" : ""
@@ -230,7 +242,7 @@ export function SelectMenu({
                 bottom: pos.bottom,
                 zIndex: 70,
               }}
-              className="overflow-auto rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+              className="overflow-auto rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-lg animate-pop-in origin-top"
             >
               {options.map((opt, i) => {
                 const selected = opt.value === value;
@@ -250,13 +262,27 @@ export function SelectMenu({
                       e.preventDefault();
                       commit(i);
                     }}
-                    className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs ${itemClass(
+                    className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors duration-100 ${itemClass(
                       selected,
                       isActive,
                       !!opt.disabled,
                     )} ${selected ? "font-medium" : ""}`}
                   >
-                    <span className="min-w-0 flex-1 truncate">{opt.label}</span>
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      {opt.dotColor ? (
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{ backgroundColor: opt.dotColor }}
+                        />
+                      ) : null}
+                      <span
+                        className={`min-w-0 flex-1 truncate ${
+                          opt.muted && !opt.disabled ? "opacity-60" : ""
+                        }`}
+                      >
+                        {opt.label}
+                      </span>
+                    </span>
                     {selected ? (
                       <svg
                         viewBox="0 0 24 24"

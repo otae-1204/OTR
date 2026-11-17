@@ -1,4 +1,5 @@
 use tauri::{AppHandle, Manager};
+use base64::Engine;
 
 use crate::model::{
     date_str, today_str, AgentStatus, DailyUsage, RangeSummary, SessionUsage, UsageSummary,
@@ -632,4 +633,117 @@ pub async fn open_cookie_guide(app: AppHandle, provider: String) -> std::result:
         .build()
         .map_err(err_str)?;
     Ok(())
+}
+
+const ICON_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "svg", "ico"];
+const ICON_MAX_BYTES: u64 = 1_500_000;
+
+fn agent_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn agent_icons_dir(state: &AppState) -> std::path::PathBuf {
+    state
+        .settings_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("agent-icons")
+}
+
+fn icon_ext(path: &std::path::Path) -> Option<String> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    ICON_EXTS.contains(&ext.as_str()).then_some(ext)
+}
+
+fn icon_mime(ext: &str) -> &'static str {
+    match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        _ => "application/octet-stream",
+    }
+}
+
+fn remove_agent_icon_files(dir: &std::path::Path, id: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let prefix = format!("{id}.");
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == id || name.starts_with(&prefix) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// 把用户选的图片复制到数据目录,返回保存后的路径。设置里的映射由前端写入。
+#[tauri::command]
+pub fn import_agent_icon(
+    app: AppHandle,
+    id: String,
+    source: String,
+) -> std::result::Result<String, String> {
+    if !agent_id_ok(&id) {
+        return Err("不能用这个名字保存图标".into());
+    }
+    let source = std::path::PathBuf::from(source);
+    let ext = icon_ext(&source).ok_or("只支持 png、jpg、webp、gif、svg、ico")?;
+    let meta = std::fs::metadata(&source).map_err(|_| "读不到这个图片文件")?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > ICON_MAX_BYTES {
+        return Err("图片需要小于 1.5 MB".into());
+    }
+    let bytes = std::fs::read(&source).map_err(|_| "读不到这个图片文件")?;
+    let state = app.state::<AppState>();
+    let dir = agent_icons_dir(&state);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    remove_agent_icon_files(&dir, &id);
+    let dest = dir.join(format!("{id}.{ext}"));
+    std::fs::write(&dest, bytes).map_err(|e| e.to_string())?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// 删掉某个 Agent 已保存的图标文件。设置里的映射由前端清掉。
+#[tauri::command]
+pub fn clear_agent_icon(app: AppHandle, id: String) -> std::result::Result<(), String> {
+    if !agent_id_ok(&id) {
+        return Err("不能用这个名字保存图标".into());
+    }
+    let state = app.state::<AppState>();
+    remove_agent_icon_files(&agent_icons_dir(&state), &id);
+    Ok(())
+}
+
+/// 把已保存的图标读成 data URL,只认数据目录里的 agent-icons。
+#[tauri::command]
+pub fn agent_icon_data(app: AppHandle) -> std::collections::HashMap<String, String> {
+    let state = app.state::<AppState>();
+    let dir = agent_icons_dir(&state);
+    let settings = crate::lock(&state.settings);
+    let mut out = std::collections::HashMap::new();
+    for (id, path) in &settings.agent_icons {
+        let path = std::path::Path::new(path);
+        if !path.starts_with(&dir) {
+            continue;
+        }
+        let Some(ext) = icon_ext(path) else {
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        if bytes.len() > ICON_MAX_BYTES as usize {
+            continue;
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        out.insert(id.clone(), format!("data:{};base64,{encoded}", icon_mime(&ext)));
+    }
+    out
 }

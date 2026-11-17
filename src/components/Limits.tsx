@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
@@ -26,6 +27,12 @@ import {
   type LayoutDrop,
   type RowBand,
 } from "../lib/limitsLayout";
+import {
+  isExpiryWindow,
+  quotaMeterLayout,
+  sortQuotaWindows,
+  type QuotaGroup,
+} from "../lib/quotaGroups";
 import { GripVerticalIcon, RefreshIcon } from "./icons";
 import { EmptyState, Skeleton } from "./Skeleton";
 
@@ -72,10 +79,6 @@ function expiryLeft(expireAt: number, now: number): string {
   return days < 1 ? "不足 1 天" : `剩 ${days} 天`;
 }
 
-/** 到期类窗口(如"套餐有效期"):只有日期,没有用量百分比 */
-function isDateOnly(w: QuotaWindow): boolean {
-  return typeof w.usedPercent !== "number" && !!w.resetAt;
-}
 
 /**
  * 一个用量窗口:名称 + 剩余百分比 / 进度条 / 重置倒计时。
@@ -118,7 +121,7 @@ function QuotaCell({ w, now }: { w: QuotaWindow; now: number }) {
         <div data-theme-part="progress" className="h-1.5 overflow-hidden rounded-full bg-foreground/25">
           <div
             data-theme-part="progress-fill"
-            className={`h-full rounded-full transition-all ${remainingTone(used)}`}
+            className={`h-full rounded-full transition-all duration-500 ${remainingTone(used)}`}
             style={{ width: `${Math.min(100, left)}%` }}
           />
         </div>
@@ -152,53 +155,11 @@ function BalanceCell({ b }: { b: Balance }) {
   );
 }
 
-/**
- * 子窗口的排列规则:短周期用量在前,长周期在后,到期类垫底。
- *
- * 后端给的顺序不能直接用 —— 各 provider 的拼装方式不同:
- * Cursor 把套餐额度 insert 到 0 位再把分道百分比追加到末尾,
- * StepFun 把「套餐有效期」push 到最后。照原样渲染时同一张卡片里
- * 「5 小时」可能排在「每月」后面,两张卡片的行序也对不齐。
- */
-const WINDOW_ORDER = [
-  "five_hour",
-  "weekly",
-  "monthly",
-  "plan",
-  "auto",
-  "api",
-  "credit",
-  "topup",
-  "balance",
-];
-
-/** 排序档位:0 = 有窗口长度的用量窗口,1 = 没有长度的用量窗口,2 = 到期类 */
-function windowRank(w: QuotaWindow): [number, number] {
-  // 到期类(只有日期、没有用量)不是「用了多少」的窗口,统一垫底
-  if (isDateOnly(w)) return [2, w.resetAt ?? 0];
-  // 有窗口长度就按长度升序:5 小时 → 每周 → 每月
-  if (typeof w.windowSeconds === "number" && w.windowSeconds > 0) {
-    return [0, w.windowSeconds];
-  }
-  // 没有长度时按语义排;认不出的 key 排在所有已知 key 之后
-  const i = WINDOW_ORDER.indexOf(w.key);
-  return [1, i < 0 ? WINDOW_ORDER.length : i];
-}
-
-/** 稳定排序:同档位内保持后端给的先后顺序,不凭空调换 */
-function sortWindows(windows: QuotaWindow[]): QuotaWindow[] {
-  return windows
-    .map((w, i) => ({ w, i, rank: windowRank(w) }))
-    .sort((a, b) =>
-      a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1] || a.i - b.i,
-    )
-    .map((x) => x.w);
-}
-
 const PROVIDER_ORDER = [
   "cursor",
   "codex",
   "grok",
+  "antigravity",
   "deepseek",
   "openrouter",
   "minimax",
@@ -248,12 +209,14 @@ function orderedCards(items: ProviderLimits[]): ProviderLimits[] {
  */
 function columnCount(data: ProviderLimits): number {
   let n = 0;
-  for (const w of data.windows) if (!isDateOnly(w)) n += 1;
+  for (const w of data.windows) if (!isExpiryWindow(w)) n += 1;
   if (data.balance != null) n += 1;
   return n;
 }
 
 function isSingleColumn(data: ProviderLimits): boolean {
+  // 带模型池的卡要占一整行。并进半行后,池名和两条周期对不齐。
+  if (quotaMeterLayout(data.windows).kind !== "flat") return false;
   return columnCount(data) === 1;
 }
 
@@ -304,7 +267,7 @@ function metricPlace(index: number): string {
 function AccountTitle({ data, now }: { data: ProviderLimits; now: number }) {
   const providerLabel = LIMIT_PROVIDER_LABELS[data.provider] ?? data.provider;
   const name = data.accountLabel || providerLabel;
-  const expiries = data.windows.filter(isDateOnly);
+  const expiries = data.windows.filter(isExpiryWindow);
   const hasData = data.windows.length > 0 || data.balance != null;
   const meta: ReactNode[] = [];
   if (!name.toLowerCase().includes(providerLabel.toLowerCase())) {
@@ -355,19 +318,95 @@ function AccountTitle({ data, now }: { data: ProviderLimits; now: number }) {
 }
 
 function accountCells(data: ProviderLimits, now: number): ReactNode[] {
-  const quota = sortWindows(data.windows.filter((w) => !isDateOnly(w)));
+  const quota = sortQuotaWindows(data.windows.filter((w) => !isExpiryWindow(w)));
   const cells: ReactNode[] = quota.map((w) => <QuotaCell key={w.key} w={w} now={now} />);
   if (data.balance) cells.push(<BalanceCell key="balance" b={data.balance} />);
   return cells;
 }
 
+function compactWindowLabel(label: string): string {
+  return label === "5 小时" ? "5h" : label;
+}
+
+/**
+ * 多池模式（如 Antigravity）的紧凑进度条：
+ * 将「周期 · 重置倒计时」合并在条上方同一行，省掉底部脚注行，
+ * 既能直接看到重置时间，又保证左右列高度接近常规单行。
+ */
+function CompactQuotaBar({ w, now }: { w: QuotaWindow; now: number }) {
+  const used = typeof w.usedPercent === "number" ? w.usedPercent : null;
+  const left = used == null ? null : Math.max(0, 100 - used);
+  const cd = countdown(w.resetAt, now);
+  const tip = [
+    used == null ? "上游未返回用量" : `已用 ${used.toFixed(1)}%`,
+    w.resetAt ? `重置于 ${fmtDateTime(w.resetAt)}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const label = compactWindowLabel(w.label);
+  return (
+    <div className="min-w-0 space-y-1" title={tip}>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="truncate text-11px text-muted-foreground">
+          {cd ? `${label} · ${cd}` : label}
+        </span>
+        {left == null || used == null ? (
+          <span className="font-mono text-xs text-muted-foreground">--</span>
+        ) : (
+          <span
+            className={`shrink-0 font-mono text-xs font-semibold tabular-nums ${remainingText(used)}`}
+          >
+            {left.toFixed(left < 10 ? 1 : 0)}%
+          </span>
+        )}
+      </div>
+      {left == null || used == null ? (
+        <div className="h-1.5" />
+      ) : (
+        <div data-theme-part="progress" className="h-1.5 overflow-hidden rounded-full bg-foreground/25">
+          <div
+            data-theme-part="progress-fill"
+            className={`h-full rounded-full transition-all duration-500 ${remainingTone(used)}`}
+            style={{ width: `${Math.min(100, left)}%` }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 一列一个模型池，复用全局 3 列进度条纵线 */
+function PoolCell({ group, now }: { group: QuotaGroup; now: number }) {
+  if (group.label.length === 0) {
+    return (
+      <div className="min-w-0 space-y-2">
+        {group.windows.map((w) => (
+          <QuotaCell key={w.key} w={w} now={now} />
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="min-w-0 space-y-2">
+      <div className="truncate text-xs font-semibold text-foreground" title={group.label}>
+        {group.label}
+      </div>
+      {group.windows.map((w) => (
+        <CompactQuotaBar key={w.key} w={w} now={now} />
+      ))}
+    </div>
+  );
+}
+
 function DragGrip({
   label,
   className,
+  style,
   onPointerDown,
 }: {
   label: string;
   className?: string;
+  style?: CSSProperties;
   onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
   return (
@@ -376,6 +415,7 @@ function DragGrip({
       draggable={false}
       aria-label={label}
       title={label}
+      style={style}
       onPointerDown={onPointerDown}
       className={`flex h-8 w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-muted-foreground/45 hover:bg-overlay/5 hover:text-foreground active:cursor-grabbing group-hover/row:text-muted-foreground/80 ${
         className ?? ""
@@ -715,7 +755,22 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
             const insertBefore = drop?.mode === "before" && rowKey(drop.rowIds) === key;
             const insertAfter = drop?.mode === "after" && rowKey(drop.rowIds) === key;
             const [left, right] = records;
+            const primaryLayout = quotaMeterLayout(records[0].windows);
             const primaryCells = accountCells(records[0], now);
+            const groupCells: ReactNode[] =
+              primaryLayout.kind === "groups"
+                ? [
+                    ...primaryLayout.groups.map((g) => (
+                      <PoolCell key={g.id} group={g} now={now} />
+                    )),
+                    ...(records[0].balance
+                      ? [<BalanceCell key="balance" b={records[0].balance} />]
+                      : []),
+                  ]
+                : [];
+            const cellCount =
+              primaryLayout.kind === "groups" ? groupCells.length : primaryCells.length;
+            const spanRows = Math.max(1, Math.min(3, Math.ceil(cellCount / 3)));
             return (
               <div key={key} className="relative" data-limit-row={key}>
                 {insertBefore ? (
@@ -812,12 +867,22 @@ export function Limits({ refreshEpoch }: { refreshEpoch: number }) {
                       <DragGrip
                         label={gripLabel}
                         className="mt-0.5 md:col-start-1 md:mt-0 md:self-center"
+                        style={spanRows > 1 ? { gridRow: `1 / span ${spanRows}` } : undefined}
                         onPointerDown={(event) => begin(event, { ids, rowKey: key })}
                       />
-                      <div className="min-w-0 md:col-start-3">
+                      <div
+                        className="min-w-0 md:col-start-3"
+                        style={spanRows > 1 ? { gridRow: `1 / span ${spanRows}` } : undefined}
+                      >
                         <AccountTitle data={records[0]} now={now} />
                       </div>
-                      {primaryCells.length > 0 ? (
+                      {primaryLayout.kind === "groups" && groupCells.length > 0 ? (
+                        groupCells.map((cell, index) => (
+                          <div key={index} className={`min-w-0 md:self-start ${metricPlace(index)}`}>
+                            {cell}
+                          </div>
+                        ))
+                      ) : primaryLayout.kind === "flat" && primaryCells.length > 0 ? (
                         primaryCells.map((cell, index) => (
                           <div key={index} className={`min-w-0 ${metricPlace(index)}`}>
                             {cell}

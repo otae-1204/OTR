@@ -21,11 +21,13 @@ import {
   type RangePreset,
 } from "./lib/range";
 import { AgentCard } from "./components/AgentCard";
+import { AgentIconOverrides } from "./components/AgentIcon";
 import { ModelPie } from "./components/ModelPie";
 import { Limits } from "./components/Limits";
 import { SessionTable } from "./components/SessionTable";
 import { Settings } from "./components/Settings";
 import { EmptyState, Skeleton } from "./components/Skeleton";
+import { SelectMenu } from "./components/SelectMenu";
 import { StatCard } from "./components/StatCard";
 import { ThemeMascot } from "./components/ThemeMascot";
 import { isMacPlatform, WindowControls } from "./components/WindowControls";
@@ -43,15 +45,10 @@ type View = "dashboard" | "limits" | "settings";
 
 const SPIN_DURATION_MS = 1000;
 
-const TOOLBAR_BTN =
-  "flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-overlay/5";
-const TOOLBAR_BTN_IDLE = "text-muted-foreground";
-const TOOLBAR_BTN_ACTIVE = "bg-background shadow-sm text-foreground";
-
 const PRESETS: RangePreset[] = ["today", "7d", "30d", "month", "all", "custom"];
 
 const CHIP =
-  "flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-colors";
+  "flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-[color,background-color,border-color,box-shadow] duration-200";
 
 export default function App() {
   const [view, setView] = useState<View>("dashboard");
@@ -60,6 +57,8 @@ export default function App() {
   const spinTimerRef = useRef<number | null>(null);
   const { summary, agents, settings, loading, refresh } = useUsageData();
   const { agentColor, chartPalette } = useTheme();
+  const [agentIconUrls, setAgentIconUrls] = useState<Record<string, string>>({});
+  const agentIconKey = JSON.stringify(settings?.agentIcons ?? {});
 
   // 筛选状态:Agent 维度 + 日期范围
   const [agentId, setAgentId] = useState<string | null>(null);
@@ -86,6 +85,21 @@ export default function App() {
   // 竞态防护:只接受与当前筛选一致的响应(快速切换时旧响应可能更晚返回)
   const rangeReqRef = useRef("");
   const prevReqRef = useRef("");
+
+  useEffect(() => {
+    let active = true;
+    api
+      .agentIconData()
+      .then((urls) => {
+        if (active) setAgentIconUrls(urls);
+      })
+      .catch(() => {
+        if (active) setAgentIconUrls({});
+      });
+    return () => {
+      active = false;
+    };
+  }, [agentIconKey]);
 
   useEffect(() => {
     return () => {
@@ -320,6 +334,7 @@ export default function App() {
   }, []);
 
   return (
+    <AgentIconOverrides.Provider value={agentIconUrls}>
     <div data-theme-part="app" className="min-h-screen bg-background text-foreground">
       <ThemeMascot />
       <header
@@ -358,52 +373,70 @@ export default function App() {
             </div>
           </div>
 
-          <div data-theme-part="segmented" className="flex items-center gap-1 rounded-xl bg-muted p-1">
+          <div className="flex items-center gap-2.5">
             <button
               type="button"
               title="刷新数据"
+              aria-label="刷新数据"
               onClick={handleRefresh}
-              data-theme-part="segmented-button"
-              className={`${TOOLBAR_BTN} ${TOOLBAR_BTN_IDLE}`}
+              data-theme-part="button"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-border/60 bg-background/50 text-muted-foreground transition-colors hover:bg-overlay/5 hover:text-foreground"
             >
               <RefreshIcon
                 className={`h-4 w-4 ${spinning ? "animate-spin" : ""}`}
               />
             </button>
-            <button
-              type="button"
-              title={view === "limits" ? "返回仪表盘" : "额度"}
-              onClick={() =>
-                setView((v) => (v === "limits" ? "dashboard" : "limits"))
-              }
-              data-theme-part="segmented-button"
-              data-theme-state={view === "limits" ? "selected" : undefined}
-              className={`${TOOLBAR_BTN} ${
-                view === "limits" ? TOOLBAR_BTN_ACTIVE : TOOLBAR_BTN_IDLE
-              }`}
-            >
-              <GaugeIcon className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              title={view === "settings" ? "返回仪表盘" : "设置"}
-              onClick={() =>
-                setView((v) => (v === "settings" ? "dashboard" : "settings"))
-              }
-              data-theme-part="segmented-button"
-              data-theme-state={view === "settings" ? "selected" : undefined}
-              className={`relative ${TOOLBAR_BTN} ${
-                view === "settings" ? TOOLBAR_BTN_ACTIVE : TOOLBAR_BTN_IDLE
-              }`}
-            >
-              <SettingsIcon className="h-4 w-4" />
-              {updateLatest ? (
-                <span
-                  className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-notice ring-2 ring-background"
-                  title={`发现新版本 v${updateLatest}`}
-                />
-              ) : null}
-            </button>
+            <div className="h-4 w-px bg-border/60" />
+            <div data-theme-part="segmented" className="flex items-center gap-1 rounded-xl bg-muted p-1">
+              <button
+                type="button"
+                onClick={() => setView("dashboard")}
+                data-theme-part="segmented-button"
+                data-theme-state={view === "dashboard" ? "selected" : undefined}
+                className={`flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-[color,background-color,box-shadow] duration-200 ${
+                  view === "dashboard"
+                    ? "bg-background shadow-sm text-foreground"
+                    : "text-muted-foreground hover:bg-overlay/5 hover:text-foreground"
+                }`}
+              >
+                <ActivityIcon className="h-3.5 w-3.5" />
+                概览
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("limits")}
+                data-theme-part="segmented-button"
+                data-theme-state={view === "limits" ? "selected" : undefined}
+                className={`flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-[color,background-color,box-shadow] duration-200 ${
+                  view === "limits"
+                    ? "bg-background shadow-sm text-foreground"
+                    : "text-muted-foreground hover:bg-overlay/5 hover:text-foreground"
+                }`}
+              >
+                <GaugeIcon className="h-3.5 w-3.5" />
+                额度
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("settings")}
+                data-theme-part="segmented-button"
+                data-theme-state={view === "settings" ? "selected" : undefined}
+                className={`relative flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition-[color,background-color,box-shadow] duration-200 ${
+                  view === "settings"
+                    ? "bg-background shadow-sm text-foreground"
+                    : "text-muted-foreground hover:bg-overlay/5 hover:text-foreground"
+                }`}
+              >
+                <SettingsIcon className="h-3.5 w-3.5" />
+                设置
+                {updateLatest ? (
+                  <span
+                    className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-notice ring-2 ring-background"
+                    title={`发现新版本 v${updateLatest}`}
+                  />
+                ) : null}
+              </button>
+            </div>
           </div>
         </div>
         {isMacPlatform() ? null : <WindowControls />}
@@ -415,54 +448,30 @@ export default function App() {
             key="dashboard"
             className="mx-auto max-w-6xl animate-fade-in space-y-4 px-6 pb-10 pt-20"
           >
-            {/* 筛选栏:Agent + 日期范围 */}
+            {/* 筛选栏:Agent 下拉 + 日期范围单行小胶囊 */}
             <div className="sticky top-16 z-40">
               <div
                 data-theme-part="filter-bar"
-                className="w-fit max-w-full space-y-2 rounded-xl border border-border/50 bg-card/40 px-3 py-2 backdrop-blur-md"
+                className="flex w-fit max-w-full flex-wrap items-center gap-1.5 rounded-xl border border-border/50 bg-card/40 px-2.5 py-1.5 backdrop-blur-md"
               >
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-muted-foreground">Agent</span>
-                <button
-                  type="button"
-                  onClick={() => setAgentId(null)}
-                  data-theme-part="chip"
-                  data-theme-state={agentId === null ? "selected" : undefined}
-                  className={`${CHIP} border ${
-                    agentId === null
-                      ? "border-primary/50 bg-primary/15 text-foreground"
-                      : "border-transparent text-muted-foreground hover:bg-overlay/5"
-                  }`}
-                >
-                  全部
-                </button>
-                {agentCards.map(({ status }) => (
-                  <button
-                    key={status.id}
-                    type="button"
-                    onClick={() =>
-                      setAgentId(agentId === status.id ? null : status.id)
-                    }
-                    data-theme-part="chip"
-                    data-theme-state={agentId === status.id ? "selected" : undefined}
-                    className={`${CHIP} border ${
-                      agentId === status.id
-                        ? "border-primary/50 bg-primary/15 text-foreground"
-                        : "border-transparent text-muted-foreground hover:bg-overlay/5"
-                    } ${status.detected ? "" : "opacity-50"}`}
-                  >
-                    <span
-                      className="h-2 w-2 rounded-full"
-                      style={{ backgroundColor: agentColor(status.id) }}
-                    />
-                    {status.displayName || status.id}
-                  </button>
-                ))}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <SelectMenu
+                  value={agentId ?? ""}
+                  onChange={(v) => setAgentId(v || null)}
+                  ariaLabel="筛选 Agent"
+                  className="h-7 min-w-[124px] max-w-[180px]"
+                  options={[
+                    { value: "", label: "全部 Agent" },
+                    ...agentCards.map(({ status }) => ({
+                      value: status.id,
+                      label: status.displayName || status.id,
+                      dotColor: agentColor(status.id),
+                      muted: !status.detected,
+                    })),
+                  ]}
+                />
+                <span className="mx-0.5 h-4 w-px shrink-0 bg-border/60" />
+                <span className="flex items-center text-muted-foreground" title="日期范围">
                   <CalendarIcon className="h-3.5 w-3.5" />
-                  范围
                 </span>
                 {PRESETS.map((p) => (
                   <button
@@ -471,17 +480,17 @@ export default function App() {
                     onClick={() => setPreset(p)}
                     data-theme-part="chip"
                     data-theme-state={preset === p ? "selected" : undefined}
-                    className={`${CHIP} ${
+                    className={`${CHIP} border ${
                       preset === p
-                        ? "bg-background shadow-sm text-foreground ring-1 ring-border"
-                        : "text-muted-foreground hover:bg-overlay/5"
-                    } bg-muted`}
+                        ? "border-border bg-background shadow-sm text-foreground"
+                        : "border-transparent text-muted-foreground hover:bg-overlay/5"
+                    }`}
                   >
                     {PRESET_LABELS[p]}
                   </button>
                 ))}
                 {preset === "custom" ? (
-                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground animate-fade-soft">
                     <input
                       type="date"
                       value={customFrom}
@@ -501,7 +510,6 @@ export default function App() {
                     />
                   </span>
                 ) : null}
-              </div>
               </div>
             </div>
 
@@ -551,7 +559,7 @@ export default function App() {
                   ))}
                 </div>
 
-                <div className="grid items-start gap-3 lg:grid-cols-2">
+                <div className="grid items-stretch gap-3 lg:grid-cols-2">
                   <TrendChart
                     agentId={agentId}
                     from={range.from}
@@ -607,7 +615,7 @@ export default function App() {
         ) : (
           <div
             key="settings"
-            className="mx-auto max-w-3xl animate-fade-in space-y-4 px-6 pb-10 pt-20"
+            className="mx-auto max-w-5xl animate-fade-in space-y-4 px-6 pb-10 pt-20"
           >
             <Settings
               agents={agents}
@@ -619,5 +627,6 @@ export default function App() {
         )}
       </main>
     </div>
+    </AgentIconOverrides.Provider>
   );
 }

@@ -2879,7 +2879,7 @@ dependencies = [
 
 [[package]]
 name = "otr"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm",

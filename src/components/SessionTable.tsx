@@ -102,7 +102,7 @@ export function SessionTable({
         ) : sessions.length === 0 ? (
           <EmptyState message="筛选范围内暂无会话记录" />
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto scroll-thin">
             <table data-theme-part="table" className="w-full min-w-[720px] text-sm">
               <thead data-theme-part="table-head">
                 <tr className="border-b border-border/60 text-left text-xs text-muted-foreground">

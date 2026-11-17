@@ -1,6 +1,6 @@
 [package]
 name = "otr"
-version = "0.3.3"
+version = "0.4.0"
 description = "Otae's Token Radar"
 edition = "2021"
 
@@ -36,7 +36,7 @@ sha1 = "0.10"
 # macOS 只用系统钥匙串(v1 里的 apple-native);zbus 依赖本身被 crate 限制在 Linux。
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "4", default-features = false, features = ["v1", "windows-native-keyring-store"] }
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "4", default-features = false, features = ["v1"] }

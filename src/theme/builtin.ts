@@ -37,6 +37,7 @@ const OTR_COMMON: ThemeTokens = {
       dsh: "#8b5cf6",
       "claude-code": "#f59e0b",
       codex: "#3b82f6",
+      antigravity: "#38bdf8",
       zcode: "#10b981",
       opencode: "#06b6d4",
       pi: "#ec4899",

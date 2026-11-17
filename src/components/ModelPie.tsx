@@ -45,7 +45,7 @@ function HitRateBar({ totals }: { totals: Totals }) {
       title="缓存读 ÷ (未缓存输入 + 缓存读)"
       className="flex items-center gap-2"
     >
-      <div data-theme-part="progress" className="relative h-1.5 w-24 overflow-hidden rounded-full bg-muted/60">
+      <div data-theme-part="progress" className="relative h-1.5 w-16 overflow-hidden rounded-full bg-muted/60">
         <div
           data-theme-part="progress-fill"
           className="absolute inset-y-0 left-0 rounded-full bg-success"
@@ -181,7 +181,7 @@ export function ModelPie({
   return (
     <section
       data-theme-part="card chart-card"
-      className="pie-card rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm"
+      className="pie-card flex h-full flex-col rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm"
     >
       <div data-theme-part="card-title" className="flex items-center gap-1.5 text-sm font-semibold">
         <PieChartIcon className="h-4 w-4 text-primary" />
@@ -192,13 +192,12 @@ export function ModelPie({
       </div>
 
       {slices.length === 0 ? (
-        <div className="mt-3">
+        <div className="mt-3 flex-1">
           <EmptyState message="所选范围内暂无模型数据" />
         </div>
       ) : (
-        <>
-        <div className="mt-3 flex flex-col items-center gap-4 lg:flex-row">
-          <div data-theme-part="chart" className="relative h-[200px] w-full max-w-[220px] shrink-0">
+        <div className="mt-3 flex flex-1 flex-col items-center gap-4 lg:flex-row">
+          <div data-theme-part="chart" className="relative h-[200px] w-full max-w-[210px] shrink-0">
             <ResponsiveContainer width="100%" height="100%">
               {/* 注意:recharts 的 Pie 点击扇区后会给 path 加焦点框,由 .pie-card 的 CSS 去掉 */}
               <PieChart>
@@ -215,11 +214,12 @@ export function ModelPie({
                   data={slices}
                   dataKey="renderValue"
                   nameKey="name"
-                  innerRadius={60}
-                  outerRadius={90}
+                  innerRadius={58}
+                  outerRadius={88}
                   paddingAngle={slices.length > 1 ? 2 : 0}
                   strokeWidth={2}
                   stroke="hsl(var(--card))"
+                  animationDuration={400}
                   onClick={(entry: any) => {
                     const name = entry?.name ?? entry?.payload?.name;
                     if (typeof name === "string") {
@@ -235,13 +235,14 @@ export function ModelPie({
                       fillOpacity={selected && selected !== s.name ? 0.3 : 1}
                       stroke="hsl(var(--card))"
                       strokeWidth={2}
+                      style={{ transition: "fill-opacity 220ms ease" }}
                     />
                   ))}
                 </Pie>
               </PieChart>
             </ResponsiveContainer>
-            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-              <span className="text-10px text-muted-foreground">
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-4 text-center">
+              <span className="max-w-full truncate text-10px text-muted-foreground">
                 {selected ?? rangeLabel}
               </span>
               <span className="text-lg font-bold tabular-nums tracking-tight">
@@ -255,65 +256,33 @@ export function ModelPie({
           </div>
 
           <div className="w-full min-w-0 flex-1">
-            <ul data-theme-part="legend" className="space-y-1.5">
-              {slices.map((s, i) => (
-                <li
-                  key={s.name}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onSelect(selected === s.name ? null : s.name)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      onSelect(selected === s.name ? null : s.name);
-                    }
-                  }}
-                  className={`flex cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1 text-xs transition-colors hover:bg-muted/40 ${
-                    selected === s.name ? "bg-primary/10 ring-1 ring-primary/40" : ""
-                  }`}
-                >
-                  <span
-                    className="h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: PALETTE[i % PALETTE.length] }}
-                  />
-                  <span
-                    className="min-w-0 flex-1 truncate text-foreground/80"
-                    title={s.name}
+            {selectedSlice ? (
+              <div className="space-y-2.5 animate-fade-soft">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onSelect(null)}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-primary transition-colors hover:underline"
                   >
-                    {s.name}
-                  </span>
-                  <span className="tabular-nums text-muted-foreground">
-                    {fmtTokens(s.value)}
-                  </span>
-                  <span className="w-12 text-right tabular-nums text-muted-foreground">
-                    {totalPct(s.value)}%
-                  </span>
-                </li>
-              ))}
-            </ul>
-
-          </div>
-        </div>
-
-        {/* 选中模型的明细面板:整行铺开,不再挤在图例下方 */}
-        {selectedSlice ? (
-          <div className="mt-3 space-y-3 rounded-xl border border-border/50 bg-background/40 p-4 animate-fade-in">
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4">
-              <div className="min-w-0 space-y-2">
-                <div
-                  className="truncate text-base font-semibold"
-                  title={selectedSlice.name}
-                >
-                  {selectedSlice.name}
+                    ← 全部模型
+                  </button>
+                  <HitRateBar totals={selectedSlice.totals} />
                 </div>
-                <HitRateBar totals={selectedSlice.totals} />
-              </div>
-              <div className="text-right text-xs tabular-nums text-muted-foreground">
-                <div>
-                  占比 {totalPct(selectedSlice.totals.totalTokens)}% · 成本{" "}
-                  {fmtCost(selectedSlice.totals.cost, currency, rate)}
+
+                <div className="flex items-baseline justify-between gap-2">
+                  <div
+                    className="min-w-0 truncate text-sm font-semibold text-foreground"
+                    title={selectedSlice.name}
+                  >
+                    {selectedSlice.name}
+                  </div>
+                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                    占比 {totalPct(selectedSlice.totals.totalTokens)}%
+                  </span>
                 </div>
+
                 {selectedSpeed || selectedTtft ? (
-                  <div className="mt-0.5 flex items-baseline justify-end gap-2">
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-11px tabular-nums text-muted-foreground">
                     {selectedSpeed ? (
                       <span
                         title={
@@ -332,40 +301,117 @@ export function ModelPie({
                               : undefined
                         }
                       >
-                        {selectedSpeedLabel} {selectedSpeed}
+                        {selectedSpeedLabel}{" "}
+                        <span className="font-semibold text-foreground">
+                          {selectedSpeed}
+                        </span>
                       </span>
                     ) : null}
-                    {selectedTtft ? <span>平均首字 {selectedTtft}</span> : null}
+                    {selectedTtft ? (
+                      <span>
+                        平均首字{" "}
+                        <span className="font-semibold text-foreground">
+                          {selectedTtft}
+                        </span>
+                      </span>
+                    ) : null}
                   </div>
                 ) : null}
-              </div>
-            </div>
-            <div className="grid grid-cols-5 gap-2 text-xs">
-              {(
-                [
-                  ["输入", selectedSlice.totals.inputTokens],
-                  ["输出", selectedSlice.totals.outputTokens],
-                  ["缓存读", selectedSlice.totals.cacheReadTokens],
-                  ["缓存写", selectedSlice.totals.cacheWriteTokens],
-                  ["请求", selectedSlice.totals.calls],
-                ] as const
-              ).map(([label, v]) => (
-                <div
-                  key={label}
-                  className="rounded-lg border border-border/40 bg-background/60 px-3 py-2.5"
-                >
-                  <div className="text-11px text-muted-foreground">
-                    {label}
-                  </div>
-                  <div className="mt-0.5 text-base font-semibold tabular-nums">
-                    {label === "请求" ? v.toLocaleString() : fmtTokens(v)}
-                  </div>
+
+                <div className="grid grid-cols-3 gap-1.5 text-xs">
+                  {(
+                    [
+                      [
+                        "输入",
+                        fmtTokens(selectedSlice.totals.inputTokens),
+                        `${selectedSlice.totals.inputTokens.toLocaleString()} tokens`,
+                        "",
+                      ],
+                      [
+                        "输出",
+                        fmtTokens(selectedSlice.totals.outputTokens),
+                        `${selectedSlice.totals.outputTokens.toLocaleString()} tokens`,
+                        "",
+                      ],
+                      [
+                        "缓存读",
+                        fmtTokens(selectedSlice.totals.cacheReadTokens),
+                        `${selectedSlice.totals.cacheReadTokens.toLocaleString()} tokens`,
+                        "",
+                      ],
+                      [
+                        "缓存写",
+                        fmtTokens(selectedSlice.totals.cacheWriteTokens),
+                        `${selectedSlice.totals.cacheWriteTokens.toLocaleString()} tokens`,
+                        "",
+                      ],
+                      [
+                        "请求",
+                        selectedSlice.totals.calls.toLocaleString(),
+                        undefined,
+                        "",
+                      ],
+                      [
+                        "成本",
+                        fmtCost(selectedSlice.totals.cost, currency, rate),
+                        "按定价估算",
+                        "text-stat-cost",
+                      ],
+                    ] as const
+                  ).map(([label, value, tip, valCls]) => (
+                    <div
+                      key={label}
+                      data-theme-part="mini-stat"
+                      title={tip}
+                      className="min-w-0 rounded-lg border border-border/40 bg-background/60 px-2.5 py-2"
+                    >
+                      <div className="text-10px text-muted-foreground">{label}</div>
+                      <div
+                        className={`mt-0.5 truncate text-sm font-semibold tabular-nums ${valCls}`}
+                      >
+                        {value}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </div>
+            ) : (
+              <ul data-theme-part="legend" className="space-y-1.5 animate-fade-soft">
+                {slices.map((s, i) => (
+                  <li
+                    key={s.name}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSelect(selected === s.name ? null : s.name)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        onSelect(selected === s.name ? null : s.name);
+                      }
+                    }}
+                    className="flex cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1 text-xs transition-colors hover:bg-muted/40"
+                  >
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: PALETTE[i % PALETTE.length] }}
+                    />
+                    <span
+                      className="min-w-0 flex-1 truncate text-foreground/80"
+                      title={s.name}
+                    >
+                      {s.name}
+                    </span>
+                    <span className="tabular-nums text-muted-foreground">
+                      {fmtTokens(s.value)}
+                    </span>
+                    <span className="w-12 text-right tabular-nums text-muted-foreground">
+                      {totalPct(s.value)}%
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-        ) : null}
-        </>
+        </div>
       )}
     </section>
   );

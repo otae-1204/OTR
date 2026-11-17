@@ -7,6 +7,7 @@ use crate::error::Result;
 use crate::model::UsageRecord;
 use crate::settings::Settings;
 
+pub mod antigravity;
 pub mod claude_code;
 pub mod codex;
 pub mod cursor;
@@ -89,6 +90,7 @@ pub fn all_providers() -> Vec<Box<dyn AgentProvider>> {
         Box::new(dsh::DshProvider),
         Box::new(claude_code::ClaudeCodeProvider),
         Box::new(codex::CodexProvider),
+        Box::new(antigravity::AntigravityProvider),
         Box::new(zcode::ZcodeProvider),
         Box::new(opencode::OpencodeProvider),
         Box::new(pi::PiProvider),

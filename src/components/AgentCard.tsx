@@ -57,11 +57,9 @@ export function AgentCard({
             id={status.id}
             color={color}
             className={
-              status.id === "grok"
-                ? "h-5 w-5"
-                : usesImageIcon(status.id)
-                  ? "h-full w-full"
-                  : "h-5 w-5"
+              usesImageIcon(status.id) && status.id !== "grok"
+                ? "h-full w-full"
+                : "h-5 w-5"
             }
           />
         </div>

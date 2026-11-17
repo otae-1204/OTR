@@ -135,6 +135,13 @@ export interface QuotaWindow {
   /** 重置时刻(unix ms) */
   resetAt?: number | null;
   windowSeconds?: number | null;
+  /**
+   * 模型池。同一池的 5 小时和每周排成一行。
+   * 不填则仍按三列平铺。Antigravity 用 gemini / claude_gpt / argon。
+   */
+  group?: string | null;
+  /** 池的显示名。缺省时按 group 用内置名字。 */
+  groupLabel?: string | null;
 }
 
 export interface Balance {
@@ -197,6 +204,7 @@ export const LIMIT_PROVIDER_LABELS: Record<string, string> = {
   mistral: "Mistral",
   qwen: "Qwen",
   stepfun: "StepFun",
+  antigravity: "Antigravity",
 };
 
 /** home 模式(认证靠本地 CLI 会话)vs key 模式(额度 API 直接吃 key) */
@@ -204,6 +212,7 @@ export const LIMIT_PROVIDER_MODE: Record<string, "home" | "key"> = {
   cursor: "home",
   codex: "home",
   grok: "home",
+  antigravity: "home",
   deepseek: "key",
   openrouter: "key",
   minimax: "key",
@@ -248,6 +257,8 @@ export interface Settings {
   exchangeRate: number;
   /** 全局成本显示币种:"CNY" | "USD" */
   currency: string;
+  /** Agent id → 用户指定的图标文件路径。空则用内置图标。 */
+  agentIcons?: Record<string, string>;
   /** 额度后台刷新间隔(秒) */
   refreshSecs?: number;
   /** 额度页的额外账号(内置账号由后端合成,不在这里) */
@@ -260,6 +271,7 @@ export const AGENT_LABELS: Record<string, string> = {
   dsh: "DSH",
   "claude-code": "Claude Code",
   codex: "Codex CLI",
+  antigravity: "Antigravity",
   zcode: "ZCode",
   opencode: "OpenCode",
   pi: "Pi",
@@ -354,4 +366,8 @@ export const api = {
   // 主题:Rust 只负责枚举并读出用户主题目录里的文件,解析与校验在前端 src/theme/
   listThemes: () => invoke<ThemeFile[]>("list_themes"),
   getThemesDir: () => invoke<string>("get_themes_dir"),
+  importAgentIcon: (id: string, source: string) =>
+    invoke<string>("import_agent_icon", { id, source }),
+  clearAgentIcon: (id: string) => invoke<void>("clear_agent_icon", { id }),
+  agentIconData: () => invoke<Record<string, string>>("agent_icon_data"),
 };

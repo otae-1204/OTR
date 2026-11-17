@@ -18,6 +18,7 @@
 
 pub mod codex;
 pub mod credential;
+pub mod antigravity;
 pub mod cursor;
 pub mod grok;
 pub mod http;
@@ -53,6 +54,13 @@ pub struct QuotaWindow {
     /// 窗口长度(秒),原样保留上游给的值
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_seconds: Option<i64>,
+    /// 模型池。同一池的短周期和长周期在额度页排成一行。
+    /// Antigravity 用 "gemini" | "claude_gpt" | "argon"。没有池的来源留空,仍按三列平铺。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// 池的显示名。空则前端按 group 用内置名字。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_label: Option<String>,
 }
 
 impl QuotaWindow {
@@ -76,6 +84,16 @@ impl QuotaWindow {
 
     pub fn window(mut self, secs: Option<i64>) -> Self {
         self.window_seconds = secs;
+        self
+    }
+
+    /// 标上模型池。`label` 为空时前端用内置池名。
+    pub fn pool(mut self, group: &str, label: &str) -> Self {
+        self.group = Some(group.into());
+        let shown = label.trim();
+        if !shown.is_empty() {
+            self.group_label = Some(shown.into());
+        }
         self
     }
 }
@@ -184,6 +202,17 @@ pub fn resolve_accounts(settings: &crate::settings::Settings) -> Vec<AccountPlan
                 id: "grok".into(),
                 provider: "grok".into(),
                 label: "Grok".into(),
+                ..Default::default()
+            },
+            builtin: true,
+        });
+    }
+    if enabled("antigravity") {
+        out.push(AccountPlan {
+            account: crate::settings::LimitAccount {
+                id: "antigravity".into(),
+                provider: "antigravity".into(),
+                label: "Antigravity".into(),
                 ..Default::default()
             },
             builtin: true,
@@ -299,6 +328,7 @@ pub fn fetch_account(plan: &AccountPlan) -> ProviderLimits {
         "cursor" => fetch_cursor(acc),
         "codex" => fetch_codex(acc),
         "grok" => fetch_grok(acc),
+        "antigravity" => fetch_antigravity(acc),
         "deepseek" => fetch_deepseek(acc),
         "openrouter" => fetch_openrouter(acc),
         "minimax" => fetch_keyed(acc, "minimax", "MiniMax", minimax::fetch_with_credential),
@@ -345,6 +375,13 @@ fn fetch_grok(acc: &crate::settings::LimitAccount) -> ProviderLimits {
     match acc.home.as_deref() {
         None => grok::fetch(),
         Some(home) => grok::fetch_from_home(std::path::Path::new(home)),
+    }
+}
+
+fn fetch_antigravity(acc: &crate::settings::LimitAccount) -> ProviderLimits {
+    match acc.home.as_deref() {
+        None => antigravity::fetch(),
+        Some(home) => antigravity::fetch_from_home(std::path::Path::new(home)),
     }
 }
 

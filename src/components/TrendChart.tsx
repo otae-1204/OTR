@@ -18,7 +18,7 @@ import { alignPreviousBucket, type PreviousRange } from "../lib/range";
 import { EmptyState, Skeleton } from "./Skeleton";
 import { TrendingUpIcon } from "./icons";
 
-const KNOWN_ORDER = ["dsh", "claude-code", "codex", "zcode", "opencode", "pi", "cursor", "grok"];
+const KNOWN_ORDER = ["dsh", "claude-code", "codex", "antigravity", "zcode", "opencode", "pi", "cursor", "grok"];
 const MAX_DAYS = 366;
 /** 和模型占比一样,只单独画前 8 个,其余合成「其他」 */
 const TOP_MODELS = 8;
@@ -452,27 +452,30 @@ export function TrendChart({
   return (
     <section
       data-theme-part="card chart-card"
-      className="rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm"
+      className="flex h-full flex-col rounded-xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/60 hover:shadow-sm"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div data-theme-part="card-title" className="flex items-center gap-1.5 text-sm font-semibold">
-          <TrendingUpIcon className="h-4 w-4 text-primary" />
-          <span>消耗趋势</span>
-          <span className="ml-1 inline-flex min-w-0 items-baseline text-xs font-normal text-muted-foreground">
+      <div className="flex items-center justify-between gap-2">
+        <div
+          data-theme-part="card-title"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-sm font-semibold"
+        >
+          <TrendingUpIcon className="h-4 w-4 shrink-0 text-primary" />
+          <span className="shrink-0">消耗趋势</span>
+          <span
+            className="ml-1 min-w-0 truncate text-xs font-normal text-muted-foreground"
+            title={
+              model
+                ? `${formatRangeCaption(all ? axisFrom : from, to, all)} · ${granularityLabel} · ${model}`
+                : `${formatRangeCaption(all ? axisFrom : from, to, all)} · ${granularityLabel} · ${
+                    modelSplit ? "各模型 Token 总量" : "各 Agent Token 总量"
+                  }`
+            }
+          >
             {formatRangeCaption(all ? axisFrom : from, to, all)} · {granularityLabel}
-            {" · "}
-            {model ? (
-              <span className="inline-block max-w-[14rem] truncate align-bottom" title={model}>
-                {model}
-              </span>
-            ) : modelSplit ? (
-              "各模型 Token 总量"
-            ) : (
-              "各 Agent Token 总量"
-            )}
+            {model ? ` · ${model}` : ""}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
         {model ? null : (
           <div data-theme-part="segmented" className="flex items-center gap-1 rounded-xl bg-muted p-1">
             {(
@@ -488,7 +491,7 @@ export function TrendChart({
                 title={v ? "按模型拆开" : "按 Agent 汇总"}
                 data-theme-part="segmented-button"
                 data-theme-state={byModel === v ? "selected" : undefined}
-                className={`h-7 rounded-lg px-2.5 text-xs font-medium transition-colors ${
+                className={`h-7 rounded-lg px-2.5 text-xs font-medium transition-[color,background-color,box-shadow] duration-200 ${
                   byModel === v
                     ? "bg-background shadow-sm text-foreground"
                     : "text-muted-foreground hover:bg-overlay/5"
@@ -513,7 +516,7 @@ export function TrendChart({
               title={v ? "同一时间桶画成柱" : modelSplit ? "各模型独立画面积" : "各 Agent 独立画面积"}
               data-theme-part="segmented-button"
               data-theme-state={bars === v ? "selected" : undefined}
-              className={`h-7 rounded-lg px-2.5 text-xs font-medium transition-colors ${
+              className={`h-7 rounded-lg px-2.5 text-xs font-medium transition-[color,background-color,box-shadow] duration-200 ${
                 bars === v
                   ? "bg-background shadow-sm text-foreground"
                   : "text-muted-foreground hover:bg-overlay/5"
@@ -527,18 +530,22 @@ export function TrendChart({
       </div>
 
       {rows === null ? (
-        <Skeleton className="mt-3 h-64" />
+        <Skeleton className="mt-3 min-h-64 flex-1" />
       ) : rows.length === 0 || buckets.length === 0 ? (
-        <div className="mt-3">
+        <div className="mt-3 flex-1">
           <EmptyState message="所选范围内暂无消耗数据" />
         </div>
       ) : (
         <>
-          <div data-theme-part="chart" className="mt-3 h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
+          <div
+            data-theme-part="chart"
+            className="relative mt-3 h-64 w-full lg:h-auto lg:min-h-64 lg:flex-1"
+          >
+            <div className="h-full w-full lg:absolute lg:inset-0">
+              <ResponsiveContainer width="100%" height="100%">
               <ComposedChart
                 data={data}
-                margin={{ top: 10, right: 8, left: 0, bottom: hourAxis ? 4 : 0 }}
+                margin={{ top: 10, right: 20, left: 0, bottom: hourAxis ? 4 : 0 }}
                 barGap={2}
                 barCategoryGap={stackBars ? "22%" : "16%"}
               >
@@ -624,6 +631,7 @@ export function TrendChart({
                       fill={seriesColor(id)}
                       stackId={stackBars ? "agents" : undefined}
                       maxBarSize={stackBars ? 36 : 28}
+                      animationDuration={400}
                       radius={
                         !stackBars || index === agentIds.length - 1
                           ? [3, 3, 0, 0]
@@ -639,6 +647,7 @@ export function TrendChart({
                       stroke={seriesColor(id)}
                       strokeWidth={1.5}
                       fill={`url(#trend-grad-${index})`}
+                      animationDuration={400}
                     />
                   ),
                 )}
@@ -654,12 +663,17 @@ export function TrendChart({
                     activeDot={false}
                     connectNulls={false}
                     legendType="none"
+                    animationDuration={400}
                   />
                 ) : null}
               </ComposedChart>
             </ResponsiveContainer>
+            </div>
           </div>
-          <div data-theme-part="legend" className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+          <div
+            data-theme-part="legend"
+            className="mt-3 flex flex-wrap content-start items-center gap-x-4 gap-y-1.5 lg:min-h-11"
+          >
             {agentIds.map((id) => (
               <span
                 key={id}

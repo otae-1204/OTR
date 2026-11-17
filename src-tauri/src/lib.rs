@@ -216,6 +216,9 @@ pub fn run() {
             commands::capture_console_cookie,
             commands::list_themes,
             commands::get_themes_dir,
+            commands::import_agent_icon,
+            commands::clear_agent_icon,
+            commands::agent_icon_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OTR");

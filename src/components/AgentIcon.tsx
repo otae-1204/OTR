@@ -1,7 +1,9 @@
 import dshPng from "../assets/agents/dsh.png";
 import zcodePng from "../assets/agents/zcode.png";
+import antigravityMark from "../assets/agents/antigravity.svg";
 import grokDark from "../assets/agents/grok-logomark-dark.svg";
 import grokLight from "../assets/agents/grok-logomark-light.svg";
+import { createContext, useContext } from "react";
 import { useTheme } from "../theme/ThemeProvider";
 import {
   ClaudeMarkIcon,
@@ -17,6 +19,9 @@ const IMAGE_ICONS: Record<string, string> = {
   zcode: zcodePng,
 };
 
+/** id → data URL。用户指定的图标优先于内置图标。 */
+export const AgentIconOverrides = createContext<Record<string, string>>({});
+
 export function usesImageIcon(id: string): boolean {
   return id in IMAGE_ICONS || id === "grok";
 }
@@ -28,15 +33,37 @@ interface AgentIconProps {
   className?: string;
 }
 
-/** Agent 品牌图标:知名品牌用官方 path/资源,其余字母兜底 */
+/** Agent 品牌图标:用户指定的图片优先,其次是内置品牌标。 */
 export function AgentIcon({ id, color, className }: AgentIconProps) {
   const { mode } = useTheme();
+  const overrides = useContext(AgentIconOverrides);
+  const custom = overrides[id];
   const cls = className ?? "h-5 w-5";
+  if (custom) {
+    return (
+      <img
+        src={custom}
+        alt=""
+        draggable={false}
+        className={`h-full w-full object-contain ${className ?? ""}`}
+      />
+    );
+  }
   if (id === "grok") {
     return (
       <img
         src={mode === "dark" ? grokLight : grokDark}
         alt="Grok"
+        draggable={false}
+        className={`object-contain ${cls}`}
+      />
+    );
+  }
+  if (id === "antigravity") {
+    return (
+      <img
+        src={antigravityMark}
+        alt="Antigravity"
         draggable={false}
         className={`object-contain ${cls}`}
       />
@@ -72,7 +99,7 @@ export function AgentIcon({ id, color, className }: AgentIconProps) {
       );
     default:
       return (
-        <span className={`text-sm font-bold leading-none ${cls ?? ""}`} style={{ color }}>
+        <span className="text-sm font-bold leading-none" style={{ color }}>
           {(id.charAt(0) || "?").toUpperCase()}
         </span>
       );

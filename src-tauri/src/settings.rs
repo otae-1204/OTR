@@ -147,8 +147,8 @@ fn legacy_known_limit_providers() -> Vec<String> {
 /// 支持的额度 Provider。**不在这个表里的一律报 unsupported**,
 /// 不拿内置账号的数字冒充 —— 那会让用户以为配好了。
 pub const LIMIT_PROVIDERS: &[&str] = &[
-    "cursor", "codex", "grok", "deepseek", "openrouter", "minimax", "zai", "kimi", "factory",
-    "mistral", "qwen", "stepfun",
+    "cursor", "codex", "grok", "antigravity", "deepseek", "openrouter", "minimax", "zai", "kimi",
+    "factory", "mistral", "qwen", "stepfun",
 ];
 
 impl LimitAccount {
@@ -166,7 +166,7 @@ impl LimitAccount {
         // home 模式要目录。DeepSeek 要 API Key。StepFun 的订阅 Cookie 和
         // 按量 Key 至少有一个,否则这张卡没有任何可查的东西。
         match self.provider.as_str() {
-            "cursor" | "codex" | "grok" => {
+            "cursor" | "codex" | "grok" | "antigravity" => {
                 let home = self.home.as_deref().unwrap_or("").trim();
                 if home.is_empty() {
                     return Err(format!("{} 需要指定 profile 目录", self.provider));
@@ -275,12 +275,16 @@ pub struct Settings {
     /// 用户关掉之后不会在下次启动时复活。
     #[serde(default = "legacy_known_limit_providers")]
     known_limit_providers: Vec<String>,
+    /// Agent id → 用户指定的图标文件(复制到数据目录里的路径)。
+    #[serde(default)]
+    pub agent_icons: std::collections::HashMap<String, String>,
 }
 
 pub const BUILTIN_AGENTS: &[&str] = &[
     "dsh",
     "claude-code",
     "codex",
+    "antigravity",
     "zcode",
     "opencode",
     "pi",
@@ -312,6 +316,7 @@ impl Default for Settings {
                 known.push("grok".into());
                 known
             },
+            agent_icons: std::collections::HashMap::new(),
         }
     }
 }
